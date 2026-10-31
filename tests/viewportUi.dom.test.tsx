@@ -106,7 +106,7 @@ function resize() {
 
 // ---------- resize：锚点已经脱离文档就收掉 ----------
 
-test("resize 不关「更多选项」中心：它是居中对话框，没有会失效的锚点", () => {
+test("resize 不关「设置」中心：它是居中对话框，没有会失效的锚点", () => {
     // 2026-10-29：中心取代了锚定在按钮上的下拉菜单。菜单那套「按钮被卸载 →
     // anchor 脱离文档 → 关掉」的补救对它不成立，反过来：用户从窄窗口最大化时
     // 中心正开着，不该被 resize 顺手关掉（那等于把人手里的事丢了）。
@@ -150,7 +150,7 @@ test("底栏退场：只收挂在底栏按钮上的弹层，顶栏自己的别�
     assert.equal(text("groups"), "top-btn", "顶栏那份不该被底栏退场收掉");
 });
 
-test("底栏退场不关「更多选项」中心（底栏那颗「更多」只是入口之一）", () => {
+test("底栏退场不关「设置」中心（底栏那颗「更多」只是入口之一）", () => {
     mount();
     const bar = tabBar();
     const bottomBtn = button("bottom-btn", bar);
@@ -184,7 +184,7 @@ test("顶栏「分组」按钮退场：只收顶栏那份，底栏那份归另�
 
 // ---------- 菜单开关 ----------
 
-test("handleMenuOpen / handleMenuClose 只动「更多选项」中心的开关", () => {
+test("handleMenuOpen / handleMenuClose 只动「设置」中心的开关", () => {
     mount();
     assert.equal(text("center"), "false");
 

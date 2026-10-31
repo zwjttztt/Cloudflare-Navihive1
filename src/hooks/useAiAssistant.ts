@@ -92,7 +92,7 @@ export function useAiAssistant({ api }: { api: AiApiLike }): AiAssistant {
         status === null
             ? "AI 助手状态未知"
             : !status.enabled
-              ? "AI 助手没开（更多选项 → AI 助手）"
+              ? "AI 助手没开（设置 → AI 设置）"
               : status.problem;
 
     const ready = status !== null && status.enabled && !status.problem;

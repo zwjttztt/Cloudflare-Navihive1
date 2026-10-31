@@ -7,7 +7,7 @@
 // 用 button 就有免费的键盘可达性（Tab / 回车 / 空格）与读屏语义，
 // 用 Tabs 就得再把 role=tablist / tabpanel 那一整套自己补齐。
 //
-// 尺寸全部钉在规格上（2026-10-29 导航页「更多选项」统一弹窗）：
+// 尺寸全部钉在规格上（2026-10-29 导航页「设置」统一弹窗）：
 //   条目最小高 44（触控目标底线，WCAG 2.5.8）、图标 20、名称 14/500、
 //   条目间距 4、分组间距 var(--space-4)、分组标题 12/600 + text.secondary。
 import { createContext, useContext } from "react";
@@ -148,36 +148,50 @@ export default function SettingsWorkspaceNav({
         <Box
             component='nav'
             aria-label='设置分组'
-            sx={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+            sx={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}
         >
-            {groups.map(group => (
-                <Box
-                    key={group.title ?? "__danger__"}
-                    sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}
-                >
-                    {group.title !== null && (
-                        <Typography
-                            component='h3'
-                            sx={{ px: 1.5, pb: 0.5, fontSize: 12, fontWeight: 600 }}
-                            color='text.secondary'
-                        >
-                            {group.title}
-                        </Typography>
-                    )}
-                    {group.items.map(item => (
-                        <NavItem
-                            key={item.id}
-                            item={item}
-                            tone={item.id === activeId ? "active" : "normal"}
-                            onSelect={onSelect}
-                        />
-                    ))}
-                </Box>
-            ))}
+            {/* 分组区：撑满剩余高度，内容超长时自己滚 —— 这样下面的危险区才能钉在底部 */}
+            <Box
+                sx={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "var(--space-4)",
+                    flex: 1,
+                    minHeight: 0,
+                    overflowY: "auto",
+                    overflowX: "hidden",
+                }}
+            >
+                {groups.map(group => (
+                    <Box
+                        key={group.title ?? "__danger__"}
+                        sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}
+                    >
+                        {group.title !== null && (
+                            <Typography
+                                component='h3'
+                                sx={{ px: 1.5, pb: 0.5, fontSize: 12, fontWeight: 600 }}
+                                color='text.secondary'
+                            >
+                                {group.title}
+                            </Typography>
+                        )}
+                        {group.items.map(item => (
+                            <NavItem
+                                key={item.id}
+                                item={item}
+                                tone={item.id === activeId ? "active" : "normal"}
+                                onSelect={onSelect}
+                            />
+                        ))}
+                    </Box>
+                ))}
+            </Box>
+            {/* 危险区：钉在左栏底部（退出登录） */}
             {dangerItems.length > 0 && (
-                <>
+                <Box sx={{ flexShrink: 0, pt: 1 }}>
                     <Divider />
-                    <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+                    <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, pt: 1 }}>
                         {dangerItems.map(item => (
                             <NavItem
                                 key={item.id}
@@ -187,7 +201,7 @@ export default function SettingsWorkspaceNav({
                             />
                         ))}
                     </Box>
-                </>
+                </Box>
             )}
         </Box>
     );

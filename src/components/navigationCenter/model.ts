@@ -1,5 +1,5 @@
 // src/components/navigationCenter/model.ts
-// 导航页「更多选项」中心的**条目注册表**：分组、id、名称、说明、图标、可见性。
+// 导航页「设置」中心的**条目注册表**：分组、id、名称、说明、图标、可见性。
 //
 // 为什么单独一个文件、且刻意不带 JSX（.ts 而不是 .tsx）：
 //   · 注册表是**数据**，渲染在 NavigationCenterDialog 里做。两边分开之后，

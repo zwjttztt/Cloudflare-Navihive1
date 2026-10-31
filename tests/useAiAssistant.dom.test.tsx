@@ -180,7 +180,7 @@ test("没开：enabled=false → 原因指路到设置入口", async () => {
     const latest: Latest = { ai: null, site: null, render: 0 };
     await mountHarness(api, latest);
     assert.equal(latest.ai!.ready, false);
-    assert.equal(latest.ai!.reason, "AI 助手没开（更多选项 → AI 助手）");
+    assert.equal(latest.ai!.reason, "AI 助手没开（设置 → AI 设置）");
 });
 
 test("开了但缺配置：problem 原样透出，ready false", async () => {
@@ -375,7 +375,7 @@ test("refresh 失败把已拿到的状态打回「未知」", async () => {
     });
     const latest: Latest = { ai: null, site: null, render: 0 };
     await mountHarness(api, latest);
-    assert.equal(latest.ai!.reason, "AI 助手没开（更多选项 → AI 助手）");
+    assert.equal(latest.ai!.reason, "AI 助手没开（设置 → AI 设置）");
 
     shouldThrow = true;
     await act(async () => {

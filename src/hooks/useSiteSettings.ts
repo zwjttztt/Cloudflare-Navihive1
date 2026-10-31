@@ -22,7 +22,7 @@ type UseSiteSettingsParams = {
     notify: (text: string, level?: NotifySeverity) => void;
     /** 统一的错误提示（App 里是 notify + reportError） */
     onError: (message: string) => void;
-    /** 打开设置弹窗前先收起「更多选项」菜单，否则菜单会失去锚点跑到左上角 */
+    /** 打开设置弹窗前先收起「设置」菜单，否则菜单会失去锚点跑到左上角 */
     onMenuClose: () => void;
     /** 改完管理员凭据后服务端会把令牌版本 +1，当前令牌立刻失效 —— 踢回登录页 */
     onLogout: () => void;

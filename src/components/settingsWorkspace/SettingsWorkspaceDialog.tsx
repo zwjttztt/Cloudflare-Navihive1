@@ -1,7 +1,7 @@
 // src/components/settingsWorkspace/SettingsWorkspaceDialog.tsx
 // **共享的设置工作区外壳**：左栏分组导航 + 右栏面板 + 底部操作区。
 //
-// 为什么要抽它（2026-10-29 导航页「更多选项」统一弹窗）：导航页原来把十个动作
+// 为什么要抽它（2026-10-29 导航页「设置」统一弹窗）：导航页原来把十个动作
 // 摊在一个下拉菜单里，点开各自是一个独立弹窗 —— 尺寸、标题栏、底部按钮文案
 // 全都各不相同（宽度 xs/sm/md 三种、正文 padding px:3 / p:0 两种、完成按钮
 // contained / outlined / text 三种）。现在统一成「一个中心弹窗 + 左栏换面板」，
@@ -185,8 +185,9 @@ export default function SettingsWorkspaceDialog({
                             width: fullScreen ? "100%" : navWidth,
                             flexShrink: 0,
                             minHeight: 0,
-                            overflowY: "auto",
-                            overflowX: "hidden",
+                            display: "flex",
+                            flexDirection: "column",
+                            overflow: "hidden",
                             py: 2,
                             px: 1,
                             bgcolor: "var(--neutral-wash)",

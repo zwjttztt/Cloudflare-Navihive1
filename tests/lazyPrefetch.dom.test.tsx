@@ -1,12 +1,12 @@
 // tests/lazyPrefetch.dom.test.tsx
 //
 // 2026-10-17 首开延迟排查的修复件守卫：
-// 「更多选项」菜单 / 卡片菜单 / 各弹窗全是条件挂载的 lazy 块，首次点击要现场
+// 「设置」菜单 / 卡片菜单 / 各弹窗全是条件挂载的 lazy 块，首次点击要现场
 // 下载块，慢链路上数秒空窗且毫无反馈（用户实测「首次点击反馈延迟很久、关闭后
 // 再次打开才恢复正常」）。修复是三层预取（同日用户要求去除 LazyFallback 转圈，
 // ChunkBoundary fallback 已回退为 null，不加回），这里把每层都钉住：
 //   1. prefetchChunk 的幂等 / 失败重试语义（lazyPrefetch.ts）；
-//   2. 静态守卫：三层挂载点（App 空闲预取 / HeaderActions 悬停 / 「更多选项」中心
+//   2. 静态守卫：三层挂载点（App 空闲预取 / HeaderActions 悬停 / 「设置」中心
 //      挂载时预取目标弹窗 / SiteCard 卡片设置悬停）与 dialogChunks 只含动态 import。
 //      （2026-10-29：MoreMenu 下拉菜单已被 NavigationCenterDialog 取代，
 //       这一层守卫跟着换到新文件，语义不变。）
@@ -73,7 +73,7 @@ test("prefetchOnIdle：重复调度是幂等的，任务最终全部执行", asy
     assert.equal(ran, "12", "第二次调度要被幂等吞掉；首个任务列表要全部跑完");
 });
 
-test("App：登录后有空闲预取，且覆盖「更多选项」菜单与常用弹窗", () => {
+test("App：登录后有空闲预取，且覆盖「设置」菜单与常用弹窗", () => {
     const code = strip(readSrc("App.tsx"));
     assert.match(code, /prefetchOnIdle\(\[/, "App 要在登录后调度空闲预取");
     for (const key of [
@@ -86,13 +86,13 @@ test("App：登录后有空闲预取，且覆盖「更多选项」菜单与常�
     assert.match(code, /if \(!isAuthenticated\) return;/, "访客视图不该预取管理弹窗");
 });
 
-test("HeaderActions：「更多选项」与「新增」按钮有悬停预取", () => {
+test("HeaderActions：「设置」与「新增」按钮有悬停预取", () => {
     const code = strip(readSrc("components", "HeaderActions.tsx"));
     assert.match(code, /prefetchChunk\("navigationCenter", dialogChunks\.navigationCenter\)/);
     assert.match(code, /prefetchChunk\("addSite", dialogChunks\.addSite\)/);
 });
 
-test("「更多选项」中心：挂载时预取各面板的目标弹窗块", () => {
+test("「设置」中心：挂载时预取各面板的目标弹窗块", () => {
     const code = strip(readSrc("components", "NavigationCenterDialog.tsx"));
     assert.match(code, /useEffect\(\(\) => \{/, "预取要挂在中心挂载 effect 里");
     // editGroup 不在这张表里：原来菜单里的「新增分组」已归到顶栏主按钮，

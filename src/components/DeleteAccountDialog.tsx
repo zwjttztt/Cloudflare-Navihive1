@@ -56,7 +56,7 @@ export default function DeleteAccountDialog({
                         mb: 1.5
                     }}>
                     {username ? `当前账号：${username}。` : ""}
-                    请先用「更多选项 → 数据备份」保存一份备份，再输入当前密码确认注销。
+                    请先用「设置 → 备份与恢复」保存一份备份，再输入当前密码确认注销。
                 </Typography>
                 <PasswordField
                     autoFocus

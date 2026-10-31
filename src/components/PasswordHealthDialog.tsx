@@ -11,7 +11,7 @@
 // 不碰 API、不碰存储 —— 所有计算都在客户端对已持有的数据做，密文/明文口径与
 // 卡片显示完全一致。这正是不需要 schema / 迁移 / 服务端改动的原因（方案 A 的定义）。
 //
-// 2026-10-26：从「更多选项」里的独立弹窗，挪进「账号与安全」(AccountDialog) 内嵌面板。
+// 2026-10-26：从「设置」里的独立弹窗，挪进「账号与安全」(AccountDialog) 内嵌面板。
 // 这里只导出 PasswordHealthPanel，不再自带 Dialog 外壳，避免「弹窗里再弹一个弹窗」。
 import { useMemo, useState } from "react";
 import {

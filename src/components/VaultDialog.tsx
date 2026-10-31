@@ -8,7 +8,7 @@
 //   · 空闲自动锁定（默认 5 分钟无操作）。
 // 所有加解密委托给 utils/vaultSession（编排）+ utils/vaultCrypto（原语），本组件只做状态与展示。
 //
-// 2026-10-31：把内容抽成 `VaultPanel`，让「更多选项」中心能内联这一屏。
+// 2026-10-31：把内容抽成 `VaultPanel`，让「设置」中心能内联这一屏。
 // 原来 `open` 驱动的「打开探测 / 关闭清空」改为基于**挂载 / 卸载**语义 —— 中心内
 // 切到这一屏即挂载（探测），切走即卸载（清空），与原弹窗打开 / 关闭等价。
 // `withDialog` 为 true 时自带 Dialog 壳 + 标题 + 关闭（原弹窗路径）；false 时只给内容
@@ -80,7 +80,7 @@ export interface VaultPanelProps {
     client: VaultTransport;
     onNotify?: (message: string, severity?: "success" | "error" | "info") => void;
     /**
-     * true = 被原弹窗包裹（自带 Dialog 壳 + 标题 + 关闭）；false = 被「更多选项」中心内联
+     * true = 被原弹窗包裹（自带 Dialog 壳 + 标题 + 关闭）；false = 被「设置」中心内联
      * （外壳统一给标题与「完成」）。中心内联时不需要自己再套一层会关掉中心的弹窗。
      */
     withDialog?: boolean;

@@ -1,5 +1,5 @@
 // src/components/NavigationCenterDialog.tsx
-// 导航页「更多选项」的**统一中心弹窗**：一个弹窗装下原来那十来个菜单动作。
+// 导航页「设置」的**统一中心弹窗**：一个弹窗装下原来那十来个菜单动作。
 //
 // 为什么换掉原来的下拉菜单（2026-10-29 用户要求）：菜单里有长表单（全站设置、
 // AI 设置）、列表（回收站、审计日志）、备份恢复与账号管理，每一项点开都是
@@ -210,7 +210,7 @@ export default function NavigationCenterDialog({
             <SettingsWorkspaceDialog
                 open={open}
                 onClose={onClose}
-                title='更多选项'
+                title='设置'
                 nav={
                     <SettingsWorkspaceNav
                         groups={navGroups}
@@ -236,7 +236,7 @@ export default function NavigationCenterDialog({
                 }
             >
                 <SettingsWorkspacePanel
-                    title={activeItem?.label ?? "更多选项"}
+                    title={activeItem?.label ?? "设置"}
                     description={activeItem?.description}
                 >
                     {/* 面板是第二层 lazy：块取不到时只坏这一屏，不牵连整个中心 */}

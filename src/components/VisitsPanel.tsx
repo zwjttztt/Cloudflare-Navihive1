@@ -1,7 +1,7 @@
 // src/components/VisitsPanel.tsx
 // 「访问统计」面板（本机访问记录：汇总数字 + 8 周热力图 + 最常访问 Top5）。
 //
-// 它原先是一个独立弹窗（VisitsDialog）；「更多选项」菜单瘦身时与「运营看板」合并成
+// 它原先是一个独立弹窗（VisitsDialog）；「设置」菜单瘦身时与「运营看板」合并成
 // 带标签页的「统计」入口（StatsHubDialog），内容抽成面板复用，弹窗外壳由 hub 提供。
 // 数据记在本机（localStorage）；开了「偏好同步」后会在同一账号下多设备合并，
 // 没开就只留在这台机器里 —— 界面上要如实说明是哪一种，别笼统写「不上传」。
@@ -113,7 +113,7 @@ export default function VisitsPanel({ nameOf, exists, onClear, syncEnabled = fal
                 }}>
                 {syncEnabled
                     ? "记录记在本机，并已开启偏好同步：同一账号下的其它设备会合并同一份统计。"
-                    : "记录只留在这台机器里，不会上传；在「网站设置 → 数据同步」里打开偏好同步后才会跨设备合并。"}
+                    : "记录只留在这台机器里，不会上传；在「设置 → 全站设置 → 数据同步」里打开偏好同步后才会跨设备合并。"}
             </Typography>
             {summary.total === 0 ? (
                 <Typography

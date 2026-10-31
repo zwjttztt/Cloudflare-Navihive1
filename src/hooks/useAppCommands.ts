@@ -33,7 +33,7 @@ export interface AppCommandActions {
     fetchSessions: () => Promise<void> | void;
     fetchAccountList: () => Promise<void> | void;
     /**
-     * 打开「更多选项」中心的某一屏。
+     * 打开「设置」中心的某一屏。
      * 2026-10-29：统计与备份都从独立弹窗收进中心，命令面板也跟着改走中心 ——
      * 否则两条命令会打开两个已经没有挂载点的弹窗。
      */

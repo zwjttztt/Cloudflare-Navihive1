@@ -1,7 +1,7 @@
 // tests/shortcutsHelp.dom.test.tsx
 // 「帮助」弹窗（ShortcutsDialog）：快捷键表 + 安装到桌面入口。
 //
-// 2026-10-15 菜单瘦身时，「安装到桌面」从「更多选项」菜单并入这个弹窗 ——
+// 2026-10-15 菜单瘦身时，「安装到桌面」从「设置」菜单并入这个弹窗 ——
 // 它只有在浏览器真的给了安装事件时才出现（Chrome/Edge 用得够多才抛
 // beforeinstallprompt），没给事件时弹窗底部不该留一个点了没反应的按钮。
 import { test } from "node:test";

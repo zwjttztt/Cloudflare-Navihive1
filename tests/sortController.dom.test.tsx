@@ -93,7 +93,7 @@ async function run(fn: () => void | Promise<void>) {
     });
 }
 
-test("进入站点排序：切到 SiteSort、记住分组 id，并先关掉「更多选项」菜单", async () => {
+test("进入站点排序：切到 SiteSort、记住分组 id，并先关掉「设置」菜单", async () => {
     const { api } = makeApi();
     let closed = 0;
     mount(<Harness api={api} onClosed={() => closed++} onError={() => {}} />);

@@ -160,7 +160,7 @@ function makeApi(overrides: Partial<SettingsApi> = {}) {
     return { api, log };
 }
 
-test("打开设置：先收起「更多选项」，把当前配置快照进临时区，清空上次的凭据输入", async t => {
+test("打开设置：先收起「设置」，把当前配置快照进临时区，清空上次的凭据输入", async t => {
     t.after(cleanup);
     const { api, log } = makeApi();
     mount({

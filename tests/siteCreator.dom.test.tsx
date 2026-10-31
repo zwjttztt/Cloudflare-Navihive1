@@ -162,7 +162,7 @@ test("打开新建卡片：草稿重置、排在分组末尾、密码回到隐�
     cleanup();
 });
 
-test("打开新建分组：先关掉「更多选项」菜单，再开弹窗", async () => {
+test("打开新建分组：先关掉「设置」菜单，再开弹窗", async () => {
     const { api, log } = makeApi();
     let closed = 0;
     mount(<Harness api={api} log={log} menuCloser={() => closed++} />);

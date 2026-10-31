@@ -1,5 +1,5 @@
 // src/hooks/useViewportUi.ts
-// 跟「视口」有关的那一簇状态：头部收缩、当前分组高亮、「更多选项」中心的开关，
+// 跟「视口」有关的那一簇状态：头部收缩、当前分组高亮、「设置」中心的开关，
 // 以及底栏「分组」菜单的锚点（含「锚点所在按钮被卸载时要把菜单收掉」的补救）。
 //
 // 从 App.tsx 搬过来 —— 这几条逻辑写错的后果都不是报错，而是「窗口从窄拉宽之后
@@ -7,7 +7,7 @@
 // MUI 下次重定位拿到全零坐标。搬出来之后可以用 jsdom 造一个 detached 的锚点，
 // 把 resize 守卫和两个 handleExit 各自「只收挂在自己那颗按钮上的那份」钉住。
 //
-// 2026-10-29：「更多选项」从锚定在按钮上的下拉菜单换成居中（窄屏整屏）的
+// 2026-10-29：「设置」从锚定在按钮上的下拉菜单换成居中（窄屏整屏）的
 // 统一中心弹窗，于是那一段「菜单锚点」整个消失 —— 弹窗没有锚点，
 // 按钮被卸载也不会飘；这里只留下一个布尔开关。
 
@@ -27,7 +27,7 @@ export interface ViewportUiParams {
 }
 
 export interface ViewportUiState {
-    /** 「更多选项」中心弹窗是否打开（桌面按钮与底栏「更多」共用同一个开关） */
+    /** 「设置」中心弹窗是否打开（桌面按钮与底栏「更多」共用同一个开关） */
     navCenterOpen: boolean;
     setNavCenterOpen: Dispatch<SetStateAction<boolean>>;
     /** 当前视口里的分组（左栏高亮 / 「新增」按钮的目标分组都看它） */
@@ -40,9 +40,9 @@ export interface ViewportUiState {
     /** 锚点来自顶栏还是底栏：顶栏往下展开，底栏只能往上翻 */
     groupsAnchorFromTop: boolean;
     setGroupsAnchorFromTop: Dispatch<SetStateAction<boolean>>;
-    /** 打开「更多选项」中心 */
+    /** 打开「设置」中心 */
     handleMenuOpen: () => void;
-    /** 关闭「更多选项」中心 */
+    /** 关闭「设置」中心 */
     handleMenuClose: () => void;
     /** 底栏退场（视口宽过 899.98px）时由底栏自己通知 */
     handleExitMobileViewport: () => void;
@@ -108,7 +108,7 @@ export function useViewportUi({ loading, groupCount }: ViewportUiParams): Viewpo
     // 已经不在文档里的弹层一律收掉；底栏退场时自己也会通知一声（onExitViewport），
     // 因为 resize 事件跑在 React 卸载底栏之前，单靠这边可能晚一步。
     //
-    // 「更多选项」中心不在此列：它是**居中（窄屏整屏）的对话框，没有锚点**，
+    // 「设置」中心不在此列：它是**居中（窄屏整屏）的对话框，没有锚点**，
     // 底栏按钮被卸载也不会飘，反而该留着让用户把手里的事做完。
     useEffect(() => {
         const onResize = () => {

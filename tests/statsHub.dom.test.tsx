@@ -42,7 +42,7 @@ function makeClient(spy?: { calls: number }): NavigationClient {
 
 function mount(ui: ReactElement) {
     anchor = document.createElement("button");
-    anchor.textContent = "更多选项";
+    anchor.textContent = "设置";
     document.body.appendChild(anchor);
     host = document.createElement("div");
     document.body.appendChild(host);

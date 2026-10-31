@@ -114,7 +114,7 @@ export function useThemeController(accent: string) {
                     MuiDrawer: { defaultProps: { disableScrollLock: true } },
                     // 键盘焦点环：index.css 里那条全局 :focus-visible 只对原生元素管用，
                     // MUI 组件的样式是运行时由 emotion 注入的，排在意料之外的位置把它压掉了 ——
-                    // 实测 Tab 到搜索框 / 更多选项 / 视图切换时，computed outline 与 boxShadow 全是 none，
+                    // 实测 Tab 到搜索框 / 设置 / 视图切换时，computed outline 与 boxShadow 全是 none，
                     // 键盘用户过了左侧分组栏就彻底看不到自己在哪。这里按组件补回来。
                     MuiButtonBase: {
                         styleOverrides: {

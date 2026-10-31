@@ -1,11 +1,11 @@
 // tests/readmeMenu.test.ts
 // README 里写的菜单路径必须是界面上真实存在的那条。
 //
-// 起因：「更多选项」菜单做过一次重排，项名改了（数据备份 → 备份与恢复、
+// 起因：「设置」菜单做过一次重排，项名改了（数据备份 → 备份与恢复、
 // 账号管理 → 账号与安全），README 里还留着旧名 —— 而这类漂移**没有任何东西会报错**：
 // 文档不是代码，改菜单的人不会想到去搜 README，用户照着文档找又找不到入口。
 //
-// 这里只盯一件事：README 出现的每一条「更多选项 → X」，X 必须是菜单里真有的项。
+// 这里只盯一件事：README 出现的每一条「设置 → X」，X 必须是菜单里真有的项。
 // 反过来不做（不要求菜单项都写进 README）—— 帮助文档该写多少是另一件事，
 // 写错了才是指向错误的入口。
 
@@ -50,13 +50,13 @@ function menuLabels(): string[] {
 }
 
 /**
- * README 里出现的所有「更多选项 → X」的第一段。
- * 写成「更多选项 → 账号与安全 → 恢复密钥」时只取「账号与安全」——
+ * README 里出现的所有「设置 → X」的第一段。
+ * 写成「设置 → 账号与安全 → 恢复密钥」时只取「账号与安全」——
  * 再往里一层是弹窗里的分区，不在这个菜单里。
  */
 function readmeEntries(readme: string): string[] {
     const entries: string[] = [];
-    for (const m of readme.matchAll(/更多选项\s*→\s*([^\s」→]+)/g)) {
+    for (const m of readme.matchAll(/(?:设置|设置)\s*→\s*([^\s」→]+)/g)) {
         entries.push(m[1].trim());
     }
     return entries;
@@ -69,7 +69,7 @@ test("中心里确实取得到项名（守卫本身要站得住）", () => {
     assert.ok(labels.includes("账号与安全"));
 });
 
-test("README 里的每一条「更多选项 → X」都指向界面上真实存在的条目", () => {
+test("README 里的每一条「设置 → X」都指向界面上真实存在的条目", () => {
     const readme = readFileSync(join(findProjectDir(), "README.md"), "utf8");
     const entries = [...new Set(readmeEntries(readme))];
     assert.ok(entries.length > 0, "README 里一条路径都没解析到，正则多半失效了");

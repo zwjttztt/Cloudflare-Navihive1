@@ -116,7 +116,7 @@ export interface OverlayHostProps {
         onAiSuggest?: () => void;
         onClose: () => void;
     };
-    /** 「更多选项 → AI 助手」：开关、模型服务、凭据与测试连接 */
+    /** 「设置 → AI 设置」：开关、模型服务、凭据与测试连接 */
     aiAssistant: {
         open: boolean;
         onClose: () => void;
@@ -266,8 +266,8 @@ export default function OverlayHost({
                 title={`删除选中的 ${bulkDelete.count} 个网站？`}
                 description={
                     <span>
-                        会先进入回收站（可在「更多选项 → 回收站」中恢复），也可以在提示条上点「撤销」直接还原；
-                        站点上保存的账号密码会一并删除。批量操作前建议先到「更多选项 → 数据备份」导出一份备份。
+                        会先进入回收站（可在「设置 → 回收站」中恢复），也可以在提示条上点「撤销」直接还原；
+                        站点上保存的账号密码会一并删除。批量操作前建议先到「设置 → 备份与恢复」导出一份备份。
                     </span>
                 }
                 confirmText='删除'
@@ -303,7 +303,7 @@ export default function OverlayHost({
                 />
             </ChunkBoundary>
 
-            {/* AI 助手：开关、模型服务、凭据与测试连接（更多选项 → AI 助手） */}
+            {/* AI 助手：开关、模型服务、凭据与测试连接（设置 → AI 设置） */}
             <ChunkBoundary when={aiAssistant.open}>
                 <AiAssistantDialog
                     open={aiAssistant.open}

@@ -86,7 +86,7 @@ test("不传 onNotes 就没有「笔记」项（老调用方不受影响）", ()
     mount();
     assert.equal(labels().includes("笔记"), false, "没接回调就不该出现这一项");
     // 基础四项仍在
-    for (const l of ["搜索", "分组", "新增", "更多"]) {
+    for (const l of ["搜索", "分组", "新增", "设置"]) {
         assert.ok(labels().includes(l), `缺少 ${l}`);
     }
 });

@@ -31,7 +31,7 @@ import {
 } from "../utils/recoveryKey";
 
 interface LoginFormProps {
-    /** 站点名：改过「网站设置 → 标题」就用改过的，没改过回落到品牌名 */
+    /** 站点名：改过「网站设置 → 基本信息 → 网站名称」就用改过的，没改过回落到品牌名 */
     brandName?: string;
     /** 品牌区图标下面那句话；默认取 BRAND.description（改站点标题不带动它，
      *  因为描述存在服务端配置里、要登录后才能取 —— 与 brandName 同思路兜底） */
@@ -319,7 +319,7 @@ const LoginForm: React.FC<LoginFormProps> = ({
 
                 {mode === "recover" && (
                     <Alert severity='info' sx={{ mb: 2 }}>
-                        选择你在「更多选项 → 账号管理」里下载的恢复私钥文件即可重置密码。
+                        选择你在「设置 → 账号与安全」里下载的恢复私钥文件即可重置密码。
                         文件只在这台设备的浏览器里读取并签名，不会上传到服务器。
                         {!recoverConfigured && " 当前站点尚未配置恢复公钥，找回多半会失败。"}
                     </Alert>
@@ -327,7 +327,7 @@ const LoginForm: React.FC<LoginFormProps> = ({
 
                 {mode === "register" && (
                     <Alert severity='info' sx={{ mb: 2 }}>
-                        注册需要一枚邀请码。只有站点所有者能在「更多选项 → 账号管理」里生成
+                        注册需要一枚邀请码。只有站点所有者能在「设置 → 账号与安全」里生成
                         （普通账号看不到这个入口），邀请码 30 分钟内有效、只能用一次。
                     </Alert>
                 )}

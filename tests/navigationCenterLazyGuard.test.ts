@@ -1,5 +1,5 @@
 // tests/navigationCenterLazyGuard.test.ts
-// 「更多选项」中心的**懒加载边界守卫**（2026-10-29 统一弹窗改造）。
+// 「设置」中心的**懒加载边界守卫**（2026-10-29 统一弹窗改造）。
 //
 // 为什么单独写一条守卫：首屏 gzip 预算只剩约 3% 余量（真实首屏 884.287 KB /
 // gzip 289.736 KB，预算 920 / 300 KB，见 tests/bundleBudget.test.ts）。

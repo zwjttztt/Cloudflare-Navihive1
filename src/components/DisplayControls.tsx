@@ -52,11 +52,11 @@ export interface DisplayControlsProps {
     themeMode: ThemeMode;
     /** 直接切到某一档，不再靠「点一下换下一个」的循环 */
     setThemeMode: (mode: ThemeMode) => void;
-    /** 「最近访问置前」：浏览偏好，原来混在「更多选项」里，和星标那种筛选不是一回事 */
+    /** 「最近访问置前」：浏览偏好，原来混在「设置」里，和星标那种筛选不是一回事 */
     favoritesEnabled: boolean;
     onFavoritesEnabledChange: (enabled: boolean) => void;
     /**
-     * 进入分组拖拽排序模式（2026-10-17 从「更多选项」挪过来）：
+     * 进入分组拖拽排序模式（2026-10-17 从「设置」挪过来）：
      * 排序类操作归拢到同一个「排序」区，菜单里不用再留一个结构类入口。
      */
     onStartGroupSort: () => void;

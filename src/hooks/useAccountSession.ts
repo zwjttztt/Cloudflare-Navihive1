@@ -3,7 +3,7 @@
 // 搬迁是原样搬运（只做整词改名）。
 // 「注销账号」只对普通账号开放（2026-10-17 用户要求：站点所有者本人不提供入口，
 // 后端 deleteAccount 对 owner 也一律拒绝）；「沉睡治理」的清单与手动扫描在 v3.1.1
-// 恢复给所有者可见（仅只读 + 重新启用，改阈值的入口统一在「网站设置 → 数据保留」），
+// 恢复给所有者可见（仅只读 + 重新启用，改阈值的入口统一在「设置 → 全站设置 → 数据保留」），
 // 后端扫描保留、继续对普通账号生效。
 import { useCallback, useState, type Dispatch, type SetStateAction } from "react";
 import type { NavigationClient } from "../API/client";
@@ -70,7 +70,7 @@ type UseAccountSessionParams = {
     notify: (text: string, level?: NotifySeverity) => void;
     /** 统一的错误提示（App 里是 notify + reportError） */
     onError: (message: string) => void;
-    /** 登出前先收起「更多选项」菜单，否则菜单会失去锚点跑到左上角 */
+    /** 登出前先收起「设置」菜单，否则菜单会失去锚点跑到左上角 */
     onMenuClose: () => void;
     // ⚠️ 这里原来有个 onDataError（App 传的是 useSites 的 setError）。2026-10-29 拆掉：
     // 它既装「流程提示」（已注销 / 已登出 / 被踢回登录页），而同一个 error 又被 App
@@ -543,7 +543,7 @@ export function useAccountSession({
                 onCloseSnackbar();
                 // 首次部署的凭据来自部署变量（等同半公开），服务端会拦住其它操作直到改密
                 if (result.mustChangePassword) {
-                    notify("请先到「更多选项 → 账号管理」修改密码", "info");
+                    notify("请先到「设置 → 账号与安全」修改密码", "info");
                 }
                 // 加载数据（一次 bootstrap 请求）
                 await fetchData();
@@ -594,7 +594,7 @@ export function useAccountSession({
     };
 
     /**
-     * 生成恢复密钥对（更多选项 → 账号管理）。
+     * 生成恢复密钥对（设置 → 账号与安全）。
      * 密钥在浏览器里生成：公钥交给服务器保存，私钥直接下载到本地，全程不上传。
      * 服务端要求校验当前密码，所以这里必须把用户填的当前密码一起传过去。
      */

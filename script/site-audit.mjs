@@ -246,12 +246,31 @@ async function snapshot(where) {
     return { buttons, overflow, errors: allErrors.slice(0, 6), netFails: netFails.slice(0, 6) };
 }
 
-/** 按可见文本 / aria-label 点一个元素（找不到返回 false，不抛） */
-async function clickByText(text) {
+/**
+ * 按可见文本 / aria-label 点一个元素（找不到返回 false，不抛）。
+ *
+ * `exact: true` 只认「文本/aria 完全等于」的节点，并优先挑可见的那一个 ——
+ * 入口改名成「设置」之后必须精确匹配：`显示设置`（DisplayControls）与
+ * `网站设置`（SiteCard）都含「设置」，用包含匹配会点到它们身上；窄屏下顶栏
+ * 那颗 `设置` 是 display:none，能点的其实是底栏那颗，所以要跳过不可见节点。
+ */
+async function clickByText(text, { exact = false } = {}) {
     return await safeEval(`(() => {
+      const want = ${JSON.stringify(text)};
+      const exactMode = ${JSON.stringify(exact)};
       const nodes = [...document.querySelectorAll('button,[role=button],a')];
-      const hit = nodes.find(n => (n.getAttribute('aria-label') || '').includes(${JSON.stringify(text)})
-        || (n.textContent || '').trim().includes(${JSON.stringify(text)}));
+      const match = n => {
+        const aria = (n.getAttribute('aria-label') || '').trim();
+        const label = (n.textContent || '').trim();
+        return exactMode
+          ? (aria === want || label === want)
+          : (aria.includes(want) || label.includes(want));
+      };
+      let hit = nodes.find(match);
+      if (exactMode) {
+        const visible = nodes.filter(n => n.getClientRects().length > 0);
+        hit = visible.find(match) || hit;
+      }
       if (!hit) return false;
       hit.click();
       return true;
@@ -413,30 +432,33 @@ takeErrors();
  * 布局溢出、控制台报错），不开就永远看不见。
  * 每个开完都 Esc 关掉，避免叠层影响下一项。
  */
-// ⚠️ 「账号」这类二级入口藏在「更多选项」菜单里，主页面上本来就没有同名按钮：
+// ⚠️ 「账号」这类二级入口藏在「设置」中心里，主页面上本来就没有同名按钮：
 // 只找顶层按钮会把「入口在菜单里」误报成「找不到入口」，所以要能再往下点一层。
 const dialogs = [
     { open: "设置", label: "设置弹窗" },
     { open: "搜索", label: "搜索" },
-    // ⚠️ 必须点全称「更多选项」：页面还有一个显示/外观的「更多」选择Menu，
-    // 按「更多」去匹配会点到那边，然后把「菜单里没有账号」报成产品 bug。
-    { open: "更多选项", label: "更多选项菜单" },
-    { open: "更多选项", child: "账号", label: "账号弹窗（经更多选项）" },
+    // ⚠️ 必须精确匹配「设置」：页面还有「显示设置」（顶栏那颗显示/外观按钮）和
+    // 「网站设置」（每张卡片上的），按包含匹配会先点到它们，再把「中心里没有账号」
+    // 报成产品 bug。exact 只认完全等于「设置」的按钮（顶栏那颗，窄屏是底栏那颗）。
+    { open: "设置", exact: true, label: "设置中心（顶栏/底栏「设置」）" },
+    { open: "设置", exact: true, child: "账号", label: "账号面板（经「设置」中心）" },
 ];
 for (const d of dialogs) {
-    const clicked = await clickByText(d.open);
+    const clicked = await clickByText(d.open, { exact: d.exact });
     if (!clicked) {
         note("交互", d.label, `找不到「${d.open}」入口`);
         continue;
     }
     await sleep(1800);
     if (d.child) {
+        // 中心里的分组项不是 MUI 菜单项：它们是 `data-workspace-nav` 的按钮，
+        // 所以两类别名一起收，否则「中心里没有账号」会是一条假警报。
         const items = await safeEval(
-            `[...document.querySelectorAll('[role=menuitem]')].map(n => (n.textContent || '').trim()).filter(Boolean).slice(0, 20)`
+            `[...document.querySelectorAll('[role=menuitem],[data-workspace-nav]')].map(n => (n.textContent || '').trim()).filter(Boolean).slice(0, 20)`
         );
         const hasChild = (items ?? []).some(t => t.includes(d.child));
         if (!hasChild) {
-            note("交互", d.label, `「${d.open}」菜单里没有「${d.child}」项（可见项：${(items ?? []).join(" / ").slice(0, 120)}）`);
+            note("交互", d.label, `「${d.open}」里没有「${d.child}」项（可见项：${(items ?? []).join(" / ").slice(0, 120)}）`);
             await safeEval(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
             await sleep(500);
             continue;

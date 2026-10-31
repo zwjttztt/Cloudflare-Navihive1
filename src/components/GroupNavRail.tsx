@@ -1,7 +1,7 @@
 // src/components/GroupNavRail.tsx
 // 分组锚点导航条：分组一多时不用一路往下滚，点一下直接跳到对应分组，
 // 滚动时当前分组会自动高亮。窄屏隐藏（那里用底部导航栏的「分组」入口）。
-// 面板底部挂了「折叠 / 展开全部分组」开关：和分组列表放一起，比藏进「更多选项」更好找。
+// 面板底部挂了「折叠 / 展开全部分组」开关：和分组列表放一起，比藏进「设置」更好找。
 // 整条可以收成一根窄条（只留分组圆点），把空间还给内容区，收起状态记在本机。
 import { Box, Divider, Tooltip, Typography, IconButton, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";

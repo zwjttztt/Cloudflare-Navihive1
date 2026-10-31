@@ -15,7 +15,7 @@ export interface SiteListHeaderProps {
     /** 第一层右侧：时钟。窄屏自己隐藏，这里只管位置。
      *  compact 也由 App 直接传进 HeaderClock，这里不关心。 */
     clock?: ReactNode;
-    /** 第二层：搜索框 + 显示控制 + 新增 + 更多选项，由 App 透传 */
+    /** 第二层：搜索框 + 显示控制 + 新增 + 设置，由 App 透传 */
     actions: ReactNode;
 }
 

@@ -34,7 +34,7 @@ type UseSortControllerParams = {
     setGroups: (updater: (prev: GroupWithSites[]) => GroupWithSites[]) => void;
     /** 统一的错误提示（App 里是 notify + reportError） */
     onError: (message: string) => void;
-    /** 进入排序模式前要先关掉「更多选项」菜单，否则菜单会失去锚点跑到左上角 */
+    /** 进入排序模式前要先关掉「设置」菜单，否则菜单会失去锚点跑到左上角 */
     onMenuClose: () => void;
 };
 

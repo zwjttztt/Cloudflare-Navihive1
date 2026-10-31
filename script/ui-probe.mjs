@@ -234,14 +234,25 @@ const measureRowsExpr = style => `(() => {
   };
 })()`;
 
-// ---------------- 页面表达式：备份弹窗测量 ----------------
+// ---------------- 页面表达式：备份面板测量（中心内联版，2026-10-31） ----------------
+// 中心化之后 MUI 那两个 class 都不存在了，参照物换成了什么、为什么：
+//   · **正文滚动容器**：`SettingsWorkspacePanel` 正文那个 Box，带
+//     `[data-workspace-panel-body="1"]`（面板标题固定、只有正文滚，见该组件注释）。
+//     原来用的是 `.MuiDialogContent-root`。
+//   · **底部操作栏**：`SettingsWorkspaceDialog` 的底栏（flexShrink:0 + borderTop）。
+//     它没有自己的标记，所以从底栏里那颗「完成」按钮往上取 parentElement 当参照 ——
+//     原来用的是 `.MuiDialogActions-root`。
+//   · **纸面**：中心仍然是 MUI Dialog，`[role="dialog"]` 就是那张 paper。
+// 量的是「一打开」的几何（不预滚动）：表 B-1 回答「内容有没有超出可视区」，
+// 表 B-2 再滚到底回答「滚下去能不能看全」—— 两张表刻意不是同一个指标。
 const measureDialogExpr = `(() => {
   const px = v => Math.round((parseFloat(v || '0') || 0) * 10) / 10;
   const rectOf = el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height, top: r.top, bottom: r.bottom, left: r.left, right: r.right }; };
-  const paper = document.querySelector('.MuiDialog-paper');
-  const content = document.querySelector('.MuiDialogContent-root');
-  const actions = document.querySelector('.MuiDialogActions-root');
-  if (!paper || !content || !actions) return { error: 'dialog-missing', paper: !!paper, content: !!content, actions: !!actions };
+  const paper = document.querySelector('[role="dialog"]');
+  const content = document.querySelector('[data-workspace-panel-body="1"]');
+  const doneBtn = [...(paper ? paper.querySelectorAll('button') : [])].find(b => (b.textContent || '').trim() === '完成');
+  const actions = doneBtn ? doneBtn.parentElement : null;
+  if (!paper || !content || !actions) return { error: 'workspace-missing', paper: !!paper, content: !!content, actions: !!actions };
   const heading = [...content.querySelectorAll('.MuiTypography-root')].find(el => (el.textContent || '').trim() === '从 WebDAV 恢复');
   let section = null, box = null;
   if (heading) {
@@ -316,41 +327,50 @@ const navMobileOverflow = await evaluate(`(() => {
 })()`);
 await setViewport(1440, 950, false);
 
-// ---------------- 2. 备份弹窗：CSS 视口高度阶梯 ----------------
-console.log("\n=== 缺陷 2：备份弹窗「从 WebDAV 恢复」重叠 ===\n");
+// ---------------- 2. 备份面板：CSS 视口高度阶梯 ----------------
+console.log("\n=== 缺陷 2：备份面板「从 WebDAV 恢复」重叠（现为中心内联的一屏） ===\n");
 
-const openMenu = await evaluate(`(() => {
-  const btn = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '更多选项');
-  if (!btn) return 'no-more-button';
+// 入口是顶栏「设置」（窄屏在底栏「设置」）→ 打开统一中心
+const openCenter = await evaluate(`(() => {
+  const btn = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '设置');
+  if (!btn) return 'no-settings-button';
   btn.click();
   return 'ok';
 })()`);
-if (openMenu !== "ok") throw new Error("顶栏「更多选项」按钮找不到：" + openMenu);
-await waitFor("更多选项菜单", `!!document.querySelector('.MuiMenuItem-root')`, 10_000);
+if (openCenter !== "ok") throw new Error("顶栏「设置」按钮找不到：" + openCenter);
+await waitFor("设置中心", `!!document.querySelector('[role="dialog"]')`, 10_000);
 
+// 左栏的分组项是 `[data-workspace-nav=<面板 id>]`，备份这一屏的 id 是 backup
 const clickBackupItem = await evaluate(`(() => {
-  const items = [...document.querySelectorAll('.MuiMenuItem-root')];
-  // 菜单文案是「备份与恢复」（命令面板里才叫「数据备份」）
-  const item = items.find(i => (i.textContent || '').includes('备份'));
-  if (!item) return JSON.stringify(items.map(i => (i.textContent || '').trim()).slice(0, 20));
+  const item = document.querySelector('[data-workspace-nav="backup"]');
+  if (!item) return JSON.stringify([...document.querySelectorAll('[data-workspace-nav]')].map(n => n.getAttribute('data-workspace-nav')));
   item.click();
   return 'ok';
 })()`);
-if (clickBackupItem !== "ok") throw new Error("菜单里没有「数据备份」，实际项：" + clickBackupItem);
+if (clickBackupItem !== "ok") throw new Error("中心左栏里没有「备份与恢复」（backup）这一项，实际项：" + clickBackupItem);
 
+// 面板是第二层 lazy：等它自己的内容（「备份 / 恢复 / 导入」那两个标签）出现。
+// 不能等「数据备份与恢复」——那是旧独立弹窗的标题，内联后由中心总标题 + 面板标题替代。
 await waitFor(
-    "备份弹窗",
-    `(() => { const p = document.querySelector('.MuiDialog-paper'); return !!p && (document.body.innerText || '').includes('数据备份与恢复'); })()`,
+    "备份面板内容",
+    `(() => { const body = document.querySelector('[data-workspace-panel-body="1"]'); return !!body && !!body.querySelector('.MuiTabs-root'); })()`,
     20_000
 );
 const clickRestoreTab = await evaluate(`(() => {
-  const tab = [...document.querySelectorAll('.MuiDialog-paper .MuiTab-root')].find(t => (t.textContent || '').trim().startsWith('恢复'));
+  const body = document.querySelector('[data-workspace-panel-body="1"]');
+  if (!body) return 'no-panel-body';
+  // 作用域收窄到面板正文：别处（笔记设置等）也有 MuiTab-root，不要靠 .MuiDialog-paper 兜
+  const tab = [...body.querySelectorAll('.MuiTab-root')].find(t => (t.textContent || '').trim().startsWith('恢复'));
   if (!tab) return 'no-tab';
   tab.click();
   return 'ok';
 })()`);
-if (clickRestoreTab !== "ok") throw new Error("「恢复 / 导入」标签找不到");
-await waitFor("从 WebDAV 恢复", `(document.body.innerText || '').includes('从 WebDAV 恢复')`, 10_000);
+if (clickRestoreTab !== "ok") throw new Error("「恢复 / 导入」标签找不到：" + clickRestoreTab);
+await waitFor(
+    "从 WebDAV 恢复",
+    `(() => { const body = document.querySelector('[data-workspace-panel-body="1"]'); return !!body && (body.innerText || '').includes('从 WebDAV 恢复'); })()`,
+    10_000
+);
 await sleep(600);
 
 const HEIGHTS = [950, 820, 720, 640, 560];
@@ -363,23 +383,23 @@ for (const h of HEIGHTS) {
     if (m.error) throw new Error(`备份弹窗测量失败（h=${h}）：` + JSON.stringify(m));
     // 滚到底再量一次：区分「框不肯缩」还是「内容区没滚动」
     const scrolled = await evaluate(`(async () => {
-      const c = document.querySelector('.MuiDialogContent-root');
+      const c = document.querySelector('[data-workspace-panel-body="1"]');
+      const paper = document.querySelector('[role="dialog"]');
       if (!c) return null;
       c.scrollTop = c.scrollHeight;
       await new Promise(r => setTimeout(r, 250));
-      const box = document.querySelector('.MuiDialogContent-root') && (function () {
-        const heading = [...c.querySelectorAll('.MuiTypography-root')].find(el => (el.textContent || '').trim() === '从 WebDAV 恢复');
-        if (!heading) return null;
-        const section = heading.parentElement ? heading.parentElement.parentElement : null;
-        return section ? [...section.children].find(el => el !== heading.parentElement) || null : null;
-      })();
-      const actions = document.querySelector('.MuiDialogActions-root');
+      const heading = [...c.querySelectorAll('.MuiTypography-root')].find(el => (el.textContent || '').trim() === '从 WebDAV 恢复');
+      const section = heading && heading.parentElement ? heading.parentElement.parentElement : null;
+      const box = section ? [...section.children].find(el => el !== heading.parentElement) || null : null;
+      // 底栏同样靠「完成」按钮反查（中心没有 .MuiDialogActions-root）
+      const doneBtn = [...(paper ? paper.querySelectorAll('button') : [])].find(b => (b.textContent || '').trim() === '完成');
+      const actions = doneBtn ? doneBtn.parentElement : null;
       const r = box ? box.getBoundingClientRect() : null;
       const a = actions ? actions.getBoundingClientRect() : null;
       return { scrollTop: c.scrollTop, scrollHeight: c.scrollHeight, clientHeight: c.clientHeight, boxBottom: r ? +r.bottom.toFixed(1) : null, actionsTop: a ? +a.top.toFixed(1) : null };
     })()`);
     // 恢复顶部再截图，保证截图是「用户一打开看到的样子」
-    await evaluate(`(() => { const c = document.querySelector('.MuiDialogContent-root'); if (c) c.scrollTop = 0; })()`);
+    await evaluate(`(() => { const c = document.querySelector('[data-workspace-panel-body="1"]'); if (c) c.scrollTop = 0; })()`);
     await sleep(250);
     await shoot(`backup-restore-h${h}.png`);
 
@@ -416,15 +436,15 @@ for (const h of HEIGHTS) {
     });
 }
 
-console.log("表 B-1：视口高度 × 弹窗几何（单位 px；重叠量 > 0 即 box 底边越过按钮区顶边）");
+console.log("表 B-1：视口高度 × 面板几何（**一打开**，单位 px；重叠量 > 0 即框底边越过底栏顶边）");
 table(
-    ["视口高", "paper top~bottom (h)", "content h / scrollH / clientH", "overflowY", "WebDAV 框 top~bottom (h)", "框 minH", "actions.top", "与按钮区重叠", "跑出 content 底", "跑出 paper 底"],
+    ["视口高", "paper top~bottom (h)", "content h / scrollH / clientH", "overflowY", "WebDAV 框 top~bottom (h)", "框 minH", "底栏顶（一打开）", "与底栏重叠（一打开）", "跑出 content 底", "跑出 paper 底"],
     dialogRows
 );
 
-console.log("\n表 B-2：内容区滚动能力与命中判据");
+console.log("\n表 B-2：内容区滚动能力与命中判据（**滚到底**）");
 table(
-    ["视口高", "内容可滚动量", "框高", "框 flex", "框 min-height", "滚到底后 box.bottom", "滚到底后 actions.top", "content 底内侧命中", "actions 顶+2 命中"],
+    ["视口高", "内容可滚动量", "框高", "框 flex", "框 min-height", "滚到底后 box.bottom", "滚到底后底栏顶", "content 底内侧命中", "底栏顶+2 命中"],
     dialogExtra.map(d => [
         String(d.h),
         d.scrollable > 0 ? `${d.scrollable}` : "0（不可滚）",
@@ -438,13 +458,20 @@ table(
     ])
 );
 
-// 关掉弹窗（点「关闭」），回到导航页
-await evaluate(`(() => {
-  const btn = [...document.querySelectorAll('.MuiDialogActions-root button')].find(b => (b.textContent || '').trim() === '关闭');
-  if (btn) { btn.click(); return 'ok'; }
-  return 'no-close';
+// 关掉中心（右上角 × 或底栏「完成」），回到导航页
+const closed = await evaluate(`(async () => {
+  const paper = document.querySelector('[role="dialog"]');
+  if (!paper) return 'no-dialog';
+  const doneBtn = [...paper.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '完成');
+  const closeBtn = [...paper.querySelectorAll('button')].find(b => (b.getAttribute('aria-label') || '') === '关闭');
+  const btn = closeBtn || doneBtn;
+  if (!btn) return 'no-close-button';
+  btn.click();
+  await new Promise(r => setTimeout(r, 500));
+  return document.querySelector('[role="dialog"]') ? 'still-open' : 'ok';
 })()`);
-await sleep(600);
+if (closed !== "ok") throw new Error("中心没关掉：" + closed);
+await sleep(400);
 await setViewport(1440, 950, false);
 
 // ---------------- 3. 记事本：选中行几何 + 三档列表样式 ----------------

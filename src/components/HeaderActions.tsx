@@ -1,5 +1,5 @@
 // src/components/HeaderActions.tsx
-// 顶栏工具行的「动作区」：平时的「新增 + 更多选项」。
+// 顶栏工具行的「动作区」：平时的「新增 + 设置」。
 //
 // 「新增」现在是默认动作 + 下拉的组合：主按钮直接开「新增网站」（导航站最常用的动作），
 // 右边的小箭头里才有「新增分组」—— 建分组是搭结构时才做的事，不该和加网址平起平坐。
@@ -52,7 +52,7 @@ export interface HeaderActionsProps {
     addTargetName?: string;
     /** 下拉里的「新增分组」 */
     onOpenAddGroup: () => void;
-    /** 打开「更多选项」中心（桌面按钮与底栏「更多」共用同一个回调） */
+    /** 打开「设置」中心（桌面按钮与底栏「更多」共用同一个回调） */
     onMenuOpen: () => void;
     /** 打开记事本面板 */
     onOpenNotes: () => void;
@@ -61,7 +61,7 @@ export interface HeaderActionsProps {
     menuOpen: boolean;
     /**
      * 挂在按钮后面的额外节点（可选）。
-     * 2026-10-29：「更多选项」的中心弹窗不再挂在这里（它由 App 统一挂载，
+     * 2026-10-29：「设置」的中心弹窗不再挂在这里（它由 App 统一挂载，
      * 桌面与移动两个入口共用同一个实例），这里留给将来别的浮层。
      */
     menu?: ReactNode;
@@ -233,7 +233,7 @@ export default function HeaderActions({
                         </MenuItem>
                     </Menu>
 
-                    {/* 记事本：高频入口，给独立按钮而不是塞进「更多选项」 */}
+                    {/* 记事本：高频入口，给独立按钮而不是塞进「设置」 */}
                     <Button
                         variant='outlined'
                         color='primary'
@@ -284,7 +284,7 @@ export default function HeaderActions({
                             flexShrink: 0,
                         }}
                     >
-                        更多选项
+                        设置
                     </Button>
                     {menu}
                 </>

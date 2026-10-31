@@ -3,7 +3,7 @@
 // 滚动时固定跟随）。
 //
 // 钉三件事：
-//   1. 非排序模式下整条不渲染（不该跟「新增 / 更多选项」抢位置）；
+//   1. 非排序模式下整条不渲染（不该跟「新增 / 设置」抢位置）；
 //   2. 两种排序模式都有工具条，保存按钮文案按模式区分（分组顺序 / 站点顺序）；
 //   3. 点保存 / 取消分别回调对应 handler —— 拖了一屏幕终于保存下去，
 //      结果回调接错了线，比不挪位置更糟。
@@ -65,7 +65,7 @@ const buttonByText = (text: string): HTMLButtonElement | null => {
     return all.find(b => (b.textContent || "").trim() === text) ?? null;
 };
 
-test("排序工具条：非排序模式下整条不渲染（不跟新增/更多选项抢位置）", () => {
+test("排序工具条：非排序模式下整条不渲染（不跟新增/设置抢位置）", () => {
     const { props } = makeProps();
     mount(props);
     assert.equal(dock(), null, "普通模式下没有工具条");

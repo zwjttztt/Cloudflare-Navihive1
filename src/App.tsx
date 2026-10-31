@@ -103,13 +103,13 @@ const AddSiteDialog = lazy(() => import("./components/AddSiteDialog"));
 const GroupShareDialog = lazy(() => import("./components/GroupShareDialog"));
 const EditGroupDialog = lazy(() => import("./components/EditGroupDialog"));
 const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
-// 账号管理（改账号密码 / 恢复密钥 / 邀请码 / 登录设备 / 注销）：从「更多选项」进入，懒加载
+// 账号管理（改账号密码 / 恢复密钥 / 邀请码 / 登录设备 / 注销）：从「设置」进入，懒加载
 const AccountDialog = lazy(() => import("./components/AccountDialog"));
 // 注销确认弹窗只有点「注销当前账号」才会用到，懒加载省首屏体积。
 // ⚠️ 只给普通账号：站点所有者不渲染这个入口（后端也拒 owner），见下面 onDeleteAccount。
 const DeleteAccountDialog = lazy(() => import("./components/DeleteAccountDialog"));
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
-// 「更多选项」的统一中心（2026-10-29）：一个弹窗装下原来那一列菜单动作，
+// 「设置」的统一中心（2026-10-29）：一个弹窗装下原来那一列菜单动作，
 // 桌面顶栏按钮与移动端底栏「更多」打开的都是它。九个面板在它内部再分一层 lazy，
 // 只有被选中那一个才会真的下载（tests/navigationCenterLazyGuard.test.ts 盯着）。
 //
@@ -175,7 +175,7 @@ import MaintenanceBanner from "./components/MaintenanceBanner";
 // 登录页是 lazy chunk（见 components/LoginScreen.tsx）：它不进首屏包，但登录页本身
 // 是首屏 —— 所以配合下面的「预热」，让它的 chunk 与认证检查那次请求并行下载：
 // 等 chunk 到位时正好渲染，用户感觉不到多等一次。
-// （备份面板已收进「更多选项」中心，不再在此声明一级 lazy；它的块由中心内部面板层按需引入）
+// （备份面板已收进「设置」中心，不再在此声明一级 lazy；它的块由中心内部面板层按需引入）
 import "./App.css";
 import {
     KeyboardSensor,
@@ -348,7 +348,7 @@ function App() {
     const [isAuthRequired, setIsAuthRequired] = useState(false);
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     // 懒弹窗块的空闲预取（2026-10-17 首开延迟排查）：首屏渲染完、浏览器空闲时，
-    // 按「常用优先」把「更多选项」菜单、卡片菜单与各弹窗的块逐个备齐 ——
+    // 按「常用优先」把「设置」菜单、卡片菜单与各弹窗的块逐个备齐 ——
     // 用户第一次点击任何按键都不用再现场等块下载（详见 utils/lazyPrefetch.ts 头注）。
     // 只在登录后跑：访客视图用不到管理弹窗，白下载。
     useEffect(() => {
@@ -499,7 +499,7 @@ function App() {
     // 密码保险库（T03 迁进中心之前仍是一级弹窗）
     const [vaultOpen, setVaultOpen] = useState(false);
     /**
-     * 「更多选项」中心打开时要落在哪一屏。
+     * 「设置」中心打开时要落在哪一屏。
      * 顶栏按钮与底栏「更多」不指定（= 左栏第一项），命令面板直达某一屏时才带。
      */
     const [navCenterPanel, setNavCenterPanel] = useState<NavCenterPanelId>("stats");
@@ -659,7 +659,7 @@ function App() {
         handleExitGroupsButtonViewport,
     } = useViewportUi({ loading, groupCount: groups.length });
 
-    // 命令面板直达「更多选项」中心的某一屏（统计 / 备份已收进中心，不再有独立弹窗）
+    // 命令面板直达「设置」中心的某一屏（统计 / 备份已收进中心，不再有独立弹窗）
     const openNavCenter = useCallback(
         (panel: string) => {
             setNavCenterPanel(panel as NavCenterPanelId);
@@ -1985,7 +1985,7 @@ function App() {
                             onAiComplete={handleAiCompleteNew}
                         />
                     </ChunkBoundary>
-                    {/* 「更多选项」统一中心（2026-10-29）：桌面顶栏按钮与移动端底栏
+                    {/* 「设置」统一中心（2026-10-29）：桌面顶栏按钮与移动端底栏
                         「更多」都开它。九个业务面板在它内部再分一层 lazy，所以这里
                         只在 open 时挂载 —— 关着的时候连外壳那块都不下。 */}
                     <ChunkBoundary when={navCenterOpen}>
@@ -2161,7 +2161,7 @@ function App() {
                         onSyncHealthChange={handleToggleLinkHealthSync}
                         syncPrefs={prefSync}
                         onSyncPrefsChange={handleTogglePrefSync}
-                        // 检测失效链接：从「更多选项」挪进「数据同步」这一节，挨着失效检测结果开关
+                        // 检测失效链接：从「设置」挪进「数据同步」这一节，挨着失效检测结果开关
                         onRunLinkCheck={() => void runLinkCheck()}
                         // 全站外观是所有人共用的，只有站点所有者能改（服务端同规则）
                         isSiteOwner={!currentUser || currentUser.role === "owner"}
@@ -2237,7 +2237,7 @@ function App() {
                     />
                     </ChunkBoundary>
 
-                    {/* 统计（访问统计 / 运营看板）已收进「更多选项」统一中心 → NavigationCenterDialog stats 面板 */}
+                    {/* 统计（访问统计 / 运营看板）已收进「设置」统一中心 → NavigationCenterDialog stats 面板 */}
 
                     {/* 记事本：全屏独立页面（不是右侧抽屉），lazy 引入。
                         ⚠️ 懒的是 **NotesOverlay** 而不是 NotesPage ——
@@ -2268,7 +2268,7 @@ function App() {
                         </ChunkBoundary>
                     )}
 
-                    {/* 数据备份与恢复已收进「更多选项」统一中心 → NavigationCenterDialog backup 面板 */}
+                    {/* 数据备份与恢复已收进「设置」统一中心 → NavigationCenterDialog backup 面板 */}
 
                 {/* 快捷键说明表：按 ? 打开，命令面板里也有入口；浏览器给了安装事件时底部带「安装到桌面」 */}
                 <ChunkBoundary when={openShortcuts}>
@@ -2293,9 +2293,9 @@ function App() {
                 />
                 </ChunkBoundary>
 
-                {/* 审计日志已收进「更多选项」统一中心 → NavigationCenterDialog audit 面板 */}
+                {/* 审计日志已收进「设置」统一中心 → NavigationCenterDialog audit 面板 */}
 
-                {/* 回收站已收进「更多选项」统一中心 → NavigationCenterDialog recycle 面板 */}
+                {/* 回收站已收进「设置」统一中心 → NavigationCenterDialog recycle 面板 */}
 
                 {/* 密码保险库：端到端加密（方案 B）。client 即 api，结构上满足 VaultTransport */}
                 <VaultDialog
@@ -2346,7 +2346,7 @@ function App() {
                         },
                         // 和顶栏主按钮同一个动作：默认新增网站，没分组时才去建分组
                         onAdd: handleQuickAdd,
-                        // 与顶栏「更多选项」同一个中心，不再需要事件锚点
+                        // 与顶栏「设置」同一个中心，不再需要事件锚点
                         onMore: handleMenuOpen,
                         // 窄屏（<=899.98px）顶栏没有记事本入口，底栏补一项 ——
                         // 之前那一档完全打不开记事本（2026-10-16 弹窗排查 P1）

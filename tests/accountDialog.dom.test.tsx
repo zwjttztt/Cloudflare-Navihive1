@@ -7,7 +7,7 @@
 // 站点所有者不提供入口（后端也拒绝 owner），站点不能没有管理者。而「沉睡治理」在
 // v3.1.1 恢复给所有者可见：owner 在「账号管理」里能看到其它账号多久没登录、谁快被
 // 停用/清除（只读 + 手动扫描 + 重新启用），但**不能在此改阈值**（改阈值的入口统一
-// 在「网站设置 → 数据保留」）。用例钉住：owner 看得到治理清单、普通账号看不到。
+// 在「设置 → 全站设置 → 数据保留」）。用例钉住：owner 看得到治理清单、普通账号看不到。
 //
 // 组件所有值都由父组件持有（auth / invite / sessions），所以用一个 Harness 持有状态，
 // 尽量贴近 App 里的真实用法。
@@ -502,7 +502,7 @@ test("账号：所有者的清单里只给已停用的账号「重新启用」",
     assert.deepEqual(calls.exempts, [8]);
 });
 
-test("账号：沉睡阈值只展示不在这儿改（编辑入口统一在网站设置）", () => {
+test("账号：沉睡阈值只展示不在这儿改（编辑入口统一在设置 → 全站设置）", () => {
     // 整块只在「所有者 + 有账号清单」时才渲染，所以这里必须带上 accounts
     render({ accounts: [makeAccount()] });
 
@@ -514,12 +514,12 @@ test("账号：沉睡阈值只展示不在这儿改（编辑入口统一在网�
     assert.equal(disableInput!.value, "180");
     assert.equal(graceInput!.value, "30");
 
-    // 两个输入框都是只读，且不再有「保存阈值」按钮 —— 改配置的入口只有「网站设置 → 数据保留」一处
+    // 两个输入框都是只读，且不再有「保存阈值」按钮 —— 改配置的入口只有「设置 → 全站设置 → 数据保留」一处
     assert.equal(disableInput!.disabled, true, "停用阈值应为只读");
     assert.equal(graceInput!.disabled, true, "清除宽限期应为只读");
     assert.equal(button("保存阈值"), undefined, "这里不该再提供保存阈值的按钮");
     assert.ok(
-        pageText().includes("网站设置 → 数据保留"),
+        pageText().includes("设置 → 全站设置 → 数据保留"),
         "要说明去哪儿改这两个天数"
     );
 

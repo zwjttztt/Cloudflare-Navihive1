@@ -1,5 +1,5 @@
 // tests/navigationCenter.dom.test.tsx
-// 导航页「更多选项」统一中心弹窗。
+// 导航页「设置」统一中心弹窗。
 //
 // 它是原来 tests/moreMenu.dom.test.tsx 那位（下拉菜单）的接班人，钉的还是那几件
 // 「写错了不报错、只有手点才能发现」的事，判据换成新结构：
@@ -10,6 +10,9 @@
 //      少一个判断不会崩，只是「普通账号点进去看到一句 403」或「没登录也有退出登录」；
 //   3. **退出登录要二次确认**：原来菜单里点一下就退，没有回头的机会；
 //   4. **关闭只有一个出口**：× 与底栏「完成」走同一个回调。
+//   5. **面板必须内联**：「全站设置」「账号与安全」在中心右栏直接渲染业务体，
+//      不许再套一层 Dialog。转发层要是拿了默认导出（`withDialog` 被硬写成 true），
+//      页面上就会叠出第二个 role=dialog —— 手点才看得出来，单测必须钉住。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { act } from "react";
@@ -173,7 +176,7 @@ test("role=dialog 的 paper 有可解析的 aria-labelledby，且指向非空标
     assert.ok(id, "paper 上必须写 aria-labelledby（写在 <Dialog> 顶层会落到 Modal 根）");
     const title = document.getElementById(id!);
     assert.ok(title, `aria-labelledby="${id}" 指向的节点不存在`);
-    assert.equal((title!.textContent || "").trim(), "更多选项", "标题要能说出弹窗叫什么");
+    assert.equal((title!.textContent || "").trim(), "设置", "标题要能说出弹窗叫什么");
 });
 
 test("owner 登录态：九个导航项 + 底部退出登录，顺序照注册表", async t => {
@@ -276,4 +279,26 @@ test("隐藏当前选中项时自动回退到第一个可见项（不留空面�
         (document.body.textContent || "").includes("访问统计与运营看板"),
         "右栏要真的渲染出回退后面板的内容"
     );
+});
+
+test("全站设置 / 账号与安全：在中心内联，不再弹出第二层 Dialog", async t => {
+    t.after(cleanup);
+    const { props } = makeProps();
+    await mount(props);
+
+    for (const id of ["config", "account"]) {
+        await click(document.querySelector<HTMLElement>(`[data-workspace-nav="${id}"]`));
+        // 面板是第二层 lazy，给它几拍把块 resolve 掉
+        for (let i = 0; i < 3; i++) {
+            await act(async () => {
+                await new Promise(r => setTimeout(r, 0));
+            });
+        }
+        const dialogs = document.querySelectorAll('[role="dialog"]');
+        assert.equal(
+            dialogs.length,
+            1,
+            `选中 ${id} 后只应存在中心这一个 dialog（面板必须内联），实际 ${dialogs.length} 个`
+        );
+    }
 });

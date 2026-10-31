@@ -7,19 +7,19 @@
 // import（那会把全部弹窗焊回首屏，静态守卫 tests/lazyPrefetch.dom.test.tsx 盯着）。
 //
 // 背景（docs/perf-audit-plan-2026-10-17.md 的「按键首开延迟」一节）：
-// 「更多选项」菜单、卡片右键菜单、各弹窗全是「条件挂载 + lazy」，首次点击要
+// 「设置」菜单、卡片右键菜单、各弹窗全是「条件挂载 + lazy」，首次点击要
 // 现场下载「菜单/弹窗块 + 它们的 MUI 依赖块」，在每请求 1~3 秒的链路上就是
 // 数秒的空窗，且加载期间没有任何视觉反馈（Suspense fallback 为 null）——
 // 用户实测「首次点击反馈延迟很久、关闭后再次打开才恢复正常」。预取把这段
 // 下载挪到用户点击之前：悬停菜单按钮时取菜单块、菜单展开时取全部目标弹窗块、
 // 首屏空闲时把常用块全部备齐（见 lazyPrefetch.ts）。
 export const dialogChunks = {
-    // 「更多选项」中心（悬停顶栏「更多选项」按钮时预取）。
+    // 「设置」中心（悬停顶栏「设置」按钮时预取）。
     // 2026-10-29：下拉菜单 MoreMenu 已被 NavigationCenterDialog 取代 ——
-    // key 名跟着按钮走（那颗按钮还叫「更多选项」），模块换成中心弹窗。
+    // key 名跟着按钮走（那颗按钮现在叫「设置」），模块换成中心弹窗。
     navigationCenter: () => import("../components/NavigationCenterDialog"),
     siteCardContextMenu: () => import("../components/SiteCardContextMenu"),
-    // 「更多选项」菜单项的目标弹窗
+    // 「设置」菜单项的目标弹窗
     settings: () => import("../components/SettingsDialog"),
     stats: () => import("../components/StatsHubDialog"),
     backup: () => import("../components/BackupDialog"),

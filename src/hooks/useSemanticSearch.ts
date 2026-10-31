@@ -43,7 +43,7 @@ export function useSemanticSearch({
     applyTagOps,
     notify,
 }: SemanticSearchDeps) {
-    /** 「更多选项 → AI 助手」：AI 的开关与凭据单独一个弹窗 */
+    /** 「设置 → AI 设置」：AI 的开关与凭据单独一个面板 */
     const [openAiAssistant, setOpenAiAssistant] = useState(false);
 
     // 要送去整理的站点：太多就只取前 40 个（跟 utils/aiMeta 的 MAX_SUGGEST_SITES 对齐）

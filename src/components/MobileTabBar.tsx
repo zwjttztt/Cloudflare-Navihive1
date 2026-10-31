@@ -11,7 +11,7 @@ import type React from "react";
 import SearchIcon from "@mui/icons-material/Search";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutlined";
-import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
+import SettingsIcon from "@mui/icons-material/Settings";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
 import StickyNote2Icon from "@mui/icons-material/StickyNote2";
@@ -24,7 +24,7 @@ interface MobileTabBarProps {
     onSearch: () => void;
     onGroups: (event: React.MouseEvent<HTMLElement>) => void;
     onAdd: () => void;
-    /** 打开「更多选项」中心（与顶栏那颗按钮同一个回调，不再需要事件锚点） */
+    /** 打开「设置」中心（与顶栏那颗按钮同一个回调，不再需要事件锚点） */
     onMore: () => void;
     /** 打开记事本。顶栏那个入口在 md 以下被隐藏，窄屏全靠这一项
      * （2026-10-16 弹窗排查：P1 —— 之前窄屏完全打不开记事本） */
@@ -97,7 +97,7 @@ export default function MobileTabBar({
                   },
               ]
             : []),
-        { key: "more", label: "更多", icon: <MoreHorizIcon fontSize='small' />, onClick: onMore },
+        { key: "more", label: "设置", icon: <SettingsIcon fontSize='small' />, onClick: onMore },
     ];
 
     return (
