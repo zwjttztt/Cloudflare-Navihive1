@@ -131,6 +131,13 @@ interface SettingsDialogProps {
     isSiteOwner?: boolean;
 }
 
+/** 导航中心嵌入版配置面板 Props：在 SettingsDialogProps 基础上增加 withDialog 开关。 */
+export interface ConfigPanelProps extends SettingsDialogProps {
+    /** true 时自带 Dialog 外壳（标题栏 + 取消/保存），用于独立弹窗入口；
+     *  false / 省略时只输出内容体（Tabs + 表单 + 保存按钮），交给导航中心统一包壳。 */
+    withDialog?: boolean;
+}
+
 // Section / SwitchRow 已搬到 ./dialogSection（AI 助手弹窗要用同一套排版，
 // 从本文件导入会把整个设置弹窗的代码块一起拖过去）。这里 re-export 保持老引用不动。
 export { Section, SwitchRow } from "./dialogSection";
@@ -150,10 +157,11 @@ function TwoCol({ children }: { children: React.ReactNode }) {
     );
 }
 
-export default function SettingsDialog({
+export function ConfigPanel({
     open,
     onClose,
     onSave,
+    withDialog = false,
     tempConfigs,
     setTempConfigs,
     onConfigInputChange,
@@ -182,40 +190,15 @@ export default function SettingsDialog({
     onSyncPrefsChange,
     onRunLinkCheck,
     isSiteOwner = true,
-}: SettingsDialogProps) {
+}: ConfigPanelProps) {
     // 页签：0 = 外观与搜索（基本信息/外观/背景/图标/搜索）；1 = 数据（离线/同步/维护/保留）；
     // 2 = 高级（自定义 CSS / 版本与升级）。
     const [tab, setTab] = useState(0);
-    return (
+    // 页签 + 表单内容：两种模式（独立弹窗 / 导航中心嵌入）共用同一份 JSX。
+    // Tabs / DialogContent 作为独立 MUI 组件，不依赖 Dialog 父级也能正常渲染。
+    const tabsAndContent = (
         <>
-            <Dialog
-                open={open}
-                onClose={onClose}
-                maxWidth='md'
-                fullWidth
-                slotProps={{
-                    paper: {
-                        sx: {
-                            m: { xs: 2, sm: "auto" },
-                            width: { xs: "calc(100% - 32px)", sm: "auto" },
-                            // 高度写在 paper 层：切页签时弹窗高度不跳（备份弹窗同款做法）。
-                            // 上限取 880：最高的「外观与搜索」页装得下，更矮的视口在区内滚动。
-                            height: { xs: "auto", sm: "min(880px, calc(100% - 48px))" },
-                            maxHeight: { sm: "calc(100% - 48px)" },
-                        },
-                    }
-                }}
-            >
-                {/* 标题原来也叫「网站设置」，和卡片齿轮那个一模一样 —— 两个弹窗
-                    作用域完全不同（这里管整个站，那个管单个网站），同名必然走错门。
-                    改名「全站设置」，顶栏入口同步改（见 MoreMenu）。 */}
-                <DialogTitle sx={dialogTitleSx}>
-                    全站设置
-                    {/* 原来是英文 aria-label='close'，读屏念出来是英文 —— 统一走外壳组件 */}
-                    <DialogCloseButton onClose={onClose} />
-                </DialogTitle>
-                <Divider />
-                {/* 页签放 DialogContent 外面：内容滚动时页签不跟着走 */}
+            {/* 页签放 DialogContent 外面：内容滚动时页签不跟着走 */}
                 <Tabs
                     value={tab}
                     onChange={(_, value: number) => setTab(value)}
@@ -817,6 +800,57 @@ export default function SettingsDialog({
                     </Stack>
                     )}
                 </DialogContent>
+                {/* 嵌入（导航中心）模式：不渲染独立 DialogActions，
+                    改为在内容末尾放置一个右对齐的保存按钮（取消由中心统一提供） */}
+                {!withDialog ? (
+                    <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1, pt: 2 }}>
+                        <Button
+                            onClick={onSave}
+                            variant='contained'
+                            color='primary'
+                            disabled={saving}
+                        >
+                            {saving ? "保存中…" : "保存设置"}
+                        </Button>
+                    </Box>
+                ) : null}
+        </>
+    );
+
+    // 嵌入模式：由导航中心负责 Dialog 外壳（标题栏 / 取消 / 完成），
+    // 这里只输出内容体。open / onClose 不再被引用（由中心控制挂载）。
+    if (!withDialog) {
+        return tabsAndContent;
+    }
+
+    return (
+        <>
+            <Dialog
+                open={open}
+                onClose={onClose}
+                maxWidth='md'
+                fullWidth
+                slotProps={{
+                    paper: {
+                        sx: {
+                            m: { xs: 2, sm: "auto" },
+                            width: { xs: "calc(100% - 32px)", sm: "auto" },
+                            // 高度写在 paper 层：切页签时弹窗高度不跳（备份弹窗同款做法）。
+                            // 上限取 880：最高的「外观与搜索」页装得下，更矮的视口在区内滚动。
+                            height: { xs: "auto", sm: "min(880px, calc(100% - 48px))" },
+                            maxHeight: { sm: "calc(100% - 48px)" },
+                        },
+                    }
+                }}
+            >
+                {/* 标题改名为「全站设置」，与卡片齿轮入口区分（见 MoreMenu）。 */}
+                <DialogTitle sx={dialogTitleSx}>
+                    全站设置
+                    {/* 统一走外壳组件提供关闭按钮 */}
+                    <DialogCloseButton onClose={onClose} />
+                </DialogTitle>
+                <Divider />
+                {tabsAndContent}
                 <DialogActions sx={dialogActionsSx}>
                     <Button onClick={onClose} variant='outlined'>
                         取消
@@ -831,7 +865,10 @@ export default function SettingsDialog({
                     </Button>
                 </DialogActions>
             </Dialog>
-
         </>
     );
+}
+
+export default function SettingsDialog(props: SettingsDialogProps) {
+    return <ConfigPanel {...props} withDialog />;
 }

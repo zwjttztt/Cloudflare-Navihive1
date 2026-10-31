@@ -14,8 +14,10 @@
 // 下载挪到用户点击之前：悬停菜单按钮时取菜单块、菜单展开时取全部目标弹窗块、
 // 首屏空闲时把常用块全部备齐（见 lazyPrefetch.ts）。
 export const dialogChunks = {
-    // 菜单本体（悬停「更多选项」/ 卡片设置按钮时预取）
-    moreMenu: () => import("../components/MoreMenu"),
+    // 「更多选项」中心（悬停顶栏「更多选项」按钮时预取）。
+    // 2026-10-29：下拉菜单 MoreMenu 已被 NavigationCenterDialog 取代 ——
+    // key 名跟着按钮走（那颗按钮还叫「更多选项」），模块换成中心弹窗。
+    navigationCenter: () => import("../components/NavigationCenterDialog"),
     siteCardContextMenu: () => import("../components/SiteCardContextMenu"),
     // 「更多选项」菜单项的目标弹窗
     settings: () => import("../components/SettingsDialog"),

@@ -24,7 +24,8 @@ interface MobileTabBarProps {
     onSearch: () => void;
     onGroups: (event: React.MouseEvent<HTMLElement>) => void;
     onAdd: () => void;
-    onMore: (event: React.MouseEvent<HTMLElement>) => void;
+    /** 打开「更多选项」中心（与顶栏那颗按钮同一个回调，不再需要事件锚点） */
+    onMore: () => void;
     /** 打开记事本。顶栏那个入口在 md 以下被隐藏，窄屏全靠这一项
      * （2026-10-16 弹窗排查：P1 —— 之前窄屏完全打不开记事本） */
     onNotes?: () => void;

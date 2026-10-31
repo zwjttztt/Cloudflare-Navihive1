@@ -18,7 +18,6 @@ import {
     TextField,
     Typography,
     List,
-    Divider,
     Chip,
     CircularProgress,
     ToggleButton,
@@ -30,6 +29,10 @@ import { NavigationClient } from "../API/client";
 import DialogCloseButton from "./DialogCloseButton";
 import { DialogEmptyState, DialogListRow } from "./DialogListRow";
 import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+
+// 2026-10-29：业务抽成命名导出的 `AuditPanel`。弹窗关闭时 MUI 本来就不渲染子树，
+// 所以面板里的 `open` 判断等价于「挂载了」，抽出去后直接用挂载时机即可 ——
+// 中心里切走再切回来等于重开一次，行为与原来一致。
 
 interface AuditEntry {
     id: number;
@@ -50,12 +53,16 @@ interface ClientErrorGroup {
     paths: string[];
 }
 
-interface AuditDialogProps {
-    open: boolean;
-    onClose: () => void;
+/** 面板输入：与弹窗共享 */
+export interface AuditPanelProps {
     client: NavigationClient;
     /** 网站设置里配的保留天数；没传就用后端默认值，不把 7 天写死在界面上 */
     retentionDays?: number;
+}
+
+interface AuditDialogProps extends AuditPanelProps {
+    open: boolean;
+    onClose: () => void;
 }
 
 /** 后端默认保留天数；界面优先用网站设置里的 retention.days */
@@ -64,12 +71,11 @@ const PAGE_SIZE = 50;
 
 type AuditTab = "log" | "errors";
 
-export default function AuditDialog({
-    open,
-    onClose,
-    client,
-    retentionDays,
-}: AuditDialogProps) {
+/**
+ * 审计日志面板本体：视图切换 + 筛选 + 列表 + 加载更多。
+ * 只 owner 看得到（入口层已过滤，后端同样会挡）。
+ */
+export function AuditPanel({ client, retentionDays }: AuditPanelProps) {
     const [tab, setTab] = useState<AuditTab>("log");
     const [rows, setRows] = useState<AuditEntry[]>([]);
     const [loading, setLoading] = useState(false);
@@ -100,7 +106,7 @@ export default function AuditDialog({
     // 只依赖 open 与 query —— 依赖 rows.length 的话，加载更多会让这个 effect 再次触发，
     // 把刚翻出来的下一页又重置回第一页（表现就是「加载更多点了没反应」）。
     useEffect(() => {
-        if (!open || tab !== "log") return;
+        if (tab !== "log") return;
         let cancelled = false;
         setLoading(true);
         setLoadError("");
@@ -124,11 +130,11 @@ export default function AuditDialog({
         return () => {
             cancelled = true;
         };
-    }, [open, query, tab, fetchPage]);
+    }, [query, tab, fetchPage]);
 
     // 切到「前端错误」时才拉：平时不占这一份查询
     useEffect(() => {
-        if (!open || tab !== "errors") return;
+        if (tab !== "errors") return;
         let cancelled = false;
         setErrorsLoading(true);
         setErrorsError("");
@@ -146,7 +152,7 @@ export default function AuditDialog({
         return () => {
             cancelled = true;
         };
-    }, [open, tab, client]);
+    }, [tab, client]);
 
     const loadMore = useCallback(async () => {
         if (loading || loadingMore) return;
@@ -176,69 +182,71 @@ export default function AuditDialog({
     const totalErrors = errorGroups.reduce((sum, g) => sum + g.count, 0);
 
     return (
-        <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
-            {/* pr 给右上角那枚 × 让位，不然「仅保留 N 天」会和它叠在一起 */}
-            <DialogTitle sx={dialogTitleSx}>
-                <HistoryIcon fontSize='small' />
-                审计日志
-                <Typography
-                    component='span'
-                    variant='caption'
-                    sx={{
-                        color: 'text.secondary',
-                        ml: "auto"
-                    }}>
+        <Box sx={{ display: "flex", flexDirection: "column", minHeight: 0, height: "100%" }}>
+            {/* 视图切换与「保留 N 天」钉在顶部：列表自己滚，切视图不用先往回滚。
+                保留天数原来挂在弹窗标题右侧 —— 中心的标题由共享外壳给，
+                这里挪进正文第一行，两处都只出现一次。 */}
+            <Box
+                sx={{
+                    flexShrink: 0,
+                    pb: 1.5,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1.5,
+                    flexWrap: "wrap",
+                }}
+            >
+                <ToggleButtonGroup
+                    size='small'
+                    exclusive
+                    value={tab}
+                    onChange={(_, next: AuditTab | null) => {
+                        if (next) setTab(next);
+                    }}
+                    aria-label='审计日志视图'
+                >
+                    <ToggleButton value='log' aria-label='操作日志'>
+                        操作日志
+                    </ToggleButton>
+                    <ToggleButton value='errors' aria-label='前端错误'>
+                        前端错误
+                    </ToggleButton>
+                </ToggleButtonGroup>
+                <Typography component='span' variant='caption' sx={{ color: 'text.secondary' }}>
                     仅保留 {retentionDays ?? DEFAULT_RETENTION_DAYS} 天
                 </Typography>
-                <DialogCloseButton onClose={onClose} label='关闭审计日志' />
-            </DialogTitle>
-            <DialogContent dividers sx={{ p: 0 }}>
-                <Box sx={{ p: 2, pb: 1.5 }}>
-                    <ToggleButtonGroup
-                        size='small'
-                        exclusive
-                        value={tab}
-                        onChange={(_, next: AuditTab | null) => {
-                            if (next) setTab(next);
-                        }}
-                        aria-label='审计日志视图'
-                    >
-                        <ToggleButton value='log' aria-label='操作日志'>
-                            操作日志
-                        </ToggleButton>
-                        <ToggleButton value='errors' aria-label='前端错误'>
-                            前端错误
-                        </ToggleButton>
-                    </ToggleButtonGroup>
-                </Box>
+            </Box>
 
+            {tab === "log" && (
+                <Box sx={{ flexShrink: 0, pb: 1.5, display: "flex", gap: 1, alignItems: "center" }}>
+                    <TextField
+                        size='small'
+                        label='按操作者筛选'
+                        value={actorInput}
+                        onChange={e => setActorInput(e.target.value)}
+                        onKeyDown={e => {
+                            if (e.key === "Enter") {
+                                e.preventDefault();
+                                applyFilter();
+                            }
+                        }}
+                        placeholder='账号名，留空看全部'
+                        sx={{ flex: 1 }}
+                    />
+                    <Button
+                        variant='outlined'
+                        size='small'
+                        onClick={applyFilter}
+                        disabled={loading}
+                    >
+                        筛选
+                    </Button>
+                </Box>
+            )}
+
+            <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
                 {tab === "log" ? (
                     <>
-                        <Box sx={{ px: 2, pb: 2, display: "flex", gap: 1, alignItems: "center" }}>
-                            <TextField
-                                size='small'
-                                label='按操作者筛选'
-                                value={actorInput}
-                                onChange={e => setActorInput(e.target.value)}
-                                onKeyDown={e => {
-                                    if (e.key === "Enter") {
-                                        e.preventDefault();
-                                        applyFilter();
-                                    }
-                                }}
-                                placeholder='账号名，留空看全部'
-                                sx={{ flex: 1 }}
-                            />
-                            <Button
-                                variant='outlined'
-                                size='small'
-                                onClick={applyFilter}
-                                disabled={loading}
-                            >
-                                筛选
-                            </Button>
-                        </Box>
-                        <Divider />
                         {loading && rows.length === 0 ? (
                             <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
                                 <CircularProgress size={28} />
@@ -304,7 +312,7 @@ export default function AuditDialog({
                             </Box>
                         )}
                         {moreError && (
-                            <Box sx={{ px: 2, pb: 1.5 }}>
+                            <Box sx={{ pb: 1.5 }}>
                                 <Typography variant='caption' color='error'>
                                     {moreError}
                                 </Typography>
@@ -332,14 +340,13 @@ export default function AuditDialog({
                     </Box>
                 ) : (
                     <>
-                        <Box sx={{ px: 2, pb: 1 }}>
+                        <Box sx={{ pb: 1 }}>
                             <Typography variant='caption' sx={{
                                 color: 'text.secondary'
                             }}>
                                 共 {totalErrors} 次上报，归为 {errorGroups.length} 类（按次数排序）
                             </Typography>
                         </Box>
-                        <Divider />
                         <List dense sx={{ py: 0 }}>
                             {errorGroups.map(group => (
                                 <DialogListRow
@@ -372,6 +379,26 @@ export default function AuditDialog({
                         </List>
                     </>
                 )}
+            </Box>
+        </Box>
+    );
+}
+
+export default function AuditDialog({
+    open,
+    onClose,
+    client,
+    retentionDays,
+}: AuditDialogProps) {
+    return (
+        <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
+            <DialogTitle sx={dialogTitleSx}>
+                <HistoryIcon fontSize='small' />
+                审计日志
+                <DialogCloseButton onClose={onClose} label='关闭审计日志' />
+            </DialogTitle>
+            <DialogContent dividers sx={{ p: 2, minHeight: 240 }}>
+                <AuditPanel client={client} retentionDays={retentionDays} />
             </DialogContent>
             <DialogActions sx={dialogActionsSx}>
                 <Button onClick={onClose} variant='contained' disableElevation size='small'>

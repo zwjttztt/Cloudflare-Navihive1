@@ -179,6 +179,14 @@ interface AccountDialogProps {
     }>;
 }
 
+/** 面板版 props：在 AccountDialogProps 基础上，多一个是否自带 Dialog 外壳的开关。
+ *  withDialog=true 时行为与原 AccountDialog 完全一致（自带标题栏与「关闭」按钮）；
+ *  withDialog=false 时只渲染内部内容（Tabs + 表单 + 恢复密钥确认弹窗），
+ *  交给「统一导航中心」的外层 Dialog 承载。 */
+export interface AccountPanelProps extends AccountDialogProps {
+    withDialog?: boolean;
+}
+
 /** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明 */
 function Section({
     title,
@@ -242,7 +250,8 @@ function TwoCol({ children }: { children: React.ReactNode }) {
     );
 }
 
-export default function AccountDialog({
+export function AccountPanel({
+    withDialog = true,
     open,
     onClose,
     sites,
@@ -264,7 +273,7 @@ export default function AccountDialog({
     inactivePolicy,
     onSaveInactivePolicy,
     onSweepInactive,
-}: AccountDialogProps) {
+}: AccountPanelProps) {
     // 恢复密钥的生成结果提示（成功/失败都就地反馈，私钥由浏览器直接下载）
     const [recoveryBusy, setRecoveryBusy] = useState(false);
     const [recoveryMsg, setRecoveryMsg] = useState<{
@@ -378,183 +387,100 @@ export default function AccountDialog({
         }
     };
 
-    return (
+    // 内部内容只写一次：分页（Tabs）+ 表单（DialogContent）。
+    // 独立弹窗（恢复私钥前验证当前密码）也单独抽出来，两种模式下都会 portal 在最上层。
+    const body = (
         <>
-            <Dialog
-                open={open}
-                onClose={onClose}
-                maxWidth='sm'
-                fullWidth
-                slotProps={{
-                    paper: {
-                        sx: {
-                            m: { xs: 2, sm: "auto" },
-                            width: { xs: "calc(100% - 32px)", sm: "auto" },
-                        },
-                    }
+            <Tabs
+                value={tab}
+                onChange={(_, value: number) => setTab(value)}
+                variant='fullWidth'
+                sx={{ px: 2 }}
+            >
+                <Tab label='账号信息' />
+                <Tab label='密码健康' />
+            </Tabs>
+            <DialogContent
+                sx={{
+                    px: 3,
+                    pt: 1,
+                    pb: 2,
+                    "& .MuiFormHelperText-root": { mt: 0.5, fontSize: 11.5, lineHeight: 1.5 },
                 }}
             >
-                <DialogTitle sx={dialogTitleSx}>
-                    账号与安全
-                    {/* 原来是英文 aria-label='close'，读屏念出来是英文 —— 统一走外壳组件 */}
-                    <DialogCloseButton onClose={onClose} />
-                </DialogTitle>
-                <Divider />
-                <Tabs
-                    value={tab}
-                    onChange={(_, value: number) => setTab(value)}
-                    variant='fullWidth'
-                    sx={{ px: 2 }}
-                >
-                    <Tab label='账号信息' />
-                    <Tab label='密码健康' />
-                </Tabs>
-                <DialogContent
-                    sx={{
-                        px: 3,
-                        pt: 1,
-                        pb: 2,
-                        "& .MuiFormHelperText-root": { mt: 0.5, fontSize: 11.5, lineHeight: 1.5 },
-                    }}
-                >
-                    {currentUser ? (
-                        <DialogContentText sx={{ mb: 1.5, fontSize: 13.5 }}>
-                            当前账号：
-                            <Box component='span' sx={{ fontWeight: 600 }}>
-                                {currentUser.username}
-                            </Box>
-                            {currentUser.role === "owner" ? "（站点所有者）" : ""}
-                            <Box
-                                component='span'
-                                sx={{ display: "block", mt: 0.5, color: "text.secondary" }}
-                            >
-                                {currentUser.role === "owner"
-                                    ? "管理密码、恢复密钥与登录设备；站点所有者不提供注销入口。"
-                                    : "管理密码、恢复密钥、登录设备与注销账号。"}
-                            </Box>
-                        </DialogContentText>
-                    ) : (
-                        <DialogContentText sx={{ mb: 1.5, fontSize: 13.5 }}>
-                            管理当前账号的登录凭据与找回方式。
-                        </DialogContentText>
-                    )}
-
-                    {tab === 0 ? (
-                    <Stack spacing={2} divider={<Divider />}>
-                        {/* 1. 账号与密码 */}
-                        <Section
-                            title='账号与密码'
-                            hint='留空表示不修改；改完会退出登录，需用新密码重新登录。'
+                {currentUser ? (
+                    <DialogContentText sx={{ mb: 1.5, fontSize: 13.5 }}>
+                        当前账号：
+                        <Box component='span' sx={{ fontWeight: 600 }}>
+                            {currentUser.username}
+                        </Box>
+                        {currentUser.role === "owner" ? "（站点所有者）" : ""}
+                        <Box
+                            component='span'
+                            sx={{ display: "block", mt: 0.5, color: "text.secondary" }}
                         >
-                            <TextField
-                                margin='dense'
-                                size='small'
-                                id='account-username'
-                                label='账号名'
-                                type='text'
-                                fullWidth
-                                variant='outlined'
-                                value={auth.username}
-                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                                    onAuthChange("username", e.target.value)
-                                }
-                                placeholder='留空则不修改账号'
-                                // 关掉自动填充：否则浏览器会把登录时保存的账号直接带进来，
-                                // 让人误以为「账号已经填好了」，保存时其实是在改账号
-                                autoComplete='off'
-                                name='account-username-field'
+                            {currentUser.role === "owner"
+                                ? "管理密码、恢复密钥与登录设备；站点所有者不提供注销入口。"
+                                : "管理密码、恢复密钥、登录设备与注销账号。"}
+                        </Box>
+                    </DialogContentText>
+                ) : (
+                    <DialogContentText sx={{ mb: 1.5, fontSize: 13.5 }}>
+                        管理当前账号的登录凭据与找回方式。
+                    </DialogContentText>
+                )}
+
+                {tab === 0 ? (
+                <Stack spacing={2} divider={<Divider />}>
+                    {/* 1. 账号与密码 */}
+                    <Section
+                        title='账号与密码'
+                        hint='留空表示不修改；改完会退出登录，需用新密码重新登录。'
+                    >
+                        <TextField
+                            margin='dense'
+                            size='small'
+                            id='account-username'
+                            label='账号名'
+                            type='text'
+                            fullWidth
+                            variant='outlined'
+                            value={auth.username}
+                            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                onAuthChange("username", e.target.value)
+                            }
+                            placeholder='留空则不修改账号'
+                            // 关掉自动填充：否则浏览器会把登录时保存的账号直接带进来，
+                            // 让人误以为「账号已经填好了」，保存时其实是在改账号
+                            autoComplete='off'
+                            name='account-username-field'
+                        />
+                        <TwoCol>
+                            <PasswordField
+                                id='account-current-password'
+                                label='当前密码'
+                                value={auth.currentPassword}
+                                onChange={e => onAuthChange("currentPassword", e.target.value)}
+                                placeholder='修改账号或密码时必填'
                             />
-                            <TwoCol>
-                                <PasswordField
-                                    id='account-current-password'
-                                    label='当前密码'
-                                    value={auth.currentPassword}
-                                    onChange={e => onAuthChange("currentPassword", e.target.value)}
-                                    placeholder='修改账号或密码时必填'
-                                />
-                                <PasswordField
-                                    id='account-new-password'
-                                    label='新密码'
-                                    value={auth.newPassword}
-                                    onChange={e => onAuthChange("newPassword", e.target.value)}
-                                    placeholder='留空则不修改密码'
-                                />
-                            </TwoCol>
-                            <Box>
-                                <Button
-                                    variant='contained'
-                                    size='small'
-                                    onClick={onSaveAuth}
-                                    disabled={saving || !authDirty}
-                                >
-                                    {saving ? "保存中…" : "保存账号与密码"}
-                                </Button>
-                                {!authDirty ? (
-                                    <Typography
-                                        variant='caption'
-                                        sx={{
-                                            color: 'text.secondary',
-                                            display: "block",
-                                            mt: 0.5
-                                        }}>
-                                        填写新账号或新密码后才能保存。
-                                    </Typography>
-                                ) : null}
-                            </Box>
-                        </Section>
-
-                        {/* 2. 恢复密钥：忘记密码时用它重置。私钥只在本地生成并下载 */}
-                        <Section
-                            title='恢复密钥'
-                            hint='私钥只能重置本账号密码，别的账号用不上。'
-                        >
-                            <Stack
-                                direction={{ xs: "column", sm: "row" }}
-                                spacing={1}
-                                sx={{
-                                    alignItems: { xs: "stretch", sm: "center" },
-                                    justifyContent: 'space-between'
-                                }}>
-                                <Box>
-                                    <Typography variant='body2' sx={{
-                                        fontWeight: '600'
-                                    }}>
-                                        {recoveryKeyConfigured ? "已配置" : "未配置"}
-                                    </Typography>
-                                    <Typography variant='caption' sx={{
-                                        color: 'text.secondary'
-                                    }}>
-                                        私钥只在你本机生成并下载，服务器只保存公钥；忘记密码时上传私钥即可重置。
-                                    </Typography>
-                                </Box>
-                                <Button
-                                    variant='outlined'
-                                    size='small'
-                                    startIcon={<VpnKeyIcon fontSize='small' />}
-                                    onClick={openRecoveryPwdDialog}
-                                    disabled={recoveryBusy}
-                                    sx={{ flex: "none", whiteSpace: "nowrap" }}
-                                >
-                                    {recoveryBusy
-                                        ? "生成中…"
-                                        : recoveryKeyConfigured
-                                          ? "重新生成并下载私钥"
-                                          : "生成并下载私钥"}
-                                </Button>
-                            </Stack>
-                            {recoveryMsg ? (
-                                <Typography
-                                    variant='caption'
-                                    sx={{ display: "block", mt: 0.5 }}
-                                    color={
-                                        recoveryMsg.type === "success"
-                                            ? "success.main"
-                                            : "error.main"
-                                    }
-                                >
-                                    {recoveryMsg.text}
-                                </Typography>
-                            ) : (
+                            <PasswordField
+                                id='account-new-password'
+                                label='新密码'
+                                value={auth.newPassword}
+                                onChange={e => onAuthChange("newPassword", e.target.value)}
+                                placeholder='留空则不修改密码'
+                            />
+                        </TwoCol>
+                        <Box>
+                            <Button
+                                variant='contained'
+                                size='small'
+                                onClick={onSaveAuth}
+                                disabled={saving || !authDirty}
+                            >
+                                {saving ? "保存中…" : "保存账号与密码"}
+                            </Button>
+                            {!authDirty ? (
                                 <Typography
                                     variant='caption'
                                     sx={{
@@ -562,23 +488,242 @@ export default function AccountDialog({
                                         display: "block",
                                         mt: 0.5
                                     }}>
-                                    点击后会单独弹窗验证当前密码；重新生成会让此前下载的私钥立即失效。
+                                    填写新账号或新密码后才能保存。
                                 </Typography>
-                            )}
-                        </Section>
+                            ) : null}
+                        </Box>
+                    </Section>
 
-                        {/* 2.5 登录设备：哪几台设备登着，可以只踢某一台。
-                            以前「改密 / 注销」只能把账号的令牌整体作废 —— 电脑丢了只能
-                            连自己的手机一起踢掉。现在按会话精确吊销，别的设备不受影响。 */}
-                        {sessions && sessions.length > 0 ? (
-                            <Section
-                                title='登录设备'
-                                hint='同一个浏览器只列一条（同一台机器的历史登录会合并显示）；可疑的那台可以单独踢下线，其它设备不受影响。'
+                    {/* 2. 恢复密钥：忘记密码时用它重置。私钥只在本地生成并下载 */}
+                    <Section
+                        title='恢复密钥'
+                        hint='私钥只能重置本账号密码，别的账号用不上。'
+                    >
+                        <Stack
+                            direction={{ xs: "column", sm: "row" }}
+                            spacing={1}
+                            sx={{
+                                alignItems: { xs: "stretch", sm: "center" },
+                                justifyContent: 'space-between'
+                            }}>
+                            <Box>
+                                <Typography variant='body2' sx={{
+                                    fontWeight: '600'
+                                }}>
+                                    {recoveryKeyConfigured ? "已配置" : "未配置"}
+                                </Typography>
+                                <Typography variant='caption' sx={{
+                                    color: 'text.secondary'
+                                }}>
+                                    私钥只在你本机生成并下载，服务器只保存公钥；忘记密码时上传私钥即可重置。
+                                </Typography>
+                            </Box>
+                            <Button
+                                variant='outlined'
+                                size='small'
+                                startIcon={<VpnKeyIcon fontSize='small' />}
+                                onClick={openRecoveryPwdDialog}
+                                disabled={recoveryBusy}
+                                sx={{ flex: "none", whiteSpace: "nowrap" }}
                             >
-                                <Stack spacing={1}>
-                                    {sessions.map(item => (
+                                {recoveryBusy
+                                    ? "生成中…"
+                                    : recoveryKeyConfigured
+                                      ? "重新生成并下载私钥"
+                                      : "生成并下载私钥"}
+                            </Button>
+                        </Stack>
+                        {recoveryMsg ? (
+                            <Typography
+                                variant='caption'
+                                sx={{ display: "block", mt: 0.5 }}
+                                color={
+                                    recoveryMsg.type === "success"
+                                        ? "success.main"
+                                        : "error.main"
+                                }
+                            >
+                                {recoveryMsg.text}
+                            </Typography>
+                        ) : (
+                            <Typography
+                                variant='caption'
+                                sx={{
+                                    color: 'text.secondary',
+                                    display: "block",
+                                    mt: 0.5
+                                }}>
+                                点击后会单独弹窗验证当前密码；重新生成会让此前下载的私钥立即失效。
+                            </Typography>
+                        )}
+                    </Section>
+
+                    {/* 2.5 登录设备：哪几台设备登着，可以只踢某一台。
+                        以前「改密 / 注销」只能把账号的令牌整体作废 —— 电脑丢了只能
+                        连自己的手机一起踢掉。现在按会话精确吊销，别的设备不受影响。 */}
+                    {sessions && sessions.length > 0 ? (
+                        <Section
+                            title='登录设备'
+                            hint='同一个浏览器只列一条（同一台机器的历史登录会合并显示）；可疑的那台可以单独踢下线，其它设备不受影响。'
+                        >
+                            <Stack spacing={1}>
+                                {sessions.map(item => (
+                                    <Stack
+                                        key={item.jti}
+                                        direction={{ xs: "column", sm: "row" }}
+                                        spacing={1}
+                                        sx={{
+                                            alignItems: { xs: "stretch", sm: "center" },
+                                            justifyContent: 'space-between',
+                                            px: 1.25,
+                                            py: 1,
+                                            borderRadius: 1,
+                                            bgcolor: "action.hover"
+                                        }}>
+                                        <Box sx={{ minWidth: 0 }}>
+                                            <Typography variant='body2' sx={{
+                                                fontWeight: '600'
+                                            }}>
+                                                {describeUserAgent(item.userAgent)}
+                                                {item.current ? "（当前设备）" : ""}
+                                            </Typography>
+                                            <Typography
+                                                variant='caption'
+                                                sx={{
+                                                    color: 'text.secondary'
+                                                }}
+                                            >
+                                                {item.ip ? `${item.ip} · ` : ""}
+                                                {item.current
+                                                    ? "正在使用"
+                                                    : `最近活跃：${formatLastActive(item.lastSeenAt)}`}
+                                            </Typography>
+                                        </Box>
+                                        {/* 当前这台不给踢：踢掉等于把自己立刻踢下线，
+                                            还容易让人以为站点把自己锁在门外 */}
+                                        {item.current ? null : (
+                                            <Button
+                                                variant='outlined'
+                                                size='small'
+                                                onClick={() => onRevokeSession?.(item.jti)}
+                                                sx={{ flex: "none", whiteSpace: "nowrap" }}
+                                            >
+                                                踢下线
+                                            </Button>
+                                        )}
+                                    </Stack>
+                                ))}
+                            </Stack>
+
+                            {/* 没有「其它设备」可踢时按钮置灰但保留 ——
+                                否则用户会以为压根没有这个入口 */}
+                            {onRevokeOthers ? (
+                                <Box>
+                                    <Button
+                                        variant='outlined'
+                                        color='error'
+                                        size='small'
+                                        onClick={onRevokeOthers}
+                                        disabled={
+                                            sessions.filter(s => !s.current).length === 0
+                                        }
+                                        sx={{ alignSelf: "flex-start" }}
+                                    >
+                                        退出其它设备
+                                    </Button>
+                                </Box>
+                            ) : null}
+                        </Section>
+                    ) : null}
+
+                    {/* 3. 邀请码：给新用户注册用，30 分钟有效、只能用一次 */}
+                    <Section
+                        title='邀请码'
+                        hint='把码发给对方，他就能在登录页注册；30 分钟内有效，只能用一次。'
+                    >
+                        <Stack
+                            direction={{ xs: "column", sm: "row" }}
+                            spacing={1}
+                            sx={{
+                                alignItems: { xs: "stretch", sm: "center" },
+                                justifyContent: 'space-between'
+                            }}>
+                            <Typography variant='caption' sx={{
+                                color: 'text.secondary'
+                            }}>
+                                新账号注册后自带几个示例分组，数据与你互不可见。
+                            </Typography>
+                            <Button
+                                variant='outlined'
+                                size='small'
+                                onClick={() => void handleCreateInvite()}
+                                disabled={inviteBusy}
+                                sx={{ flex: "none", whiteSpace: "nowrap" }}
+                            >
+                                {inviteBusy ? "生成中…" : "生成邀请码"}
+                            </Button>
+                        </Stack>
+
+                        {invite ? (
+                            <Stack direction='row' spacing={1} sx={{
+                                alignItems: 'center'
+                            }}>
+                                <Typography
+                                    component='code'
+                                    sx={{
+                                        fontFamily: "monospace",
+                                        fontSize: "1rem",
+                                        letterSpacing: 1,
+                                        fontWeight: 700,
+                                    }}
+                                >
+                                    {invite.code}
+                                </Typography>
+                                <Typography variant='caption' sx={{
+                                    color: 'text.secondary'
+                                }}>
+                                    {invite.expiresAt
+                                        ? `有效期至 ${new Date(invite.expiresAt * 1000).toLocaleTimeString()}`
+                                        : "30 分钟内有效"}
+                                </Typography>
+                                <Button
+                                    size='small'
+                                    onClick={() => void navigator.clipboard?.writeText(invite.code)}
+                                    sx={{ flex: "none" }}
+                                >
+                                    复制
+                                </Button>
+                            </Stack>
+                        ) : null}
+
+                        {inviteMsg ? (
+                            <Typography
+                                variant='caption'
+                                sx={{
+                                    color: 'error.main',
+                                    display: "block",
+                                    mt: 0.5
+                                }}>
+                                {inviteMsg}
+                            </Typography>
+                        ) : null}
+                    </Section>
+
+                    {/* 4. 账号清单：只有站点所有者看得到 —— 谁快被停用、谁快被清除。
+                        沉睡治理是自动跑的，这里是人工兜底：认出是真人在用的账号就给豁免。 */}
+                    {currentUser?.role === "owner" && accounts && accounts.length > 0 ? (
+                        <Section
+                            title='账号与沉睡治理'
+                            hint='仅所有者可见。沉睡账号先停用（数据保留），宽限期满后清除；可提前豁免。'
+                        >
+                            <Stack spacing={1}>
+                                {accounts.map(account => {
+                                    const disabled = account.status === "disabled";
+                                    const daysToDisable = daysUntil(account.willDisableAt);
+                                    const daysToDelete = daysUntil(account.willDeleteAt);
+                                    return (
                                         <Stack
-                                            key={item.jti}
+                                            key={account.id}
                                             direction={{ xs: "column", sm: "row" }}
                                             spacing={1}
                                             sx={{
@@ -589,378 +734,271 @@ export default function AccountDialog({
                                                 borderRadius: 1,
                                                 bgcolor: "action.hover"
                                             }}>
-                                            <Box sx={{ minWidth: 0 }}>
+                                            <Box>
                                                 <Typography variant='body2' sx={{
                                                     fontWeight: '600'
                                                 }}>
-                                                    {describeUserAgent(item.userAgent)}
-                                                    {item.current ? "（当前设备）" : ""}
+                                                    {account.username}
+                                                    {account.role === "owner"
+                                                        ? "（站点所有者）"
+                                                        : ""}
                                                 </Typography>
                                                 <Typography
                                                     variant='caption'
-                                                    sx={{
-                                                        color: 'text.secondary'
-                                                    }}
+                                                    color={
+                                                        disabled
+                                                            ? disabled && daysToDelete !== null && daysToDelete <= 7
+                                                                ? "error.main"
+                                                                : "warning.main"
+                                                            : "text.secondary"
+                                                    }
                                                 >
-                                                    {item.ip ? `${item.ip} · ` : ""}
-                                                    {item.current
-                                                        ? "正在使用"
-                                                        : `最近活跃：${formatLastActive(item.lastSeenAt)}`}
+                                                    {/* owner 不参与沉睡治理（v3.1.0 定稿），行上的 willDisableAt
+                                                        只是历史残留，不该再对用户显示「约 N 天后停用」 */}
+                                                    {disabled
+                                                        ? `已停用${daysToDelete !== null ? `，约 ${daysToDelete} 天后清除` : "，等待清除"}`
+                                                        : `最近活跃：${formatLastActive(account.lastActiveAt)}${account.role !== "owner" && daysToDisable !== null ? ` · 约 ${daysToDisable} 天后停用` : ""}`}
                                                 </Typography>
                                             </Box>
-                                            {/* 当前这台不给踢：踢掉等于把自己立刻踢下线，
-                                                还容易让人以为站点把自己锁在门外 */}
-                                            {item.current ? null : (
+                                            {disabled ? (
                                                 <Button
                                                     variant='outlined'
                                                     size='small'
-                                                    onClick={() => onRevokeSession?.(item.jti)}
+                                                    onClick={() => onExemptUser?.(account.id)}
                                                     sx={{ flex: "none", whiteSpace: "nowrap" }}
                                                 >
-                                                    踢下线
-                                                </Button>
-                                            )}
-                                        </Stack>
-                                    ))}
-                                </Stack>
-
-                                {/* 没有「其它设备」可踢时按钮置灰但保留 ——
-                                    否则用户会以为压根没有这个入口 */}
-                                {onRevokeOthers ? (
-                                    <Box>
-                                        <Button
-                                            variant='outlined'
-                                            color='error'
-                                            size='small'
-                                            onClick={onRevokeOthers}
-                                            disabled={
-                                                sessions.filter(s => !s.current).length === 0
-                                            }
-                                            sx={{ alignSelf: "flex-start" }}
-                                        >
-                                            退出其它设备
-                                        </Button>
-                                    </Box>
-                                ) : null}
-                            </Section>
-                        ) : null}
-
-                        {/* 3. 邀请码：给新用户注册用，30 分钟有效、只能用一次 */}
-                        <Section
-                            title='邀请码'
-                            hint='把码发给对方，他就能在登录页注册；30 分钟内有效，只能用一次。'
-                        >
-                            <Stack
-                                direction={{ xs: "column", sm: "row" }}
-                                spacing={1}
-                                sx={{
-                                    alignItems: { xs: "stretch", sm: "center" },
-                                    justifyContent: 'space-between'
-                                }}>
-                                <Typography variant='caption' sx={{
-                                    color: 'text.secondary'
-                                }}>
-                                    新账号注册后自带几个示例分组，数据与你互不可见。
-                                </Typography>
-                                <Button
-                                    variant='outlined'
-                                    size='small'
-                                    onClick={() => void handleCreateInvite()}
-                                    disabled={inviteBusy}
-                                    sx={{ flex: "none", whiteSpace: "nowrap" }}
-                                >
-                                    {inviteBusy ? "生成中…" : "生成邀请码"}
-                                </Button>
-                            </Stack>
-
-                            {invite ? (
-                                <Stack direction='row' spacing={1} sx={{
-                                    alignItems: 'center'
-                                }}>
-                                    <Typography
-                                        component='code'
-                                        sx={{
-                                            fontFamily: "monospace",
-                                            fontSize: "1rem",
-                                            letterSpacing: 1,
-                                            fontWeight: 700,
-                                        }}
-                                    >
-                                        {invite.code}
-                                    </Typography>
-                                    <Typography variant='caption' sx={{
-                                        color: 'text.secondary'
-                                    }}>
-                                        {invite.expiresAt
-                                            ? `有效期至 ${new Date(invite.expiresAt * 1000).toLocaleTimeString()}`
-                                            : "30 分钟内有效"}
-                                    </Typography>
-                                    <Button
-                                        size='small'
-                                        onClick={() => void navigator.clipboard?.writeText(invite.code)}
-                                        sx={{ flex: "none" }}
-                                    >
-                                        复制
-                                    </Button>
-                                </Stack>
-                            ) : null}
-
-                            {inviteMsg ? (
-                                <Typography
-                                    variant='caption'
-                                    sx={{
-                                        color: 'error.main',
-                                        display: "block",
-                                        mt: 0.5
-                                    }}>
-                                    {inviteMsg}
-                                </Typography>
-                            ) : null}
-                        </Section>
-
-                        {/* 4. 账号清单：只有站点所有者看得到 —— 谁快被停用、谁快被清除。
-                            沉睡治理是自动跑的，这里是人工兜底：认出是真人在用的账号就给豁免。 */}
-                        {currentUser?.role === "owner" && accounts && accounts.length > 0 ? (
-                            <Section
-                                title='账号与沉睡治理'
-                                hint='仅所有者可见。沉睡账号先停用（数据保留），宽限期满后清除；可提前豁免。'
-                            >
-                                <Stack spacing={1}>
-                                    {accounts.map(account => {
-                                        const disabled = account.status === "disabled";
-                                        const daysToDisable = daysUntil(account.willDisableAt);
-                                        const daysToDelete = daysUntil(account.willDeleteAt);
-                                        return (
-                                            <Stack
-                                                key={account.id}
-                                                direction={{ xs: "column", sm: "row" }}
-                                                spacing={1}
-                                                sx={{
-                                                    alignItems: { xs: "stretch", sm: "center" },
-                                                    justifyContent: 'space-between',
-                                                    px: 1.25,
-                                                    py: 1,
-                                                    borderRadius: 1,
-                                                    bgcolor: "action.hover"
-                                                }}>
-                                                <Box>
-                                                    <Typography variant='body2' sx={{
-                                                        fontWeight: '600'
-                                                    }}>
-                                                        {account.username}
-                                                        {account.role === "owner"
-                                                            ? "（站点所有者）"
-                                                            : ""}
-                                                    </Typography>
-                                                    <Typography
-                                                        variant='caption'
-                                                        color={
-                                                            disabled
-                                                                ? disabled && daysToDelete !== null && daysToDelete <= 7
-                                                                    ? "error.main"
-                                                                    : "warning.main"
-                                                                : "text.secondary"
-                                                        }
-                                                    >
-                                                        {/* owner 不参与沉睡治理（v3.1.0 定稿），行上的 willDisableAt
-                                                            只是历史残留，不该再对用户显示「约 N 天后停用」 */}
-                                                        {disabled
-                                                            ? `已停用${daysToDelete !== null ? `，约 ${daysToDelete} 天后清除` : "，等待清除"}`
-                                                            : `最近活跃：${formatLastActive(account.lastActiveAt)}${account.role !== "owner" && daysToDisable !== null ? ` · 约 ${daysToDisable} 天后停用` : ""}`}
-                                                    </Typography>
-                                                </Box>
-                                                {disabled ? (
-                                                    <Button
-                                                        variant='outlined'
-                                                        size='small'
-                                                        onClick={() => onExemptUser?.(account.id)}
-                                                        sx={{ flex: "none", whiteSpace: "nowrap" }}
-                                                    >
-                                                        重新启用
-                                                    </Button>
-                                                ) : null}
-                                            </Stack>
-                                        );
-                                    })}
-                                </Stack>
-
-                                {onSaveInactivePolicy ? (
-                                    <Box sx={{ mt: 1.5 }}>
-                                        <Divider sx={{ mb: 1.5 }} />
-                                        <TwoCol>
-                                            <TextField
-                                                label='多久没登录就停用（天）'
-                                                size='small'
-                                                value={String(
-                                                    inactivePolicy?.disableDays ??
-                                                        INACTIVE_DISABLE_DAYS_DEFAULT
-                                                )}
-                                                disabled
-                                            />
-                                            <TextField
-                                                label='停用后保留多久再清除（天）'
-                                                size='small'
-                                                value={String(
-                                                    inactivePolicy?.graceDays ??
-                                                        INACTIVE_DELETE_GRACE_DAYS_DEFAULT
-                                                )}
-                                                disabled
-                                            />
-                                        </TwoCol>
-                                        <Typography
-                                            variant='caption'
-                                            sx={{
-                                                color: 'text.secondary',
-                                                display: "block",
-                                                mt: 0.5
-                                            }}>
-                                            要改这两个天数，去「网站设置 → 数据保留」；这里显示的是同一份配置，只是不在这里改。
-                                        </Typography>
-                                        <Stack
-                                            direction='row'
-                                            spacing={1.25}
-                                            sx={{
-                                                alignItems: 'center',
-                                                mt: 1.25,
-                                                flexWrap: "wrap",
-                                                rowGap: 1
-                                            }}>
-                                            {/* 立刻跑一遍：不用等每周 cron，停用/清除条数直接回显 */}
-                                            {onSweepInactive ? (
-                                                <Button
-                                                    variant='text'
-                                                    size='small'
-                                                    onClick={() => void handleSweep()}
-                                                    disabled={sweepBusy}
-                                                    sx={{ flex: "none" }}
-                                                >
-                                                    {sweepBusy ? "扫描中…" : "立即扫描"}
+                                                    重新启用
                                                 </Button>
                                             ) : null}
-                                            <Typography variant='caption' sx={{
-                                                color: 'text.secondary'
-                                            }}>
-                                                站点所有者账号永不参与治理；清除前会先停用并保留数据
-                                            </Typography>
                                         </Stack>
-                                        {sweepMsg ? (
-                                            <Typography
-                                                variant='caption'
-                                                color={
-                                                    sweepMsg.type === "error"
-                                                        ? "error.main"
-                                                        : "success.main"
-                                                }
-                                                sx={{ display: "block", mt: 0.75 }}
+                                    );
+                                })}
+                            </Stack>
+
+                            {onSaveInactivePolicy ? (
+                                <Box sx={{ mt: 1.5 }}>
+                                    <Divider sx={{ mb: 1.5 }} />
+                                    <TwoCol>
+                                        <TextField
+                                            label='多久没登录就停用（天）'
+                                            size='small'
+                                            value={String(
+                                                inactivePolicy?.disableDays ??
+                                                    INACTIVE_DISABLE_DAYS_DEFAULT
+                                            )}
+                                            disabled
+                                        />
+                                        <TextField
+                                            label='停用后保留多久再清除（天）'
+                                            size='small'
+                                            value={String(
+                                                inactivePolicy?.graceDays ??
+                                                    INACTIVE_DELETE_GRACE_DAYS_DEFAULT
+                                            )}
+                                            disabled
+                                        />
+                                    </TwoCol>
+                                    <Typography
+                                        variant='caption'
+                                        sx={{
+                                            color: 'text.secondary',
+                                            display: "block",
+                                            mt: 0.5
+                                        }}>
+                                        要改这两个天数，去「网站设置 → 数据保留」；这里显示的是同一份配置，只是不在这里改。
+                                    </Typography>
+                                    <Stack
+                                        direction='row'
+                                        spacing={1.25}
+                                        sx={{
+                                            alignItems: 'center',
+                                            mt: 1.25,
+                                            flexWrap: "wrap",
+                                            rowGap: 1
+                                        }}>
+                                        {/* 立刻跑一遍：不用等每周 cron，停用/清除条数直接回显 */}
+                                        {onSweepInactive ? (
+                                            <Button
+                                                variant='text'
+                                                size='small'
+                                                onClick={() => void handleSweep()}
+                                                disabled={sweepBusy}
+                                                sx={{ flex: "none" }}
                                             >
-                                                {sweepMsg.text}
-                                            </Typography>
+                                                {sweepBusy ? "扫描中…" : "立即扫描"}
+                                            </Button>
                                         ) : null}
-                                    </Box>
-                                ) : null}
-                            </Section>
-                        ) : null}
-
-                        {/* 4. 注销：破坏性操作沉底。只给普通账号 —— 站点所有者不传
-                            onDeleteAccount（后端同样拒绝 owner），站点不能没有管理者。 */}
-                        {onDeleteAccount ? (
-                            <Section
-                                title='注销账号'
-                                hint='删除当前账号及其全部分组、卡片与备份配置，无法恢复。'
-                            >
-                                <Button
-                                    variant='outlined'
-                                    color='error'
-                                    size='small'
-                                    startIcon={<PersonRemoveIcon fontSize='small' />}
-                                    onClick={onDeleteAccount}
-                                    sx={{ alignSelf: "flex-start" }}
-                                >
-                                    注销当前账号
-                                </Button>
-                            </Section>
-                        ) : null}
-                    </Stack>
-                    ) : (
-                        <Stack spacing={2} divider={<Divider />}>
-                            {/* 密码健康：把各站点已存的登录凭据过一遍（重复/弱/久未改）—— 方案 A。
-                                2026-10-25 从「更多选项」独立弹窗挪进「账号与安全」；
-                                同日按用户要求拆成独立分页（参考「数据备份与恢复」的备份/恢复 Tab），
-                                不再和账号管理信息堆在同一长页里。 */}
-                            <Section
-                                title='密码健康'
-                                hint='对已存的站点登录凭据做客户端分析：重复、弱口令、久未改。不改任何数据。'
-                            >
-                                <PasswordHealthPanel sites={sites} />
-                            </Section>
-                        </Stack>
-                    )}
-                </DialogContent>
-                <DialogActions sx={dialogActionsSx}>
-                    <Button onClick={onClose} variant='outlined'>
-                        关闭
-                    </Button>
-                </DialogActions>
-            </Dialog>
-
-            {/* 生成恢复私钥前确认当前密码：独立弹窗，不占用上方「当前密码」输入框 */}
-            <Dialog
-                open={recoveryPwdOpen}
-                onClose={() => (recoveryBusy ? undefined : setRecoveryPwdOpen(false))}
-                maxWidth='xs'
-                fullWidth
-            >
-                <DialogTitle sx={dialogTitleSx}>验证身份后生成恢复私钥</DialogTitle>
-                <DialogContent sx={{ px: 3, pt: 0.5, pb: 1 }}>
-                    {/* 一句说清就行：小屏上弹窗高度有限，文字一多底部按钮会被挤出可视区 */}
-                    <DialogContentText variant='body2' sx={{ mb: 2 }}>
-                        私钥等同于重置密码的万能钥匙，请输入<strong>当前账号密码</strong>验证身份。
-                    </DialogContentText>
-                    <PasswordField
-                        autoFocus
-                        id='account-recovery-current-password'
-                        label='当前账号密码'
-                        value={recoveryPwd}
-                        onChange={e => setRecoveryPwd(e.target.value)}
-                        onKeyDown={e => {
-                            if (e.key === "Enter" && !recoveryBusy) void submitRecoveryPwd();
-                        }}
-                        disabled={recoveryBusy}
-                    />
-                    {recoveryMsg && recoveryPwdOpen ? (
-                        <Typography
-                            variant='caption'
-                            sx={{ display: "block", mt: 1 }}
-                            color={recoveryMsg.type === "success" ? "success.main" : "error.main"}
-                        >
-                            {recoveryMsg.text}
-                        </Typography>
+                                        <Typography variant='caption' sx={{
+                                            color: 'text.secondary'
+                                        }}>
+                                            站点所有者账号永不参与治理；清除前会先停用并保留数据
+                                        </Typography>
+                                    </Stack>
+                                    {sweepMsg ? (
+                                        <Typography
+                                            variant='caption'
+                                            color={
+                                                sweepMsg.type === "error"
+                                                    ? "error.main"
+                                                    : "success.main"
+                                            }
+                                            sx={{ display: "block", mt: 0.75 }}
+                                        >
+                                            {sweepMsg.text}
+                                        </Typography>
+                                    ) : null}
+                                </Box>
+                            ) : null}
+                        </Section>
                     ) : null}
-                </DialogContent>
-                <DialogActions
-                    sx={{
-                        ...dialogActionsSx,
-                        // 小屏键盘弹起时按钮会被挤出可视区：允许换行，并把主按钮排到前面
-                        flexWrap: "wrap",
-                        "& > .MuiButton-contained": { order: { xs: 1, sm: 2 } },
-                    }}
-                >
-                    <Button
-                        onClick={() => setRecoveryPwdOpen(false)}
-                        variant='outlined'
-                        disabled={recoveryBusy}
-                    >
-                        取消
-                    </Button>
-                    <Button
-                        onClick={() => void submitRecoveryPwd()}
-                        variant='contained'
-                        disabled={recoveryBusy || !recoveryPwd}
-                    >
-                        {recoveryBusy ? "生成中…" : "确认并下载私钥"}
-                    </Button>
-                </DialogActions>
-            </Dialog>
+
+                    {/* 4. 注销：破坏性操作沉底。只给普通账号 —— 站点所有者不传
+                        onDeleteAccount（后端同样拒绝 owner），站点不能没有管理者。 */}
+                    {onDeleteAccount ? (
+                        <Section
+                            title='注销账号'
+                            hint='删除当前账号及其全部分组、卡片与备份配置，无法恢复。'
+                        >
+                            <Button
+                                variant='outlined'
+                                color='error'
+                                size='small'
+                                startIcon={<PersonRemoveIcon fontSize='small' />}
+                                onClick={onDeleteAccount}
+                                sx={{ alignSelf: "flex-start" }}
+                            >
+                                注销当前账号
+                            </Button>
+                        </Section>
+                    ) : null}
+                </Stack>
+                ) : (
+                    <Stack spacing={2} divider={<Divider />}>
+                        {/* 密码健康：把各站点已存的登录凭据过一遍（重复/弱/久未改）—— 方案 A。
+                            2026-10-25 从「更多选项」独立弹窗挪进「账号与安全」；
+                            同日按用户要求拆成独立分页（参考「数据备份与恢复」的备份/恢复 Tab），
+                            不再和账号管理信息堆在同一长页里。 */}
+                        <Section
+                            title='密码健康'
+                            hint='对已存的站点登录凭据做客户端分析：重复、弱口令、久未改。不改任何数据。'
+                        >
+                            <PasswordHealthPanel sites={sites} />
+                        </Section>
+                    </Stack>
+                )}
+            </DialogContent>
         </>
     );
+
+    // 生成恢复私钥前确认当前密码：独立弹窗，不占用上方「当前密码」输入框。
+    // 两种模式下都保留 REAL Dialog，会 portal 在任意上层内容之上。
+    const recoveryDialog = (
+        <Dialog
+            open={recoveryPwdOpen}
+            onClose={() => (recoveryBusy ? undefined : setRecoveryPwdOpen(false))}
+            maxWidth='xs'
+            fullWidth
+        >
+            <DialogTitle sx={dialogTitleSx}>验证身份后生成恢复私钥</DialogTitle>
+            <DialogContent sx={{ px: 3, pt: 0.5, pb: 1 }}>
+                {/* 一句说清就行：小屏上弹窗高度有限，文字一多底部按钮会被挤出可视区 */}
+                <DialogContentText variant='body2' sx={{ mb: 2 }}>
+                    私钥等同于重置密码的万能钥匙，请输入<strong>当前账号密码</strong>验证身份。
+                </DialogContentText>
+                <PasswordField
+                    autoFocus
+                    id='account-recovery-current-password'
+                    label='当前账号密码'
+                    value={recoveryPwd}
+                    onChange={e => setRecoveryPwd(e.target.value)}
+                    onKeyDown={e => {
+                        if (e.key === "Enter" && !recoveryBusy) void submitRecoveryPwd();
+                    }}
+                    disabled={recoveryBusy}
+                />
+                {recoveryMsg && recoveryPwdOpen ? (
+                    <Typography
+                        variant='caption'
+                        sx={{ display: "block", mt: 1 }}
+                        color={recoveryMsg.type === "success" ? "success.main" : "error.main"}
+                    >
+                        {recoveryMsg.text}
+                    </Typography>
+                ) : null}
+            </DialogContent>
+            <DialogActions
+                sx={{
+                    ...dialogActionsSx,
+                    // 小屏键盘弹起时按钮会被挤出可视区：允许换行，并把主按钮排到前面
+                    flexWrap: "wrap",
+                    "& > .MuiButton-contained": { order: { xs: 1, sm: 2 } },
+                }}
+            >
+                <Button
+                    onClick={() => setRecoveryPwdOpen(false)}
+                    variant='outlined'
+                    disabled={recoveryBusy}
+                >
+                    取消
+                </Button>
+                <Button
+                    onClick={() => void submitRecoveryPwd()}
+                    variant='contained'
+                    disabled={recoveryBusy || !recoveryPwd}
+                >
+                    {recoveryBusy ? "生成中…" : "确认并下载私钥"}
+                </Button>
+            </DialogActions>
+        </Dialog>
+    );
+
+    // 自带 Dialog 外壳：与原 AccountDialog 行为完全一致（标题栏 + 「关闭」按钮）。
+    if (withDialog) {
+        return (
+            <>
+                <Dialog
+                    open={open}
+                    onClose={onClose}
+                    maxWidth='sm'
+                    fullWidth
+                    slotProps={{
+                        paper: {
+                            sx: {
+                                m: { xs: 2, sm: "auto" },
+                                width: { xs: "calc(100% - 32px)", sm: "auto" },
+                            },
+                        }
+                    }}
+                >
+                    <DialogTitle sx={dialogTitleSx}>
+                        账号与安全
+                        {/* 原来是英文 aria-label='close'，读屏念出来是英文 —— 统一走外壳组件 */}
+                        <DialogCloseButton onClose={onClose} />
+                    </DialogTitle>
+                    <Divider />
+                    {body}
+                    <DialogActions sx={dialogActionsSx}>
+                        <Button onClick={onClose} variant='outlined'>
+                            关闭
+                        </Button>
+                    </DialogActions>
+                </Dialog>
+                {recoveryDialog}
+            </>
+        );
+    }
+
+    // 嵌入「统一导航中心」：外层 Dialog 由中心提供（标题 + 全局「完成」关闭按钮）。
+    // 这里只渲染内部内容（Tabs + 表单）与恢复密钥确认弹窗。
+    return (
+        <>
+            {body}
+            {recoveryDialog}
+        </>
+    );
+}
+
+/** 兼容旧调用方：命令面板等仍按原签名使用，默认带 Dialog 外壳。 */
+export default function AccountDialog(props: AccountDialogProps) {
+    return <AccountPanel {...props} withDialog />;
 }

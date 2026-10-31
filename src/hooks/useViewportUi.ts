@@ -1,11 +1,15 @@
 // src/hooks/useViewportUi.ts
-// 跟「视口」有关的那一簇状态：头部收缩、当前分组高亮、以及挂在顶栏 / 底栏按钮上的
-// 菜单锚点（含「锚点所在按钮被卸载时要把菜单收掉」的那一整套补救）。
+// 跟「视口」有关的那一簇状态：头部收缩、当前分组高亮、「更多选项」中心的开关，
+// 以及底栏「分组」菜单的锚点（含「锚点所在按钮被卸载时要把菜单收掉」的补救）。
 //
 // 从 App.tsx 搬过来 —— 这几条逻辑写错的后果都不是报错，而是「窗口从窄拉宽之后
 // 菜单飘到左上角」这种只有手点才能发现的问题：resize 时 anchor 已经从 DOM 分离，
 // MUI 下次重定位拿到全零坐标。搬出来之后可以用 jsdom 造一个 detached 的锚点，
 // 把 resize 守卫和两个 handleExit 各自「只收挂在自己那颗按钮上的那份」钉住。
+//
+// 2026-10-29：「更多选项」从锚定在按钮上的下拉菜单换成居中（窄屏整屏）的
+// 统一中心弹窗，于是那一段「菜单锚点」整个消失 —— 弹窗没有锚点，
+// 按钮被卸载也不会飘；这里只留下一个布尔开关。
 
 import { useCallback, useEffect, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
@@ -23,10 +27,9 @@ export interface ViewportUiParams {
 }
 
 export interface ViewportUiState {
-    /** 「更多」菜单的锚点 */
-    menuAnchorEl: HTMLElement | null;
-    setMenuAnchorEl: Dispatch<SetStateAction<HTMLElement | null>>;
-    openMenu: boolean;
+    /** 「更多选项」中心弹窗是否打开（桌面按钮与底栏「更多」共用同一个开关） */
+    navCenterOpen: boolean;
+    setNavCenterOpen: Dispatch<SetStateAction<boolean>>;
     /** 当前视口里的分组（左栏高亮 / 「新增」按钮的目标分组都看它） */
     activeGroupId: number | null;
     /** 向下滚动后头部收紧 */
@@ -37,7 +40,9 @@ export interface ViewportUiState {
     /** 锚点来自顶栏还是底栏：顶栏往下展开，底栏只能往上翻 */
     groupsAnchorFromTop: boolean;
     setGroupsAnchorFromTop: Dispatch<SetStateAction<boolean>>;
-    handleMenuOpen: (event: { currentTarget: HTMLElement }) => void;
+    /** 打开「更多选项」中心 */
+    handleMenuOpen: () => void;
+    /** 关闭「更多选项」中心 */
     handleMenuClose: () => void;
     /** 底栏退场（视口宽过 899.98px）时由底栏自己通知 */
     handleExitMobileViewport: () => void;
@@ -50,7 +55,7 @@ const onMobileTabBar = (el: HTMLElement | null): boolean =>
     !!el && !!el.closest(".nav-mobile-tabbar");
 
 export function useViewportUi({ loading, groupCount }: ViewportUiParams): ViewportUiState {
-    const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null);
+    const [navCenterOpen, setNavCenterOpen] = useState(false);
     const [activeGroupId, setActiveGroupId] = useState<number | null>(null);
     const [headerCompact, setHeaderCompact] = useState(false);
     const [mobileGroupsAnchor, setMobileGroupsAnchor] = useState<HTMLElement | null>(null);
@@ -102,28 +107,29 @@ export function useViewportUi({ loading, groupCount }: ViewportUiParams): Viewpo
     // 菜单就飘到左上角（用户从窄窗口最大化时就撞到过）。resize 时凡是 anchor
     // 已经不在文档里的弹层一律收掉；底栏退场时自己也会通知一声（onExitViewport），
     // 因为 resize 事件跑在 React 卸载底栏之前，单靠这边可能晚一步。
+    //
+    // 「更多选项」中心不在此列：它是**居中（窄屏整屏）的对话框，没有锚点**，
+    // 底栏按钮被卸载也不会飘，反而该留着让用户把手里的事做完。
     useEffect(() => {
         const onResize = () => {
-            setMenuAnchorEl(prev => (prev && !prev.isConnected ? null : prev));
             setMobileGroupsAnchor(prev => (prev && !prev.isConnected ? null : prev));
         };
         window.addEventListener("resize", onResize);
         return () => window.removeEventListener("resize", onResize);
     }, []);
 
-    const handleMenuOpen = useCallback((event: { currentTarget: HTMLElement }) => {
-        setMenuAnchorEl(event.currentTarget);
-    }, []);
-
     // 包成 useCallback：它进了很多 useMemo / useCallback 的依赖，
     // 每次渲染换一个引用会让那些记忆化全部失效
+    const handleMenuOpen = useCallback(() => {
+        setNavCenterOpen(true);
+    }, []);
+
     const handleMenuClose = useCallback(() => {
-        setMenuAnchorEl(null);
+        setNavCenterOpen(false);
     }, []);
 
     // 底栏退场（视口宽过 899.98px）：只收掉挂在底栏按钮上的弹层，顶栏自己的别误伤
     const handleExitMobileViewport = useCallback(() => {
-        setMenuAnchorEl(prev => (onMobileTabBar(prev) ? null : prev));
         setMobileGroupsAnchor(prev => (onMobileTabBar(prev) ? null : prev));
     }, []);
 
@@ -135,9 +141,8 @@ export function useViewportUi({ loading, groupCount }: ViewportUiParams): Viewpo
     }, []);
 
     return {
-        menuAnchorEl,
-        setMenuAnchorEl,
-        openMenu: Boolean(menuAnchorEl),
+        navCenterOpen,
+        setNavCenterOpen,
         activeGroupId,
         headerCompact,
         mobileGroupsAnchor,

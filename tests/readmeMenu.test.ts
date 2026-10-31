@@ -30,11 +30,20 @@ function findProjectDir(): string {
     throw new Error("找不到项目根目录");
 }
 
-/** 菜单里真实渲染出来的项名 */
+/**
+ * 界面上真实渲染出来的项名。
+ *
+ * 2026-10-29：下拉菜单（MoreMenu.tsx）已换成统一中心弹窗，项名的唯一真源
+ * 挪到 `src/components/navigationCenter/model.ts` 的注册表里 —— 这里跟着改读
+ * 注册表（`label: "…"`），不再扫 JSX。
+ */
 function menuLabels(): string[] {
-    const source = readFileSync(join(findProjectDir(), "src/components/MoreMenu.tsx"), "utf8");
+    const source = readFileSync(
+        join(findProjectDir(), "src", "components", "navigationCenter", "model.ts"),
+        "utf8"
+    );
     const labels: string[] = [];
-    for (const m of source.matchAll(/<ListItemText>([^<]+)<\/ListItemText>/g)) {
+    for (const m of source.matchAll(/label:\s*"([^"]+)"/g)) {
         labels.push(m[1].trim());
     }
     return labels;
@@ -53,24 +62,24 @@ function readmeEntries(readme: string): string[] {
     return entries;
 }
 
-test("菜单里确实取得到项名（守卫本身要站得住）", () => {
+test("中心里确实取得到项名（守卫本身要站得住）", () => {
     const labels = menuLabels();
-    assert.ok(labels.length >= 8, `只解析出 ${labels.length} 个菜单项，解析规则多半失效了`);
+    assert.ok(labels.length >= 8, `只解析出 ${labels.length} 个条目，解析规则多半失效了`);
     assert.ok(labels.includes("备份与恢复"));
     assert.ok(labels.includes("账号与安全"));
 });
 
-test("README 里的每一条「更多选项 → X」都指向界面上真实存在的菜单项", () => {
+test("README 里的每一条「更多选项 → X」都指向界面上真实存在的条目", () => {
     const readme = readFileSync(join(findProjectDir(), "README.md"), "utf8");
     const entries = [...new Set(readmeEntries(readme))];
-    assert.ok(entries.length > 0, "README 里一条菜单路径都没解析到，正则多半失效了");
+    assert.ok(entries.length > 0, "README 里一条路径都没解析到，正则多半失效了");
 
     const labels = menuLabels();
     const unknown = entries.filter(e => !labels.includes(e));
     assert.deepEqual(
         unknown,
         [],
-        `README 里这些菜单路径在界面上找不到（菜单改过名？）：\n` +
+        `README 里这些路径在界面上找不到（条目改过名？）：\n` +
             `  界面现有：${labels.join(" / ")}`
     );
 });

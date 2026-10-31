@@ -37,7 +37,7 @@ export interface OverlayHostProps {
         onSearch: () => void;
         onGroups: (event: React.MouseEvent<HTMLElement>) => void;
         onAdd: () => void;
-        onMore: (event: React.MouseEvent<HTMLElement>) => void;
+        onMore: () => void;
         /** 打开记事本（窄屏唯一入口：顶栏那个 md 以下不显示） */
         onNotes?: () => void;
         notesBadge?: number;

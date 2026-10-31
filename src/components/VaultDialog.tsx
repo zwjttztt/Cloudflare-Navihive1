@@ -7,6 +7,12 @@
 //   · 解锁 / 建库 / 找回都要跑 PBKDF2（默认 60 万迭代，约 0.5–2s），期间给忙碌反馈，别让用户以为卡死。
 //   · 空闲自动锁定（默认 5 分钟无操作）。
 // 所有加解密委托给 utils/vaultSession（编排）+ utils/vaultCrypto（原语），本组件只做状态与展示。
+//
+// 2026-10-31：把内容抽成 `VaultPanel`，让「更多选项」中心能内联这一屏。
+// 原来 `open` 驱动的「打开探测 / 关闭清空」改为基于**挂载 / 卸载**语义 —— 中心内
+// 切到这一屏即挂载（探测），切走即卸载（清空），与原弹窗打开 / 关闭等价。
+// `withDialog` 为 true 时自带 Dialog 壳 + 标题 + 关闭（原弹窗路径）；false 时只给内容
+// （中心外壳统一给标题与「完成」）。
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
     Alert,
@@ -53,14 +59,6 @@ import {
     type VaultTransport,
 } from "../utils/vaultSession";
 
-export interface VaultDialogProps {
-    open: boolean;
-    onClose: () => void;
-    /** 传输层：NavigationClient / MockNavigationClient 都满足 */
-    client: VaultTransport;
-    onNotify?: (message: string, severity?: "success" | "error" | "info") => void;
-}
-
 type Phase = "loading" | "setup" | "locked" | "unlocked";
 
 /** 空闲自动锁定（毫秒） */
@@ -77,7 +75,24 @@ interface Draft {
 
 const EMPTY_DRAFT: Draft = { id: null, title: "", username: "", password: "", url: "", notes: "" };
 
-export default function VaultDialog({ open, onClose, client, onNotify }: VaultDialogProps) {
+export interface VaultPanelProps {
+    /** 传输层：NavigationClient / MockNavigationClient 都满足 */
+    client: VaultTransport;
+    onNotify?: (message: string, severity?: "success" | "error" | "info") => void;
+    /**
+     * true = 被原弹窗包裹（自带 Dialog 壳 + 标题 + 关闭）；false = 被「更多选项」中心内联
+     * （外壳统一给标题与「完成」）。中心内联时不需要自己再套一层会关掉中心的弹窗。
+     */
+    withDialog?: boolean;
+    /** withDialog 为 true 时用于关闭弹窗 */
+    onClose?: () => void;
+}
+
+/**
+ * 保险库业务体。状态与展示都在这里；标题壳按需由 `withDialog` 决定。
+ * 挂载即探测建库状态，卸载即清空一切（DEK 丢弃）—— 与原弹窗打开 / 关闭等价。
+ */
+export function VaultPanel({ client, onNotify, withDialog = false, onClose }: VaultPanelProps) {
     const [phase, setPhase] = useState<Phase>("loading");
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
@@ -92,9 +107,6 @@ export default function VaultDialog({ open, onClose, client, onNotify }: VaultDi
     // 建库 / 解锁 / 找回 表单
     const [masterPw, setMasterPw] = useState("");
     const [masterPw2, setMasterPw2] = useState("");
-    // 「修改主密码」的内联表单（2026-10-25）：原先用 window.prompt 收主密码 ——
-    // prompt 的输入**不回显成掩码**，旁边有人就能看见；也不能二次确认、不能校验强度。
-    // 密码类输入一律走站内 type='password' 的表单。
     const [changePwOpen, setChangePwOpen] = useState(false);
     const [recoverCode, setRecoverCode] = useState("");
     const [recoverNewPw, setRecoverNewPw] = useState("");
@@ -119,9 +131,8 @@ export default function VaultDialog({ open, onClose, client, onNotify }: VaultDi
         }, IDLE_MS);
     }, [lock, onNotify]);
 
-    // 打开时探一次有没有建过库
+    // 挂载时探一次有没有建过库（原来挂在 open 上，内联进中心后改挂挂载）
     useEffect(() => {
-        if (!open) return;
         let alive = true;
         setPhase("loading");
         setError("");
@@ -129,17 +140,16 @@ export default function VaultDialog({ open, onClose, client, onNotify }: VaultDi
             .then(exists => { if (alive) setPhase(exists ? "locked" : "setup"); })
             .catch(() => { if (alive) { setError("读取保险库状态失败"); setPhase("locked"); } });
         return () => { alive = false; };
-    }, [open, client]);
+    }, [client]);
 
-    // 关闭时清空一切（DEK 丢弃）
-    useEffect(() => {
-        if (open) return;
+    // 卸载时清空一切（DEK 丢弃）—— 与原弹窗关闭等价
+    useEffect(() => () => {
         sessionRef.current = null;
         if (idleTimer.current) { clearTimeout(idleTimer.current); idleTimer.current = null; }
         setPhase("loading");
         setEntries([]); setDraft(null); setRevealId(null);
         setMasterPw(""); setMasterPw2(""); setRecoverCode(""); setRecoverNewPw(""); setShowRecovery(null); setError("");
-    }, [open]);
+    }, []);
 
     const refreshEntries = useCallback(async (session: VaultSession) => {
         setEntries(await listDecryptedEntries(client, session));
@@ -254,13 +264,8 @@ export default function VaultDialog({ open, onClose, client, onNotify }: VaultDi
         phase === "setup" ? "创建密码保险库" :
         phase === "unlocked" ? "密码保险库" : "解锁密码保险库";
 
-    return (
-        <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
-            <DialogTitle sx={{ ...dialogTitleSx, pr: 6 }}>
-                {phase === "unlocked" ? <LockOpenIcon fontSize='small' /> : <LockIcon fontSize='small' />}
-                <Typography component='div' sx={{ fontWeight: 600, flex: 1 }}>{title}</Typography>
-                <DialogCloseButton onClose={onClose} />
-            </DialogTitle>
+    const inner = (
+        <>
             <Divider />
             <DialogContent>
                 <Stack spacing={2} sx={{ pt: 1 }} onPointerDown={armIdle} onKeyDown={armIdle}>
@@ -491,13 +496,42 @@ export default function VaultDialog({ open, onClose, client, onNotify }: VaultDi
             {phase === "unlocked" && !showRecovery && (
                 <DialogActions sx={dialogActionsSx}>
                     <Button size='small' disabled={busy} onClick={() => {
-                        // 打开内联表单（下面 changePwOpen 那段），不再用系统 prompt
+                        // 打开内联表单（上面 changePwOpen 那段），不再用系统 prompt
                         setMasterPw("");
                         setMasterPw2("");
                         setChangePwOpen(true);
                     }}>修改主密码</Button>
                 </DialogActions>
             )}
-        </Dialog>
+        </>
     );
+
+    if (withDialog) {
+        return (
+            <Dialog open onClose={onClose ?? (() => {})} maxWidth='sm' fullWidth>
+                <DialogTitle sx={{ ...dialogTitleSx, pr: 6 }}>
+                    {phase === "unlocked" ? <LockOpenIcon fontSize='small' /> : <LockIcon fontSize='small' />}
+                    <Typography component='div' sx={{ fontWeight: 600, flex: 1 }}>{title}</Typography>
+                    <DialogCloseButton onClose={onClose ?? (() => {})} />
+                </DialogTitle>
+                {inner}
+            </Dialog>
+        );
+    }
+
+    return inner;
+}
+
+export interface VaultDialogProps {
+    open: boolean;
+    onClose: () => void;
+    /** 传输层：NavigationClient / MockNavigationClient 都满足 */
+    client: VaultTransport;
+    onNotify?: (message: string, severity?: "success" | "error" | "info") => void;
+}
+
+/** 原弹窗入口：只有打开时才挂载业务体，关闭即卸载（清空 DEK）。 */
+export default function VaultDialog({ open, ...rest }: VaultDialogProps) {
+    if (!open) return null;
+    return <VaultPanel {...rest} withDialog />;
 }

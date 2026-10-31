@@ -52,14 +52,19 @@ export interface HeaderActionsProps {
     addTargetName?: string;
     /** 下拉里的「新增分组」 */
     onOpenAddGroup: () => void;
-    onMenuOpen: (event: React.MouseEvent<HTMLButtonElement>) => void;
+    /** 打开「更多选项」中心（桌面按钮与底栏「更多」共用同一个回调） */
+    onMenuOpen: () => void;
     /** 打开记事本面板 */
     onOpenNotes: () => void;
     /** 笔记条数：在按钮上显示一个角标（0 条时不显示） */
     notesCount: number;
     menuOpen: boolean;
-    /** 「更多选项」菜单节点，挂在按钮后面（菜单自己管 anchor 与开关状态） */
-    menu: ReactNode;
+    /**
+     * 挂在按钮后面的额外节点（可选）。
+     * 2026-10-29：「更多选项」的中心弹窗不再挂在这里（它由 App 统一挂载，
+     * 桌面与移动两个入口共用同一个实例），这里留给将来别的浮层。
+     */
+    menu?: ReactNode;
 }
 
 export default function HeaderActions({
@@ -257,15 +262,19 @@ export default function HeaderActions({
                         color='primary'
                         startIcon={<MenuIcon />}
                         onClick={onMenuOpen}
-                        // 悬停预取（2026-10-17 首开延迟排查）：菜单块 + 它的 MUI Menu
-                        // 机器在点下去之前就开始下载；菜单展开后 MoreMenu 自己再预取
-                        // 全部菜单项的目标弹窗块（见 MoreMenu 的 mount effect）
-                        onPointerEnter={() => prefetchChunk("moreMenu", dialogChunks.moreMenu)}
-                        onFocus={() => prefetchChunk("moreMenu", dialogChunks.moreMenu)}
-                        // MoreMenu 用 aria-labelledby="navigation-button" 指回这个按钮
+                        // 悬停预取（2026-10-17 首开延迟排查）：中心弹窗块在点下去之前
+                        // 就开始下载；中心挂载后再预取九个目标弹窗的块
+                        // （见 NavigationCenterDialog 的 mount effect）
+                        onPointerEnter={() =>
+                            prefetchChunk("navigationCenter", dialogChunks.navigationCenter)
+                        }
+                        onFocus={() =>
+                            prefetchChunk("navigationCenter", dialogChunks.navigationCenter)
+                        }
+                        // 打开的是一个对话框（role=dialog），不是菜单：
+                        // aria-haspopup 用 dialog，别再写 menu（读屏会念成「菜单」）
                         id='navigation-button'
-                        aria-controls={menuOpen ? "navigation-menu" : undefined}
-                        aria-haspopup='true'
+                        aria-haspopup='dialog'
                         aria-expanded={menuOpen ? "true" : undefined}
                         size="small"
                         sx={{

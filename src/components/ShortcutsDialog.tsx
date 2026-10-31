@@ -4,7 +4,12 @@
 // 适合按需加载（Suspense + lazy）。
 // 「安装到桌面」原先在「更多选项」菜单里单占一项，2026-10-15 菜单瘦身时并入这里：
 // 它和快捷键一样属于「一次性、找的时候才会找」的入口，挂在帮助里比单列一项好找。
+//
+// 2026-10-31：把内容抽成 `ShortcutsPanel`，让「更多选项」中心能内联这一屏
+// （原来中心里是占位面板，点了关掉中心再开本弹窗）。弹窗本体保留，其它入口
+// （键盘 ?）仍走它。
 import {
+    Box,
     Dialog,
     DialogTitle,
     DialogContent,
@@ -56,6 +61,125 @@ const SHORTCUTS: Shortcut[] = [
     { keys: ["?"], desc: "显示这张快捷键表" },
 ];
 
+export interface ShortcutsPanelProps {
+    /** 浏览器真的给了安装事件时才显示「安装到桌面」
+     * （Chrome/Edge 认为用户用得够多才会抛 beforeinstallprompt） */
+    canInstall?: boolean;
+    onInstallApp?: () => void;
+}
+
+/**
+ * 中心面板用的业务体：只画内容。标题与关闭由外层 SettingsWorkspaceDialog 统一给，
+ * 所以这里不重复放 DialogTitle / 「知道了」按钮，避免中心里套一个会关掉中心的弹窗。
+ */
+export function ShortcutsPanel({ canInstall = false, onInstallApp }: ShortcutsPanelProps) {
+    const theme = useTheme();
+    const isNarrow = useMediaQuery(theme.breakpoints.down("sm"));
+
+    return (
+        <Box>
+            <Table size='small' aria-label='快捷键列表'>
+                <TableBody>
+                    {SHORTCUTS.map((item, index) =>
+                        item.group ? (
+                            <TableRow key={`g-${index}`}>
+                                <TableCell
+                                    colSpan={2}
+                                    sx={{
+                                        pt: index === 0 ? 0 : 1.5,
+                                        pb: 0.5,
+                                        border: 0,
+                                        fontSize: 12,
+                                        fontWeight: 700,
+                                        letterSpacing: 0.4,
+                                        color: "text.secondary",
+                                    }}
+                                >
+                                    {item.desc}
+                                </TableCell>
+                            </TableRow>
+                        ) : (
+                            <TableRow key={item.desc}>
+                                <TableCell
+                                    sx={{
+                                        border: 0,
+                                        py: 0.5,
+                                        pl: 0,
+                                        width: isNarrow ? 96 : 132,
+                                        verticalAlign: "top",
+                                    }}
+                                >
+                                    <Typography
+                                        component='span'
+                                        sx={{
+                                            display: "inline-flex",
+                                            gap: 0.5,
+                                            alignItems: "center",
+                                            flexWrap: "wrap",
+                                        }}
+                                    >
+                                        {item.keys.map((k, i) =>
+                                            k === "…" ? (
+                                                <Typography
+                                                    key={i}
+                                                    component='span'
+                                                    sx={{ fontSize: 12, opacity: 0.6 }}
+                                                >
+                                                    …
+                                                </Typography>
+                                            ) : (
+                                                <Chip
+                                                    key={i}
+                                                    label={k}
+                                                    size='small'
+                                                    variant='outlined'
+                                                    sx={{
+                                                        height: 20,
+                                                        fontSize: 11,
+                                                        fontWeight: 600,
+                                                        "& .MuiChip-label": {
+                                                            px: 0.75,
+                                                        },
+                                                    }}
+                                                />
+                                            )
+                                        )}
+                                    </Typography>
+                                </TableCell>
+                                <TableCell
+                                    sx={{
+                                        border: 0,
+                                        py: 0.5,
+                                        pr: 0,
+                                        fontSize: 13,
+                                        verticalAlign: "top",
+                                    }}
+                                >
+                                    {item.desc}
+                                </TableCell>
+                            </TableRow>
+                        )
+                    )}
+                </TableBody>
+            </Table>
+
+            {/* 安装入口：只在浏览器给了安装事件时出现（见 props 说明）。
+                原来在弹窗底部按钮区，内联进中心后放进内容底部，关中心的「完成」仍由外层给。 */}
+            {canInstall && onInstallApp && (
+                <Box sx={{ mt: 2 }}>
+                    <Button
+                        onClick={() => void onInstallApp()}
+                        size='small'
+                        startIcon={<InstallDesktopIcon fontSize='small' />}
+                    >
+                        安装到桌面
+                    </Button>
+                </Box>
+            )}
+        </Box>
+    );
+}
+
 interface ShortcutsDialogProps {
     open: boolean;
     onClose: () => void;
@@ -66,9 +190,6 @@ interface ShortcutsDialogProps {
 }
 
 export default function ShortcutsDialog({ open, onClose, canInstall = false, onInstallApp }: ShortcutsDialogProps) {
-    const theme = useTheme();
-    const isNarrow = useMediaQuery(theme.breakpoints.down("sm"));
-
     return (
         <Dialog open={open} onClose={onClose} maxWidth='xs' fullWidth>
             <DialogTitle sx={{ ...dialogTitleSx, justifyContent: "space-between" }}>
@@ -82,104 +203,10 @@ export default function ShortcutsDialog({ open, onClose, canInstall = false, onI
             </DialogTitle>
 
             <DialogContent sx={{ pt: "12px !important", pb: 1, px: 3 }}>
-                <Table size='small' aria-label='快捷键列表'>
-                    <TableBody>
-                        {SHORTCUTS.map((item, index) =>
-                            item.group ? (
-                                <TableRow key={`g-${index}`}>
-                                    <TableCell
-                                        colSpan={2}
-                                        sx={{
-                                            pt: index === 0 ? 0 : 1.5,
-                                            pb: 0.5,
-                                            border: 0,
-                                            fontSize: 12,
-                                            fontWeight: 700,
-                                            letterSpacing: 0.4,
-                                            color: "text.secondary",
-                                        }}
-                                    >
-                                        {item.desc}
-                                    </TableCell>
-                                </TableRow>
-                            ) : (
-                                <TableRow key={item.desc}>
-                                    <TableCell
-                                        sx={{
-                                            border: 0,
-                                            py: 0.5,
-                                            pl: 0,
-                                            width: isNarrow ? 96 : 132,
-                                            verticalAlign: "top",
-                                        }}
-                                    >
-                                        <Typography
-                                            component='span'
-                                            sx={{
-                                                display: "inline-flex",
-                                                gap: 0.5,
-                                                alignItems: "center",
-                                                flexWrap: "wrap",
-                                            }}
-                                        >
-                                            {item.keys.map((k, i) =>
-                                                k === "…" ? (
-                                                    <Typography
-                                                        key={i}
-                                                        component='span'
-                                                        sx={{ fontSize: 12, opacity: 0.6 }}
-                                                    >
-                                                        …
-                                                    </Typography>
-                                                ) : (
-                                                    <Chip
-                                                        key={i}
-                                                        label={k}
-                                                        size='small'
-                                                        variant='outlined'
-                                                        sx={{
-                                                            height: 20,
-                                                            fontSize: 11,
-                                                            fontWeight: 600,
-                                                            "& .MuiChip-label": {
-                                                                px: 0.75,
-                                                            },
-                                                        }}
-                                                    />
-                                                )
-                                            )}
-                                        </Typography>
-                                    </TableCell>
-                                    <TableCell
-                                        sx={{
-                                            border: 0,
-                                            py: 0.5,
-                                            pr: 0,
-                                            fontSize: 13,
-                                            verticalAlign: "top",
-                                        }}
-                                    >
-                                        {item.desc}
-                                    </TableCell>
-                                </TableRow>
-                            )
-                        )}
-                    </TableBody>
-                </Table>
+                <ShortcutsPanel canInstall={canInstall} onInstallApp={onInstallApp} />
             </DialogContent>
 
             <DialogActions sx={dialogActionsSx}>
-                {/* 安装入口：只在浏览器给了安装事件时出现（见 props 说明） */}
-                {canInstall && onInstallApp && (
-                    <Button
-                        onClick={() => void onInstallApp()}
-                        size='small'
-                        startIcon={<InstallDesktopIcon fontSize='small' />}
-                        sx={{ mr: "auto" }}
-                    >
-                        安装到桌面
-                    </Button>
-                )}
                 <Button onClick={onClose} size='small'>
                     知道了
                 </Button>

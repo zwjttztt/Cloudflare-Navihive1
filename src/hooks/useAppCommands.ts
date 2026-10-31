@@ -32,10 +32,14 @@ export interface AppCommandActions {
     setOpenAccount: (open: boolean) => void;
     fetchSessions: () => Promise<void> | void;
     fetchAccountList: () => Promise<void> | void;
-    handleOpenBackup: (tab: number) => void;
+    /**
+     * 打开「更多选项」中心的某一屏。
+     * 2026-10-29：统计与备份都从独立弹窗收进中心，命令面板也跟着改走中心 ——
+     * 否则两条命令会打开两个已经没有挂载点的弹窗。
+     */
+    openNavCenter: (panel: string) => void;
     setBookmarkOpen: (open: boolean) => void;
     runLinkCheck: () => Promise<void> | void;
-    setOpenStatsHub: (open: boolean) => void;
     toggleCollapseAll: () => void;
     allGroupsCollapsed: boolean;
     multiSelect: boolean;
@@ -89,10 +93,9 @@ export function useAppCommands(input: AppCommandsInput): CommandItem[] {
         setOpenAccount,
         fetchSessions,
         fetchAccountList,
-        handleOpenBackup,
+        openNavCenter,
         setBookmarkOpen,
         runLinkCheck,
-        setOpenStatsHub,
         toggleCollapseAll,
         exitMultiSelect,
         setMultiSelect,
@@ -215,7 +218,7 @@ export function useAppCommands(input: AppCommandsInput): CommandItem[] {
                 id: "cmd-backup",
                 label: "数据备份",
                 section: "操作",
-                run: () => handleOpenBackup(0),
+                run: () => openNavCenter("backup"),
             },
             {
                 id: "cmd-bookmarks",
@@ -233,7 +236,7 @@ export function useAppCommands(input: AppCommandsInput): CommandItem[] {
                 id: "cmd-visits",
                 label: "查看统计",
                 section: "显示",
-                run: () => setOpenStatsHub(true),
+                run: () => openNavCenter("stats"),
             },
             {
                 id: "cmd-collapse-all",
@@ -298,10 +301,9 @@ export function useAppCommands(input: AppCommandsInput): CommandItem[] {
         setOpenAccount,
         fetchSessions,
         fetchAccountList,
-        handleOpenBackup,
+        openNavCenter,
         setBookmarkOpen,
         runLinkCheck,
-        setOpenStatsHub,
         toggleCollapseAll,
         exitMultiSelect,
         setMultiSelect,

@@ -24,9 +24,8 @@ function Probe({ loading = false, groupCount = 0 }: ProbeProps) {
         <div>
             <span data-testid="compact">{String(ui.headerCompact)}</span>
             <span data-testid="active">{ui.activeGroupId === null ? "null" : ui.activeGroupId}</span>
-            <span data-testid="menu">{ui.menuAnchorEl?.id ?? "null"}</span>
             <span data-testid="groups">{ui.mobileGroupsAnchor?.id ?? "null"}</span>
-            <span data-testid="openMenu">{String(ui.openMenu)}</span>
+            <span data-testid="center">{String(ui.navCenterOpen)}</span>
         </div>
     );
 }
@@ -107,18 +106,16 @@ function resize() {
 
 // ---------- resize：锚点已经脱离文档就收掉 ----------
 
-test("resize 时收掉已经从 DOM 分离的菜单锚点（否则菜单会飘到左上角）", () => {
+test("resize 不关「更多选项」中心：它是居中对话框，没有会失效的锚点", () => {
+    // 2026-10-29：中心取代了锚定在按钮上的下拉菜单。菜单那套「按钮被卸载 →
+    // anchor 脱离文档 → 关掉」的补救对它不成立，反过来：用户从窄窗口最大化时
+    // 中心正开着，不该被 resize 顺手关掉（那等于把人手里的事丢了）。
     mount();
-    const btn = button("menu-btn");
-    act(() => latest!.setMenuAnchorEl(btn));
-    assert.equal(text("menu"), "menu-btn");
+    act(() => latest!.handleMenuOpen());
+    assert.equal(text("center"), "true");
 
     resize();
-    assert.equal(text("menu"), "menu-btn", "锚点还在文档里，不该收");
-
-    btn.remove();
-    resize();
-    assert.equal(text("menu"), "null", "锚点脱离文档后必须收掉");
+    assert.equal(text("center"), "true", "resize 不该关掉中心");
 });
 
 test("同一个 resize 守卫也管着「分组」菜单的锚点", () => {
@@ -140,21 +137,30 @@ test("底栏退场：只收挂在底栏按钮上的弹层，顶栏自己的别�
     const bottomBtn = button("bottom-btn", bar);
     const topBtn = button("top-btn");
     act(() => {
-        latest!.setMenuAnchorEl(bottomBtn);
         latest!.setMobileGroupsAnchor(bottomBtn);
     });
 
     act(() => latest!.handleExitMobileViewport());
-    assert.equal(text("menu"), "null", "挂在底栏上的那份要收");
-    assert.equal(text("groups"), "null");
+    assert.equal(text("groups"), "null", "挂在底栏上的那份要收");
 
     act(() => {
-        latest!.setMenuAnchorEl(topBtn);
         latest!.setMobileGroupsAnchor(topBtn);
     });
     act(() => latest!.handleExitMobileViewport());
-    assert.equal(text("menu"), "top-btn", "顶栏那份不该被底栏退场收掉");
-    assert.equal(text("groups"), "top-btn");
+    assert.equal(text("groups"), "top-btn", "顶栏那份不该被底栏退场收掉");
+});
+
+test("底栏退场不关「更多选项」中心（底栏那颗「更多」只是入口之一）", () => {
+    mount();
+    const bar = tabBar();
+    const bottomBtn = button("bottom-btn", bar);
+    act(() => latest!.handleMenuOpen());
+    act(() => latest!.setMobileGroupsAnchor(bottomBtn));
+    assert.equal(text("center"), "true");
+
+    act(() => latest!.handleExitMobileViewport());
+    assert.equal(text("groups"), "null", "分组菜单照旧要收");
+    assert.equal(text("center"), "true", "中心还开着，别把用户手里的事收掉");
 });
 
 test("顶栏「分组」按钮退场：只收顶栏那份，底栏那份归另一个 handleExit 管", () => {
@@ -178,18 +184,15 @@ test("顶栏「分组」按钮退场：只收顶栏那份，底栏那份归另�
 
 // ---------- 菜单开关 ----------
 
-test("handleMenuOpen / handleMenuClose 只动「更多」菜单，openMenu 跟着走", () => {
+test("handleMenuOpen / handleMenuClose 只动「更多选项」中心的开关", () => {
     mount();
-    const btn = button("more-btn");
-    assert.equal(text("openMenu"), "false");
+    assert.equal(text("center"), "false");
 
-    act(() => latest!.handleMenuOpen({ currentTarget: btn }));
-    assert.equal(text("menu"), "more-btn");
-    assert.equal(text("openMenu"), "true");
+    act(() => latest!.handleMenuOpen());
+    assert.equal(text("center"), "true");
 
     act(() => latest!.handleMenuClose());
-    assert.equal(text("menu"), "null");
-    assert.equal(text("openMenu"), "false");
+    assert.equal(text("center"), "false");
 });
 
 // ---------- 滚动：头部收缩 ----------

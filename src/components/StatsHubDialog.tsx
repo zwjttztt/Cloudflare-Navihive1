@@ -8,6 +8,10 @@
 // 合并后菜单少一项，按标签页切换也比回菜单再点一次近。
 // 非 owner 看不到运营看板：标签栏直接不渲染，也不会去拉 /api/stats
 // （未选中的面板不挂载，请求只发生在真的切过去时）。
+//
+// 2026-10-29：业务抽成命名导出的 `StatsHubPanel`，弹窗外壳只留一层包装 ——
+// 「更多选项」统一中心（NavigationCenterDialog）直接复用同一份面板，
+// 尺寸 / 标题 / 关闭按钮交给共享外壳（settingsWorkspace/），这里一行都不写。
 import { useState } from "react";
 import {
     Dialog,
@@ -27,9 +31,8 @@ import VisitsPanel from "./VisitsPanel";
 import StatsPanel from "./StatsPanel";
 import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
-export interface StatsHubDialogProps {
-    open: boolean;
-    onClose: () => void;
+/** 面板输入：与弹窗共享，尺寸与外壳由调用方负责 */
+export interface StatsHubPanelProps {
     client: NavigationClient;
     /** 当前登录者是否为站点所有者（决定「运营看板」标签页是否出现） */
     isSiteOwner: boolean;
@@ -43,43 +46,38 @@ export interface StatsHubDialogProps {
     syncEnabled?: boolean;
 }
 
-export default function StatsHubDialog({
-    open,
-    onClose,
+/**
+ * 统计面板本体：两个标签页 + 各自的列表。
+ *
+ * 自己持一条滚动区（标签栏固定、正文滚）—— 外壳的正文区是「整块滚」，
+ * 标签栏跟着内容一起滚走的话，切页签要先往回滚，那一步是白走的。
+ */
+export function StatsHubPanel({
     client,
     isSiteOwner,
     nameOf,
     exists,
     onClear,
     syncEnabled = false,
-}: StatsHubDialogProps) {
+}: StatsHubPanelProps) {
     // 0 = 访问统计，1 = 运营看板（仅 owner 可达）
     const [tab, setTab] = useState(0);
 
     return (
-        <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth aria-label='统计'>
-            <DialogTitle sx={dialogTitleSx}>
-                <InsightsIcon fontSize='small' />
-                统计
-                <Box sx={{ flex: 1 }} />
-                <IconButton size='small' onClick={onClose} aria-label='关闭统计'>
-                    <CloseIcon fontSize='small' />
-                </IconButton>
-            </DialogTitle>
-
+        <Box sx={{ display: "flex", flexDirection: "column", minHeight: 0, height: "100%" }}>
             {/* 只有一个标签页（非 owner）时不渲染标签栏：一个 Tab 的 Tab 栏纯属噪音 */}
             {isSiteOwner && (
                 <Tabs
                     value={tab}
                     onChange={(_, v: number) => setTab(v)}
-                    sx={{ px: 3, minHeight: 40 }}
+                    sx={{ flexShrink: 0, minHeight: 40 }}
                 >
                     <Tab label="访问统计" sx={{ minHeight: 40 }} />
                     <Tab label="运营看板" sx={{ minHeight: 40 }} />
                 </Tabs>
             )}
 
-            <DialogContent dividers sx={{ pt: isSiteOwner ? 2 : "12px !important" }}>
+            <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", pt: isSiteOwner ? 2 : 1 }}>
                 {/* 未选中的面板不挂载：运营看板的 /api/stats 只会在切过去时才发 */}
                 {tab === 0 || !isSiteOwner ? (
                     <Box role='tabpanel' aria-label='访问统计'>
@@ -95,6 +93,34 @@ export default function StatsHubDialog({
                         <StatsPanel client={client} />
                     </Box>
                 )}
+            </Box>
+        </Box>
+    );
+}
+
+export interface StatsHubDialogProps extends StatsHubPanelProps {
+    open: boolean;
+    onClose: () => void;
+}
+
+export default function StatsHubDialog({
+    open,
+    onClose,
+    ...panel
+}: StatsHubDialogProps) {
+    return (
+        <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth aria-label='统计'>
+            <DialogTitle sx={dialogTitleSx}>
+                <InsightsIcon fontSize='small' />
+                统计
+                <Box sx={{ flex: 1 }} />
+                <IconButton size='small' onClick={onClose} aria-label='关闭统计'>
+                    <CloseIcon fontSize='small' />
+                </IconButton>
+            </DialogTitle>
+
+            <DialogContent dividers sx={{ pt: 0, minHeight: 240 }}>
+                <StatsHubPanel {...panel} />
             </DialogContent>
 
             <DialogActions sx={dialogActionsSx}>

@@ -41,9 +41,8 @@ interface RecycleItem {
 /** 后端默认保留天数；界面优先用网站设置里配的 retention.days */
 const DEFAULT_RETENTION_DAYS = 7;
 
-interface RecycleBinDialogProps {
-    open: boolean;
-    onClose: () => void;
+/** 面板输入：与弹窗共享 */
+export interface RecyclePanelProps {
     client: NavigationClient;
     /** 还原后通知外层刷新（bootstrap 重新拉数据） */
     onChanged?: () => void;
@@ -52,14 +51,20 @@ interface RecycleBinDialogProps {
     retentionDays?: number;
 }
 
-export default function RecycleBinDialog({
-    open,
-    onClose,
+interface RecycleBinDialogProps extends RecyclePanelProps {
+    open: boolean;
+    onClose: () => void;
+}
+
+// 2026-10-29：业务抽成命名导出的 `RecyclePanel`，弹窗外壳只留包装。
+// 弹窗关闭时 MUI 不渲染子树，所以面板里的 `open` 判断等价于「挂载了」——
+// 抽出后刷新改挂在挂载时机上，中心里切走再切回来 = 重开一次，行为与原来一致。
+export function RecyclePanel({
     client,
     onChanged,
     onNotify,
     retentionDays,
-}: RecycleBinDialogProps) {
+}: RecyclePanelProps) {
     const theme = useTheme();
     const [items, setItems] = useState<RecycleItem[]>([]);
     const [loading, setLoading] = useState(false);
@@ -90,9 +95,10 @@ export default function RecycleBinDialog({
         }
     }, [client]);
 
+    // 挂载即拉一次（中心里切走再切回来等于重开）
     useEffect(() => {
-        if (open) void refresh();
-    }, [open, refresh]);
+        void refresh();
+    }, [refresh]);
 
     const handleRestore = async (id: number) => {
         setBusyId(id);
@@ -154,23 +160,14 @@ export default function RecycleBinDialog({
     const shown = tab === 0 ? siteItems : groupItems;
 
     return (
-        <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
-            {/* pr 给右上角那枚 × 让位，不然「仅保留 N 天」会和它叠在一起 */}
-            <DialogTitle sx={dialogTitleSx}>
-                <RestoreFromTrashIcon fontSize='small' />
-                回收站
-                <Typography
-                    component='span'
-                    variant='caption'
-                    sx={{
-                        color: 'text.secondary',
-                        ml: "auto"
-                    }}>
+        <Box sx={{ display: "flex", flexDirection: "column", minHeight: 0, height: "100%" }}>
+            {/* 保留天数原来挂在弹窗标题右侧；中心的标题由共享外壳给，这里挪进正文第一行 */}
+            <Box sx={{ flexShrink: 0, pb: 1 }}>
+                <Typography component='span' variant='caption' sx={{ color: 'text.secondary' }}>
                     仅保留 {retentionDays ?? DEFAULT_RETENTION_DAYS} 天，超期自动清除
                 </Typography>
-                <DialogCloseButton onClose={onClose} label='关闭回收站' />
-            </DialogTitle>
-            <DialogContent dividers sx={{ p: 0, minHeight: 120 }}>
+            </Box>
+            <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
                 {loading && items.length === 0 ? (
                     <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
                         <CircularProgress size={28} />
@@ -253,22 +250,23 @@ export default function RecycleBinDialog({
                         )}
                     </>
                 )}
-            </DialogContent>
-            <DialogActions sx={dialogActionsSx}>
+            </Box>
+
+            {/* 「清空回收站」原来是弹窗底部操作区最左那颗。中心里没有那一栏
+                （底栏是全弹窗级的），所以挪到面板底部：仍是 error 色、
+                回收站为空或正忙时禁用，语义一点没变。 */}
+            <Box sx={{ flexShrink: 0, pt: 1.5 }}>
                 <Button
                     color='error'
                     startIcon={<DeleteSweepIcon />}
                     size='small'
                     disabled={items.length === 0 || busyId !== null}
                     onClick={() => setConfirmClear(true)}
+                    sx={{ mr: "auto" }}
                 >
                     清空回收站
                 </Button>
-                <Box sx={{ flex: 1 }} />
-                <Button onClick={onClose} variant='contained' disableElevation size='small'>
-                    关闭
-                </Button>
-            </DialogActions>
+            </Box>
 
             {/* 单项也要确认：这一行旁边就是「还原」，点错了没有第二次机会 */}
             <ConfirmDialog
@@ -301,6 +299,38 @@ export default function RecycleBinDialog({
                 onClose={() => setConfirmClear(false)}
                 onConfirm={handleClearAll}
             />
+        </Box>
+    );
+}
+
+export default function RecycleBinDialog({
+    open,
+    onClose,
+    client,
+    onChanged,
+    onNotify,
+    retentionDays,
+}: RecycleBinDialogProps) {
+    return (
+        <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
+            <DialogTitle sx={dialogTitleSx}>
+                <RestoreFromTrashIcon fontSize='small' />
+                回收站
+                <DialogCloseButton onClose={onClose} label='关闭回收站' />
+            </DialogTitle>
+            <DialogContent dividers sx={{ p: 2, minHeight: 200 }}>
+                <RecyclePanel
+                    client={client}
+                    onChanged={onChanged}
+                    onNotify={onNotify}
+                    retentionDays={retentionDays}
+                />
+            </DialogContent>
+            <DialogActions sx={dialogActionsSx}>
+                <Button onClick={onClose} variant='contained' disableElevation size='small'>
+                    关闭
+                </Button>
+            </DialogActions>
         </Dialog>
     );
 }

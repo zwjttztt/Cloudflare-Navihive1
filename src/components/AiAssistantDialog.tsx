@@ -9,7 +9,12 @@
 // 两点硬规矩：
 //   1. 默认关。开关没显式打开，一个字节都不往外发。
 //   2. 测试连接用**当前填的这份**（不必先保存）—— 用户就是想先试通再决定要不要存。
-
+//
+// 2026-10-31：把内容抽成 `AiPanel`，让「更多选项」中心能内联这一屏。
+// 原来挂在 `open` 上的「打开重读配置」改为**挂载即读**（中心内切到这一屏即挂载）；
+// 保存成功后**不关中心**（与备份面板一致），只刷新 AI 状态（onSaved）。
+// `withDialog` 为 true 时自带 Dialog 壳 + 标题 + 关闭（原弹窗路径）；false 时只给内容
+// （中心外壳统一给标题与「完成」）。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
@@ -63,9 +68,7 @@ export interface AiConfigClient {
     setConfigs(configs: Record<string, string>): Promise<boolean>;
 }
 
-interface AiAssistantDialogProps {
-    open: boolean;
-    onClose: () => void;
+export interface AiPanelProps {
     /** 只用到读配置与批量写配置两件事 */
     api: AiConfigClient;
     ai: AiAssistant;
@@ -73,6 +76,13 @@ interface AiAssistantDialogProps {
     onSaved?: () => void;
     /** 当前生效状态的一句话说明，由 App 从 /api/ai/status 拼好传进来 */
     statusText?: string;
+    /**
+     * true = 被原弹窗包裹（自带 Dialog 壳 + 标题 + 关闭）；false = 被「更多选项」中心内联
+     * （外壳统一给标题与「完成」）。中心内联时保存不关中心。
+     */
+    withDialog?: boolean;
+    /** withDialog 为 true 时用于关闭弹窗 */
+    onClose?: () => void;
 }
 
 function Field({
@@ -152,14 +162,18 @@ function Field({
     );
 }
 
-export default function AiAssistantDialog({
-    open,
-    onClose,
+/**
+ * AI 设置业务体。状态与展示都在这里；标题壳按需由 `withDialog` 决定。
+ * 挂载即重读配置（配置可能被别的设备改过），卸载即丢弃表单。
+ */
+export function AiPanel({
     api,
     ai,
     onSaved,
     statusText,
-}: AiAssistantDialogProps) {
+    withDialog = false,
+    onClose,
+}: AiPanelProps) {
     const [form, setForm] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
@@ -186,17 +200,14 @@ export default function AiAssistantDialog({
     const [showEmbed, setShowEmbed] = useState(false);
 
     // 每一次父组件重渲染都会送来一个新引用的 api 对象（就算 App 那边 memo 了，
-    // 这里也不能赌）——把最新的那份放进 ref，下面的读取 effect 就只认 open。
-    // 2026-10-16 的「背景页面一滚，加载条就闪」就是 effect 依赖了 api 引用：
-    // 那时候每滚一下都重新拉一次配置，加载条跟着闪，/api/configs 被打爆。
+    // 这里也不能赌）——把最新的那份放进 ref，下面的读取 effect 就只认挂载。
     const apiRef = useRef(api);
     useEffect(() => {
         apiRef.current = api;
     }, [api]);
 
-    // 每次打开重读：配置可能被别的设备改过，拿一份旧的来编辑会覆盖掉新的
+    // 挂载时重读：配置可能被别的设备改过，拿一份旧的来编辑会覆盖掉新的
     useEffect(() => {
-        if (!open) return;
         let cancelled = false;
         setLoading(true);
         setSaveError(null);
@@ -213,12 +224,12 @@ export default function AiAssistantDialog({
         return () => {
             cancelled = true;
         };
-        // 只在打开时读一次配置：打开期间表单本身就是唯一真实来源，
+        // 只在挂载时读一次配置：挂载期间表单本身就是唯一真实来源，
         // 父组件重渲染不该把用户正在填的内容冲掉。
         // ⚠️ 依赖里不能出现 api：父组件每次渲染都可能给一个新引用，
-        // 那样「打开时读一次」就变成「每次重渲染都读一次」——上面的 apiRef
-        // 就是为了让这里只盯 open（2026-10-16：背景页面一滚就闪加载条）
-    }, [open]);
+        // 那样「挂载时读一次」就变成「每次重渲染都读一次」——上面的 apiRef
+        // 就是为了让这里只盯挂载（2026-10-16：背景页面一滚就闪加载条）
+    }, []);
 
     const set = useCallback((key: string) => (value: string) => {
         setForm(prev => ({ ...prev, [key]: value }));
@@ -257,9 +268,10 @@ export default function AiAssistantDialog({
             for (const key of AI_KEYS) payload[key] = form[key] ?? "";
             const ok = await api.setConfigs(payload);
             if (!ok) throw new Error("保存没有成功，再试一次");
-            // 先让 App 把 /api/ai/status 刷新掉（界面上的 AI 按钮才跟着变可用），再收起弹窗
+            // 先让 App 把 /api/ai/status 刷新掉（界面上的 AI 按钮才跟着变可用）。
+            // 内联进中心时不关中心（与备份面板一致），由外壳的「完成」收起。
             onSaved?.();
-            onClose();
+            onClose?.();
         } catch (error) {
             setSaveError((error as Error).message || "保存失败，再试一次");
         } finally {
@@ -267,29 +279,8 @@ export default function AiAssistantDialog({
         }
     };
 
-    return (
-        <Dialog
-            open={open}
-            onClose={onClose}
-            fullWidth
-            // xs(444) 放「开关 / 模型服务 / 凭据 / 测试连接」四组太挤，
-            // 升到 sm(600)（docs/dialogs-audit-2026-10-16.md P3-3）
-            maxWidth='sm'
-            slotProps={{ paper: { sx: dialogPaperSx } }}
-        >
-            <DialogTitle sx={dialogTitleSx}>
-                AI 助手
-                <Box sx={{ flexGrow: 1 }} />
-                <Button
-                    size='small'
-                    onClick={onClose}
-                    aria-label='关闭 AI 助手'
-                    sx={{ minWidth: 0, p: 0.5 }}
-                >
-                    <CloseIcon fontSize='small' />
-                </Button>
-            </DialogTitle>
-
+    const inner = (
+        <>
             <DialogContent sx={dialogContentSx}>
                 {loading && <LinearProgress sx={{ mb: 1.5, borderRadius: 1 }} />}
 
@@ -490,9 +481,11 @@ export default function AiAssistantDialog({
             </DialogContent>
 
             <DialogActions sx={dialogActionsSx}>
-                <Button size='small' onClick={onClose}>
-                    关闭
-                </Button>
+                {withDialog && (
+                    <Button size='small' onClick={onClose}>
+                        关闭
+                    </Button>
+                )}
                 <Button
                     size='small'
                     variant='contained'
@@ -502,6 +495,54 @@ export default function AiAssistantDialog({
                     {saving ? "保存中…" : "保存"}
                 </Button>
             </DialogActions>
-        </Dialog>
+        </>
     );
+
+    if (withDialog) {
+        return (
+            <Dialog
+                open
+                onClose={onClose ?? (() => {})}
+                fullWidth
+                // xs(444) 放「开关 / 模型服务 / 凭据 / 测试连接」四组太挤，
+                // 升到 sm(600)（docs/dialogs-audit-2026-10-16.md P3-3）
+                maxWidth='sm'
+                slotProps={{ paper: { sx: dialogPaperSx } }}
+            >
+                <DialogTitle sx={dialogTitleSx}>
+                    AI 助手
+                    <Box sx={{ flexGrow: 1 }} />
+                    <Button
+                        size='small'
+                        onClick={onClose ?? (() => {})}
+                        aria-label='关闭 AI 助手'
+                        sx={{ minWidth: 0, p: 0.5 }}
+                    >
+                        <CloseIcon fontSize='small' />
+                    </Button>
+                </DialogTitle>
+                {inner}
+            </Dialog>
+        );
+    }
+
+    return inner;
+}
+
+export interface AiAssistantDialogProps {
+    open: boolean;
+    onClose: () => void;
+    /** 只用到读配置与批量写配置两件事 */
+    api: AiConfigClient;
+    ai: AiAssistant;
+    /** 保存成功后回调：App 拿它刷新 /api/ai/status（界面上的 AI 按钮才跟着变可用） */
+    onSaved?: () => void;
+    /** 当前生效状态的一句话说明，由 App 从 /api/ai/status 拼好传进来 */
+    statusText?: string;
+}
+
+/** 原弹窗入口：只有打开时才挂载业务体，关闭即卸载（丢弃表单）。 */
+export default function AiAssistantDialog({ open, ...rest }: AiAssistantDialogProps) {
+    if (!open) return null;
+    return <AiPanel {...rest} withDialog />;
 }

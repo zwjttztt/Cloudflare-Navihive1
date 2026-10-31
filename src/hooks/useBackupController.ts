@@ -54,6 +54,14 @@ interface BackupControllerDeps {
     notify: NotifyFn;
     handleError: (message: string) => void;
     handleMenuClose: () => void;
+    /**
+     * 打开「备份与恢复」。
+     *
+     * 2026-10-29：入口从独立弹窗换成「更多选项」中心的备份面板，
+     * 所以这里不再自己开关弹窗，而是请上层把中心开到那一屏（tab 一起带过去：
+     * 命令面板直达「恢复 / 导入」时要落在第二页）。
+     */
+    onOpenBackupPanel: (tab: number) => void;
     fetchData: () => Promise<boolean>;
     restoreLocalPrefs: (
         prefs: LocalPrefsBackup | undefined,
@@ -88,6 +96,7 @@ export function useBackupController(deps: BackupControllerDeps) {
         notify,
         handleError,
         handleMenuClose,
+        onOpenBackupPanel,
         fetchData,
         restoreLocalPrefs,
         setConfigs,
@@ -97,8 +106,8 @@ export function useBackupController(deps: BackupControllerDeps) {
         lastPrefPushRef,
     } = deps;
 
-    // 备份/恢复对话框状态
-    const [openBackup, setOpenBackup] = useState(false);
+    // 备份面板停在哪个页签（0 = 备份，1 = 恢复 / 导入）。
+    // 开关本身交给上层（中心），这里只记「落到哪一页」。
     const [backupTab, setBackupTab] = useState(0);
 
     // 导入预览：备份导入前先摊开差异让用户挑，确认/取消都通过 promise 回传给备份弹窗
@@ -109,14 +118,12 @@ export function useBackupController(deps: BackupControllerDeps) {
     } | null>(null);
     const importPreviewResolve = useRef<((result: ExportData | null) => void) | null>(null);
 
+    // 打开「备份与恢复」：记下要落的页签，再请上层把中心开到那一屏。
+    // handleMenuClose 仍先走一遍（收起可能开着的旧入口），随后上层打开中心。
     const handleOpenBackup = (tab = 0) => {
         setBackupTab(tab);
-        setOpenBackup(true);
         handleMenuClose();
-    };
-
-    const handleCloseBackup = () => {
-        setOpenBackup(false);
+        onOpenBackupPanel(tab);
     };
 
     // 最近一次定时任务（每周自动备份 / 死链巡检）的失败留痕，没有就是 null。
@@ -461,8 +468,6 @@ export function useBackupController(deps: BackupControllerDeps) {
     };
 
     return {
-        openBackup,
-        setOpenBackup,
         backupTab,
         setBackupTab,
         importPreview,
@@ -470,7 +475,6 @@ export function useBackupController(deps: BackupControllerDeps) {
         importPreviewResolve,
         cronError,
         handleOpenBackup,
-        handleCloseBackup,
         buildExportData,
         handleDownloadLocal,
         handleSaveWebdavConfig,

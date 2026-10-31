@@ -28,8 +28,8 @@ import DialogCloseButton from "./DialogCloseButton";
 import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 import { fmtDateTime } from "../utils/format";
 
-interface BackupDialogProps {
-    open: boolean;
+/** 面板输入：与弹窗共享。尺寸 / 标题 / 关闭按钮一律由调用方（外壳或弹窗）负责 */
+export interface BackupPanelProps {
     initialTab?: number;
     client: NavigationClient | MockNavigationClient;
     webdavConfig: WebDavConfig;
@@ -71,7 +71,14 @@ interface BackupDialogProps {
         overwrite: boolean
     ) => Promise<ExportData | null>;
     onNotify: (message: string, severity?: "success" | "error" | "info") => void;
-    onClose: () => void;
+    /**
+     * 恢复 / 导入成功后要做的事。
+     *
+     * 弹窗用它关掉自己；中心里的面板不传 —— 恢复成功只弹提示条，
+     * 中心继续停在「备份与恢复」这一屏（中心装了九屏，因为一次恢复成功
+     * 就把整个中心关掉，比留着更让人意外）。
+     */
+    onRestored?: () => void;
     /** 备份文件里是否带上网站的账号密码（默认带；关掉后本地下载、WebDAV 上传、每周定时备份都不带） */
     includeCredentials: boolean;
     onIncludeCredentialsChange: (enabled: boolean) => void;
@@ -90,6 +97,11 @@ interface BackupDialogProps {
      * 好几个月」这种事只能靠这里说一句，否则要等到真要恢复那天才发现。
      */
     cronError?: { task: string; message: string; at?: string } | null;
+}
+
+interface BackupDialogProps extends BackupPanelProps {
+    open: boolean;
+    onClose: () => void;
 }
 
 
@@ -113,8 +125,13 @@ const summarizeImport = (result: unknown): string | null => {
     return summarizeImportStats(stats);
 };
 
-export default function BackupDialog({
-    open,
+/**
+ * 备份 / 恢复面板本体：两个标签页（备份 / 恢复·导入）+ 定时任务失败提示 + 导入进度。
+ *
+ * 2026-10-29：从弹窗里抽出来，供「更多选项」统一中心直接复用 ——
+ * 尺寸、标题、关闭按钮、纸面材质全部交给外壳，这里一行都不写。
+ */
+export function BackupPanel({
     initialTab = 0,
     client,
     webdavConfig,
@@ -129,12 +146,14 @@ export default function BackupDialog({
     onImportData,
     onRequestImportPreview,
     onNotify,
-    onClose,
+    onRestored,
     includeCredentials,
     onIncludeCredentialsChange,
     onOpenBookmark,
     cronError = null,
-}: BackupDialogProps) {
+}: BackupPanelProps) {
+    /** 正文的滚动容器（WebDAV 测试结果出来后要滚到它底部，见下面那个 effect） */
+    const scrollRef = useRef<HTMLDivElement | null>(null);
 
     const [tab, setTab] = useState(initialTab);
     const [config, setConfig] = useState<WebDavConfig>(webdavConfig);
@@ -149,13 +168,16 @@ export default function BackupDialog({
     useEffect(() => {
         if (!testResult) return;
         // 直接滚到滚动区最底部：block:'nearest' 会把按钮底边贴到滚动口边缘，
-        // 看起来还是和底部操作区叠在一起；滚到底则连内容末尾的留白一起带进可视区
-        const el = webdavActionsRef.current;
-        const scroller = el?.closest(".MuiDialogContent-root");
-        if (scroller) {
-            scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+        // 看起来还是和底部操作区叠在一起；滚到底则连内容末尾的留白一起带进可视区。
+        // 滚动容器本来是 .MuiDialogContent-root，抽成面板后就是自己这一层 Box。
+        const scroller =
+            scrollRef.current ??
+            webdavActionsRef.current?.closest(".MuiDialogContent-root") ??
+            null;
+        if (scroller && typeof (scroller as HTMLElement).scrollTo === "function") {
+            (scroller as HTMLElement).scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
         } else {
-            el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+            webdavActionsRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
         }
     }, [testResult]);
 
@@ -195,34 +217,36 @@ export default function BackupDialog({
     const [needsRemotePassword, setNeedsRemotePassword] = useState(false);
     const [remoteError, setRemoteError] = useState<string | null>(null);
 
-    // 打开时同步外部保存的 WebDAV 配置，之后**不跟随** webdavConfig 的变化。
-    // 这不是偷懒：「测试连接并保存」按钮就在本弹窗里，保存完外部配置会变，
+    // 挂载时同步外部保存的 WebDAV 配置，之后**不跟随** webdavConfig 的变化。
+    // 这不是偷懒：「测试连接并保存」按钮就在本面板里，保存完外部配置会变，
     // 一旦跟随，这段就会把用户正在填的备份口令、本地文件选择一起清掉
-    // （看起来像「保存完表单自己清空了」）。所以依赖里只放 open / initialTab。
+    // （看起来像「保存完表单自己清空了」）。
+    // 弹窗关闭时 MUI 不渲染子树，所以「重新打开」=「重新挂载」= 这里重跑一次，
+    // 与原来 `if (open)` 的语义完全一致。
     useEffect(() => {
-        if (open) {
-            setConfig(webdavConfig);
-            setTab(initialTab);
-            setTestResult(null);
-            setLocalFile(null);
-            setLocalData(null);
-            setLocalError(null);
-            setSelectedRemote("");
-            setShowPassword(false);
-            setEncryptLocal(false);
-            setBackupPassword("");
-            setBackupPasswordConfirm("");
-            setShowBackupPassword(false);
-            setEncryptedBytes(null);
-            setRestorePassword("");
-            setRemotePassword("");
-            setNeedsRemotePassword(false);
-            setRemoteError(null);
-            setShowWebdavBackupPassword(false);
-            setOverwrite(false);
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅当 open / initialTab 变化时重跑；不跟随外部 webdavConfig，避免表单被清空
-    }, [open, initialTab]);
+        setConfig(webdavConfig);
+        setTab(initialTab);
+        setTestResult(null);
+        setLocalFile(null);
+        setLocalData(null);
+        setLocalError(null);
+        setSelectedRemote("");
+        setShowPassword(false);
+        setEncryptLocal(false);
+        setBackupPassword("");
+        setBackupPasswordConfirm("");
+        setShowBackupPassword(false);
+        setEncryptedBytes(null);
+        setRestorePassword("");
+        setRemotePassword("");
+        setNeedsRemotePassword(false);
+        setRemoteError(null);
+        setShowWebdavBackupPassword(false);
+        setOverwrite(false);
+        setImportProgress(null);
+        setRestoring(false);
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在挂载 / initialTab 变化时重跑；不跟随外部 webdavConfig，避免表单被清空
+    }, [initialTab]);
 
     const handleConfigChange = (field: keyof WebDavConfig) => (
         e: React.ChangeEvent<HTMLInputElement>
@@ -418,7 +442,7 @@ export default function BackupDialog({
             if (!finalData) return; // 用户在预览里点了取消
             const result = await onImportData(finalData, overwrite, setImportProgress);
             onNotify(summarizeImport(result) ?? "已从本地备份恢复数据", "success");
-            onClose();
+            onRestored?.();
         } catch (error) {
             onNotify(error instanceof Error ? error.message : "恢复失败", "error");
         } finally {
@@ -460,7 +484,7 @@ export default function BackupDialog({
                 `${summarizeImport(imported) ?? "已恢复数据"}（来自 ${selectedRemote}）`,
                 "success"
             );
-            onClose();
+            onRestored?.();
         } catch (error) {
             onNotify(error instanceof Error ? error.message : "恢复失败", "error");
         } finally {
@@ -502,93 +526,49 @@ export default function BackupDialog({
     };
 
     return (
-        <Dialog
-            open={open}
-            onClose={onClose}
-            fullWidth
-            maxWidth='md'
-            slotProps={{
-                paper: {
-                    sx: {
-                        // 2026-10-25：圆角跟「圆角风格」走；底色不再自己盖一层不透明纸 ——
-                        // 全站弹窗的玻璃底来自 theme 的 --surface-modal，这个弹窗原先单独
-                        // 设成 background.paper，于是它是唯一一个「不透明纸」弹窗。
-                        borderRadius: "var(--card-radius)",
-                        m: { xs: 2, sm: "auto" },
-                        // 宽度也要写死：width:auto 时 paper 会跟着内容宽度走，
-                        // 结果切标签页时弹窗宽度会跳（备份页 541 / 恢复页 560 实测）
-                        width: { xs: "calc(100% - 32px)", sm: 600 },
-                        // 高度写在 paper 层而不是内容层：内容层写死的话，遇到小视口 /
-                        // 系统 125% 缩放（CSS 视口只有 ~830px 高），弹窗整体会顶满甚至
-                        // 超出屏幕，底部按钮区和页面底栏叠在一起。
-                        // 高度写在这里，弹窗在任何视口下上下至少各留 24px，永远不顶满；
-                        // 内容区 flex 填剩余高度，内容装不下时在区内滚动。
-                        // 上限取 880：备份页自然高 ~640（含末尾留白），扣掉标题/标签页/
-                        // 按钮行约 166px 后需要 ~806 才装得下，880 让 1000px 左右的常见
-                        // 视口完全不出滚动条；更矮的视口仍在区内滚动，外框不超屏幕。
-                        height: { xs: "auto", sm: "min(880px, calc(100% - 48px))" },
-                        maxHeight: { sm: "calc(100% - 48px)" },
-                    },
-                }
-            }}
-        >
-            <DialogTitle sx={{ ...dialogTitleSx, justifyContent: "space-between" }}>
-                <Typography component='div' sx={{
-                    fontWeight: '600'
-                }}>
-                    数据备份与恢复
-                </Typography>
-                {/* 换成全站统一的右上角「×」（位置 / Tooltip / aria-label="关闭" 统一） */}
-                <DialogCloseButton onClose={onClose} />
-            </DialogTitle>
-
-            <Divider />
+        <Box sx={{ display: "flex", flexDirection: "column", minHeight: 0, height: "100%" }}>
+            {/* 定时任务失败的提示：只在真失败过一次时出现，平时不占地方。
+                任务下一次跑成功会自动撤掉（见 worker/cron.ts 的 clearCronError）。 */}
+            {cronError ? (
+                <Alert severity='warning' sx={{ mb: 1.5, flexShrink: 0 }}>
+                    <Typography variant='body2' sx={{
+                        fontWeight: 600
+                    }}>
+                        {cronError.task === "backup" ? "每周自动备份" : "死链巡检"}未成功
+                        {cronError.at
+                            ? `（${fmtDateTime(cronError.at)}）`
+                            : ""}
+                    </Typography>
+                    <Typography variant='caption' sx={{
+                        color: 'text.secondary'
+                    }}>
+                        {cronError.message}
+                    </Typography>
+                </Alert>
+            ) : null}
 
             <Tabs
                 value={tab}
                 onChange={(_, value: number) => setTab(value)}
-                sx={{ px: 2 }}
+                sx={{ flexShrink: 0 }}
                 variant='fullWidth'
             >
                 <Tab label='备份' />
                 <Tab label='恢复 / 导入' />
             </Tabs>
 
-            {/* 内容区不再写死高度：sm 以上由弹窗 paper（定高）扣掉标题/标签页/按钮区
-                后 flex 填满；xs 维持 58vh。
-                备份页自然高实测 ~640（含末尾留白）：CSS 视口 ≥ 950px 时外框取到 880，
-                扣掉约 166px 的标题/标签/按钮后还有 ~714，整页装得下、不出滚动条；
-                更矮的视口（如 900px 只能给到 852）在区内滚动，外框依然不超屏幕。
-                再往备份页加控件时先跑 harness/backup-dialog-probe.mjs 看自然高度。 */}
-            <DialogContent
+            {/* 正文自己滚：标签页与导入进度钉在上下两端，中间这块装满剩余高度 */}
+            <Box
+                ref={scrollRef}
                 sx={{
                     pt: 1,
-                    height: { xs: "58vh" },
                     flex: 1,
                     minHeight: 0,
+                    overflowY: "auto",
                     display: "flex",
                     flexDirection: "column",
                 }}
             >
-                {/* 定时任务失败的提示：只在真失败过一次时出现，平时不占地方。
-                    任务下一次跑成功会自动撤掉（见 worker/cron.ts 的 clearCronError）。 */}
-                {cronError ? (
-                    <Alert severity='warning' sx={{ mb: 1.5, flexShrink: 0 }}>
-                        <Typography variant='body2' sx={{
-                            fontWeight: 600
-                        }}>
-                            {cronError.task === "backup" ? "每周自动备份" : "死链巡检"}未成功
-                            {cronError.at
-                                ? `（${fmtDateTime(cronError.at)}）`
-                                : ""}
-                        </Typography>
-                        <Typography variant='caption' sx={{
-                            color: 'text.secondary'
-                        }}>
-                            {cronError.message}
-                        </Typography>
-                    </Alert>
-                ) : null}
                 {tab === 0 ? (
                     <BackupTab
                         config={config}
@@ -690,10 +670,74 @@ export default function BackupDialog({
                         />
                     </Box>
                 ) : null}
+            </Box>
+
+            {/* 「备份含不含站点账号密码」原来在最底部操作区的最左边。
+                中心里的底栏是全弹窗级的，这一句是备份这一屏的说明，
+                所以跟着面板走，钉在正文下方。 */}
+            <Box sx={{ flexShrink: 0, pt: 1.5 }}>
+                <Chip
+                    size='small'
+                    variant='outlined'
+                    label={includeCredentials ? "备份含站点账号密码，请妥善保存" : "备份不含账号密码"}
+                />
+            </Box>
+        </Box>
+    );
+}
+
+export default function BackupDialog({
+    open,
+    onClose,
+    ...panel
+}: BackupDialogProps) {
+    return (
+        <Dialog
+            open={open}
+            onClose={onClose}
+            fullWidth
+            maxWidth='md'
+            slotProps={{
+                paper: {
+                    sx: {
+                        // 2026-10-25：圆角跟「圆角风格」走；底色不再自己盖一层不透明纸 ——
+                        // 全站弹窗的玻璃底来自 theme 的 --surface-modal，这个弹窗原先单独
+                        // 设成 background.paper，于是它是唯一一个「不透明纸」弹窗。
+                        borderRadius: "var(--card-radius)",
+                        m: { xs: 2, sm: "auto" },
+                        // 宽度也要写死：width:auto 时 paper 会跟着内容宽度走，
+                        // 结果切标签页时弹窗宽度会跳（备份页 541 / 恢复页 560 实测）
+                        width: { xs: "calc(100% - 32px)", sm: 600 },
+                        height: { xs: "auto", sm: "min(880px, calc(100% - 48px))" },
+                        maxHeight: { sm: "calc(100% - 48px)" },
+                    },
+                }
+            }}
+        >
+            <DialogTitle sx={{ ...dialogTitleSx, justifyContent: "space-between" }}>
+                <Typography component='div' sx={{
+                    fontWeight: '600'
+                }}>
+                    数据备份与恢复
+                </Typography>
+                {/* 换成全站统一的右上角「×」（位置 / Tooltip / aria-label="关闭" 统一） */}
+                <DialogCloseButton onClose={onClose} />
+            </DialogTitle>
+
+            <Divider />
+
+            <DialogContent
+                sx={{
+                    pt: 1,
+                    flex: 1,
+                    minHeight: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                }}
+            >
+                <BackupPanel {...panel} onRestored={onClose} />
             </DialogContent>
 
-            {/* 顶部分隔线：内容滚动到底时按钮行离底部只剩几 px，容易和这里
-                的「关闭」行视觉上叠在一起；一条线把两个区域明确隔开 */}
             <DialogActions
                 sx={{
                     ...dialogActionsSx,
@@ -702,12 +746,6 @@ export default function BackupDialog({
                     borderColor: "divider",
                 }}
             >
-                <Chip
-                    size='small'
-                    variant='outlined'
-                    label={includeCredentials ? "备份含站点账号密码，请妥善保存" : "备份不含账号密码"}
-                    sx={{ mr: "auto" }}
-                />
                 <Button onClick={onClose} variant='outlined' color='inherit'>
                     关闭
                 </Button>

@@ -109,14 +109,19 @@ const AccountDialog = lazy(() => import("./components/AccountDialog"));
 // ⚠️ 只给普通账号：站点所有者不渲染这个入口（后端也拒 owner），见下面 onDeleteAccount。
 const DeleteAccountDialog = lazy(() => import("./components/DeleteAccountDialog"));
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
-const AuditDialog = lazy(() => import("./components/AuditDialog"));
-// 统计（访问统计 + 运营看板，一个弹窗两个标签页）：从「更多选项」进入，懒加载
-const StatsHubDialog = lazy(() => import("./components/StatsHubDialog"));
-const RecycleBinDialog = lazy(() => import("./components/RecycleBinDialog"));
+// 「更多选项」的统一中心（2026-10-29）：一个弹窗装下原来那一列菜单动作，
+// 桌面顶栏按钮与移动端底栏「更多」打开的都是它。九个面板在它内部再分一层 lazy，
+// 只有被选中那一个才会真的下载（tests/navigationCenterLazyGuard.test.ts 盯着）。
+//
+// ⚠️ 统计 / 备份 / 回收站 / 审计这四个**不再有一级挂载点**（T02 已搬进中心的面板），
+//    所以这里也不再为它们声明 lazy —— 它们的块由中心内部的面板层按需引入，
+//    dialogChunks 里那几条预取入口指向的还是同一批模块。
+const NavigationCenterDialog = lazy(() => import("./components/NavigationCenterDialog"));
 const VaultDialog = lazy(() => import("./components/VaultDialog"));
 // 记事本：独立页面（参考 inkstone 的工作区布局）。懒加载。
 /** 记事本整块（hook + 视图）懒加载：打开之前一行代码都不进首屏 */
 const NotesOverlay = lazy(() => import("./components/NotesOverlay"));
+import type { NavCenterPanelId } from "./components/navigationCenter/model";
 import HeaderClock from "./components/HeaderClock";
 import SiteListHeader from "./components/SiteListHeader";
 import { writeCollapsedGroupIds } from "./utils/collapse";
@@ -170,7 +175,7 @@ import MaintenanceBanner from "./components/MaintenanceBanner";
 // 登录页是 lazy chunk（见 components/LoginScreen.tsx）：它不进首屏包，但登录页本身
 // 是首屏 —— 所以配合下面的「预热」，让它的 chunk 与认证检查那次请求并行下载：
 // 等 chunk 到位时正好渲染，用户感觉不到多等一次。
-const BackupDialog = lazy(() => import("./components/BackupDialog"));
+// （备份面板已收进「更多选项」中心，不再在此声明一级 lazy；它的块由中心内部面板层按需引入）
 import "./App.css";
 import {
     KeyboardSensor,
@@ -349,7 +354,7 @@ function App() {
     useEffect(() => {
         if (!isAuthenticated) return;
         prefetchOnIdle([
-            ["moreMenu", dialogChunks.moreMenu],
+            ["navigationCenter", dialogChunks.navigationCenter],
             ["siteCardContextMenu", dialogChunks.siteCardContextMenu],
             ["addSite", dialogChunks.addSite],
             ["siteSettings", dialogChunks.siteSettings],
@@ -491,10 +496,13 @@ function App() {
     // 新增状态管理
 
 
-    // 审计日志 / 回收站对话框状态（统计走 useAppDialogs 的 openStatsHub）
-    const [openAudit, setOpenAudit] = useState(false);
-    const [openRecycle, setOpenRecycle] = useState(false);
+    // 密码保险库（T03 迁进中心之前仍是一级弹窗）
     const [vaultOpen, setVaultOpen] = useState(false);
+    /**
+     * 「更多选项」中心打开时要落在哪一屏。
+     * 顶栏按钮与底栏「更多」不指定（= 左栏第一项），命令面板直达某一屏时才带。
+     */
+    const [navCenterPanel, setNavCenterPanel] = useState<NavCenterPanelId>("stats");
     // 全部站点（含解密后的登录凭据）——喂给「账号与安全」里的「密码健康」面板做客户端分析（方案 A）
     const allSitesWithCreds = useMemo(() => groups.flatMap(g => g.sites ?? []), [groups]);
 
@@ -613,13 +621,11 @@ function App() {
     // 书签导入/标签管理/重复网址确认），各自的数据与提交逻辑仍留在本组件。
     const {
         commandOpen,
-        openStatsHub,
         openShortcuts,
         bookmarkOpen,
         tagManagerOpen,
         dupPrompt,
         setCommandOpen,
-        setOpenStatsHub,
         setOpenShortcuts,
         setBookmarkOpen,
         setTagManagerOpen,
@@ -639,8 +645,8 @@ function App() {
     // 视口相关的那一簇（头部收缩 / 当前分组高亮 / 顶栏与底栏的菜单锚点，
     // 以及「锚点所在按钮被卸载时把菜单收掉」的补救）整套搬到 hooks/useViewportUi。
     const {
-        menuAnchorEl,
-        openMenu,
+        navCenterOpen,
+        setNavCenterOpen,
         activeGroupId,
         headerCompact,
         mobileGroupsAnchor,
@@ -652,6 +658,15 @@ function App() {
         handleExitMobileViewport,
         handleExitGroupsButtonViewport,
     } = useViewportUi({ loading, groupCount: groups.length });
+
+    // 命令面板直达「更多选项」中心的某一屏（统计 / 备份已收进中心，不再有独立弹窗）
+    const openNavCenter = useCallback(
+        (panel: string) => {
+            setNavCenterPanel(panel as NavCenterPanelId);
+            setNavCenterOpen(true);
+        },
+        [setNavCenterPanel, setNavCenterOpen]
+    );
     // 断网提示挂不挂（决定要不要去下载那个块）；见 hooks/useOfflineBannerVisible
     const showOfflineBanner = useOfflineBannerVisible();
 
@@ -1221,13 +1236,9 @@ function App() {
 
     // 打开备份对话框（0=备份，1=恢复）
     const {
-        openBackup,
-        setOpenBackup,
         backupTab,
         importPreview,
         cronError,
-        handleOpenBackup,
-        handleCloseBackup,
         buildExportData,
         handleDownloadLocal,
         handleSaveWebdavConfig,
@@ -1248,6 +1259,9 @@ function App() {
         notify,
         handleError,
         handleMenuClose,
+        onOpenBackupPanel: () => {
+            setNavCenterOpen(true);
+        },
         fetchData,
         restoreLocalPrefs,
         setConfigs,
@@ -1396,11 +1410,10 @@ function App() {
         setOpenAccount,
         fetchSessions,
         fetchAccountList,
-        handleOpenBackup,
         setBookmarkOpen,
         runLinkCheck,
-        setOpenStatsHub,
         toggleCollapseAll,
+        openNavCenter,
         exitMultiSelect,
         setMultiSelect,
         setStarFilter,
@@ -1425,6 +1438,14 @@ function App() {
         }
         handleOpenAddGroup();
     }, [groups, activeGroupId, handleOpenAddSite, handleOpenAddGroup]);
+
+    // 中心「账号与安全」屏激活时拉会话 / 账号清单。
+    // 原来这些是在打开独立弹窗时拉的；迁入中心后中心接管了「打开」语义，
+    // 所以把这次拉取钩子挂在这里，避免这一屏进去看到空数据。
+    const handleAccountActivate = useCallback(() => {
+        void fetchSessions();
+        void fetchAccountList();
+    }, [fetchSessions, fetchAccountList]);
 
     /**
      * 站外「一键收藏」深链（浏览器扩展用）：`?add-site=<base64url>` 直接开新增弹窗并填好。
@@ -1833,41 +1854,7 @@ function App() {
             onOpenNotes={() => setNotesOpen(true)}
             notesCount={notesCount}
                                     onMenuOpen={handleMenuOpen}
-                                    menuOpen={openMenu}
-                                    menuAnchorEl={menuAnchorEl}
-                                    onMenuClose={handleMenuClose}
-                                    onOpenConfig={handleOpenConfig}
-                                    onOpenAccount={() => {
-                                        handleMenuClose();
-                                        setOpenAccount(true);
-                                        void fetchSessions();
-                                        void fetchAccountList();
-                                    }}
-                                    onOpenStats={() => {
-                                        handleMenuClose();
-                                        setOpenStatsHub(true);
-                                    }}
-                                    onOpenBackup={handleOpenBackup}
-                                    onOpenRecycle={() => {
-                                        handleMenuClose();
-                                        setOpenRecycle(true);
-                                    }}
-                                    onOpenVault={() => {
-                                        handleMenuClose();
-                                        setVaultOpen(true);
-                                    }}
-                                    onOpenAudit={() => {
-                                        handleMenuClose();
-                                        setOpenAudit(true);
-                                    }}
-                                    isAuthenticated={isAuthenticated}
-                                    onLogout={handleLogout}
-                                    onOpenAiAssistant={() => {
-                                        handleMenuClose();
-                                        setOpenAiAssistant(true);
-                                    }}
-                                    onOpenShortcuts={() => setOpenShortcuts(true)}
-                                    isSiteOwner={currentUser?.role === "owner"}
+                                    menuOpen={navCenterOpen}
                                 />
                             </>
                         }
@@ -1998,6 +1985,149 @@ function App() {
                             onAiComplete={handleAiCompleteNew}
                         />
                     </ChunkBoundary>
+                    {/* 「更多选项」统一中心（2026-10-29）：桌面顶栏按钮与移动端底栏
+                        「更多」都开它。九个业务面板在它内部再分一层 lazy，所以这里
+                        只在 open 时挂载 —— 关着的时候连外壳那块都不下。 */}
+                    <ChunkBoundary when={navCenterOpen}>
+                    <NavigationCenterDialog
+                        open={navCenterOpen}
+                        onClose={handleMenuClose}
+                        isAuthenticated={isAuthenticated}
+                        isSiteOwner={currentUser?.role === "owner"}
+                        initialPanel={navCenterPanel}
+                        stats={{
+                            client: api as unknown as NavigationClient,
+                            isSiteOwner: currentUser?.role === "owner",
+                            nameOf: (id: string) => {
+                                for (const group of groups) {
+                                    const hit = group.sites.find(s => String(s.id) === id);
+                                    if (hit) return hit.name || hit.url || `#${id}`;
+                                }
+                                return `已删除的网站 #${id}`;
+                            },
+                            exists: (id: string) => groups.some(g => g.sites.some(s => String(s.id) === id)),
+                            syncEnabled: configs[PREF_SYNC_CONFIG] === "true",
+                            onClear: () => { clearVisits(); },
+                        }}
+                        backup={{
+                            initialTab: backupTab,
+                            client: api,
+                            webdavConfig,
+                            onSaveWebdavConfig: handleSaveWebdavConfig,
+                            autoBackup: configs[`${WEBDAV_CONFIG_PREFIX}autoBackup`] !== "false",
+                            lastBackupAt: configs[`${WEBDAV_CONFIG_PREFIX}lastBackupAt`] || "",
+                            lastBackupInfo: configs[`${WEBDAV_CONFIG_PREFIX}lastBackupInfo`] || "",
+                            lastAutoBackupAt: configs[`${WEBDAV_CONFIG_PREFIX}lastAutoBackupAt`] || "",
+                            onToggleAutoBackup: handleToggleAutoBackup,
+                            onBuildExportData: buildExportData,
+                            onDownloadLocal: handleDownloadLocal,
+                            onImportData: handleImportBackup,
+                            onRequestImportPreview: requestImportPreview,
+                            onNotify: notify,
+                            includeCredentials: configs[BACKUP_CREDENTIALS_CONFIG] === "true",
+                            onIncludeCredentialsChange: handleToggleIncludeCredentials,
+                            onOpenBookmark: () => setBookmarkOpen(true),
+                            cronError,
+                        }}
+                        recycle={{
+                            client: api as unknown as NavigationClient,
+                            retentionDays: Number(configs[RETENTION_DAYS_KEY]) || undefined,
+                            onChanged: () => void fetchData({ silent: true }),
+                            onNotify: (msg: string, severity?: "success" | "error" | "info") => notify(msg, severity || "info"),
+                        }}
+                        audit={{
+                            client: api as unknown as NavigationClient,
+                            retentionDays: Number(configs[RETENTION_DAYS_KEY]) || undefined,
+                        }}
+                        config={{
+                            open: true,
+                            onClose: () => {},
+                            onSave: handleSaveConfig,
+                            tempConfigs,
+                            setTempConfigs,
+                            onConfigInputChange: handleConfigInputChange,
+                            onMaskOpacityChange: handleConfigSliderChange,
+                            onPickAccent: pickAccent,
+                            radius,
+                            onRadiusChange: setRadius,
+                            fontScale,
+                            onFontScaleChange: setFontScale,
+                            glassBlur: tempGlassBlur,
+                            onGlassBlurChange: handleGlassBlurChange,
+                            glassEffects,
+                            onGlassEffectsChange: setGlassEffects,
+                            offlineFull,
+                            onOfflineFullChange: setOfflineFull,
+                            iconPrivacy,
+                            onIconPrivacyChange: setIconPrivacy,
+                            liteMode,
+                            onLiteModeChange: setLiteMode,
+                            saving: savingConfig,
+                            pinyinSearch,
+                            onPinyinSearchChange: setPinyinSearch,
+                            syncHealth: configs[LINK_HEALTH_SYNC_CONFIG] === "true",
+                            onSyncHealthChange: handleToggleLinkHealthSync,
+                            syncPrefs: prefSync,
+                            onSyncPrefsChange: handleTogglePrefSync,
+                            onRunLinkCheck: () => void runLinkCheck(),
+                            isSiteOwner: !currentUser || currentUser.role === "owner",
+                        }}
+                        ai={{
+                            api: aiConfigClient,
+                            ai,
+                            onSaved: () => void ai.refresh(),
+                            statusText: aiStatusText,
+                        }}
+                        vault={{
+                            client: api as unknown as import("./utils/vaultSession").VaultTransport,
+                            onNotify: (m, s) => notify(m, s || "info"),
+                        }}
+                        account={{
+                            open: true,
+                            onClose: () => {},
+                            sites: allSitesWithCreds,
+                            auth: {
+                                username: authUsername,
+                                currentPassword: authCurrentPassword,
+                                newPassword: authNewPassword,
+                            },
+                            onAuthChange: (field, value) => {
+                                if (field === "username") setAuthUsername(value);
+                                else if (field === "currentPassword") setAuthCurrentPassword(value);
+                                else setAuthNewPassword(value);
+                            },
+                            onSaveAuth: () => void handleSaveAuthCredentials(),
+                            saving: savingAuth,
+                            currentUser,
+                            recoveryKeyConfigured: recoveryConfigured,
+                            onGenerateRecoveryKey: handleGenerateRecoveryKey,
+                            invite,
+                            onCreateInvite: handleCreateInvite,
+                            sessions,
+                            onRevokeSession: jti => void handleRevokeSession(jti),
+                            onRevokeOthers: () => void handleRevokeOthers(),
+                            onDeleteAccount:
+                                currentUser && currentUser.role !== "owner"
+                                    ? () => {
+                                          setNavCenterOpen(false);
+                                          setDeleteAccountOpen(true);
+                                      }
+                                    : undefined,
+                            accounts: accountList,
+                            onExemptUser: uid => void handleExemptUser(uid),
+                            inactivePolicy: inactivePolicy ?? undefined,
+                            onSaveInactivePolicy: handleSaveInactivePolicy,
+                            onSweepInactive: handleSweepInactive,
+                        }}
+                        onAccountActivate={handleAccountActivate}
+                        shortcuts={{
+                            canInstall,
+                            onInstallApp: () => void handleInstallApp(),
+                        }}
+                        onLogout={handleLogout}
+                    />
+                    </ChunkBoundary>
+
                     {/* 网站配置对话框 */}
                     {/* 全站设置：这一块原来内联在 App 里，抽成 SettingsDialog 单独维护 */}
                     <ChunkBoundary when={openConfig}>
@@ -2107,28 +2237,7 @@ function App() {
                     />
                     </ChunkBoundary>
 
-                    {/* 统计：一个弹窗两个标签页 —— 访问统计（本机）+ 运营看板（服务端，仅 owner） */}
-                    <ChunkBoundary when={openStatsHub}>
-                    <StatsHubDialog
-                        open={openStatsHub}
-                        onClose={() => setOpenStatsHub(false)}
-                        client={api as unknown as NavigationClient}
-                        isSiteOwner={currentUser?.role === "owner"}
-                        nameOf={id => {
-                            for (const group of groups) {
-                                const hit = group.sites.find(s => String(s.id) === id);
-                                if (hit) return hit.name || hit.url || `#${id}`;
-                            }
-                            return `已删除的网站 #${id}`;
-                        }}
-                        exists={id => groups.some(g => g.sites.some(s => String(s.id) === id))}
-                        syncEnabled={configs[PREF_SYNC_CONFIG] === "true"}
-                        onClear={() => {
-                            clearVisits();
-                            // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
-                        }}
-                    />
-                    </ChunkBoundary>
+                    {/* 统计（访问统计 / 运营看板）已收进「更多选项」统一中心 → NavigationCenterDialog stats 面板 */}
 
                     {/* 记事本：全屏独立页面（不是右侧抽屉），lazy 引入。
                         ⚠️ 懒的是 **NotesOverlay** 而不是 NotesPage ——
@@ -2159,40 +2268,7 @@ function App() {
                         </ChunkBoundary>
                     )}
 
-                    {/* 数据备份与恢复对话框 */}
-                    <ChunkBoundary when={openBackup}>
-                    <BackupDialog
-                        open={openBackup}
-                        initialTab={backupTab}
-                        client={api}
-                        webdavConfig={webdavConfig}
-                        onSaveWebdavConfig={handleSaveWebdavConfig}
-                        autoBackup={configs[`${WEBDAV_CONFIG_PREFIX}autoBackup`] !== "false"}
-                        lastBackupAt={configs[`${WEBDAV_CONFIG_PREFIX}lastBackupAt`] || ""}
-                        lastBackupInfo={configs[`${WEBDAV_CONFIG_PREFIX}lastBackupInfo`] || ""}
-                        // 「最近一次**自动**备份成功」的时间：定时任务写、界面读。
-                        // 单独一个键是因为 lastBackupAt 会被手动备份覆盖 ——
-                        // 只看它的话，自动备份死了也看不出来（线上真实踩过）。
-                        lastAutoBackupAt={configs[`${WEBDAV_CONFIG_PREFIX}lastAutoBackupAt`] || ""}
-                        onToggleAutoBackup={handleToggleAutoBackup}
-                        onBuildExportData={buildExportData}
-                        onDownloadLocal={handleDownloadLocal}
-                        onImportData={handleImportBackup}
-                        onRequestImportPreview={requestImportPreview}
-                        onNotify={notify}
-                        onClose={handleCloseBackup}
-                        includeCredentials={configs[BACKUP_CREDENTIALS_CONFIG] === "true"}
-                        onIncludeCredentialsChange={handleToggleIncludeCredentials}
-                        // 导航备份与笔记备份是两套独立备份，笔记只走自己的 WebDAV 备份，
-                        // 导航备份文件一律不含笔记（见 transfer.exportData）。
-                        // 导入浏览器书签：从「更多选项」挪进「恢复 / 导入」页，和从文件恢复同类
-                        onOpenBookmark={() => {
-                            setOpenBackup(false);
-                            setBookmarkOpen(true);
-                        }}
-                        cronError={cronError}
-                    />
-                    </ChunkBoundary>
+                    {/* 数据备份与恢复已收进「更多选项」统一中心 → NavigationCenterDialog backup 面板 */}
 
                 {/* 快捷键说明表：按 ? 打开，命令面板里也有入口；浏览器给了安装事件时底部带「安装到桌面」 */}
                 <ChunkBoundary when={openShortcuts}>
@@ -2217,27 +2293,9 @@ function App() {
                 />
                 </ChunkBoundary>
 
-                {/* 审计日志：仅站点所有者可读，事后溯源谁在何时做了什么 */}
-                <ChunkBoundary when={openAudit}>
-                <AuditDialog
-                    open={openAudit}
-                    onClose={() => setOpenAudit(false)}
-                    client={api as unknown as NavigationClient}
-                    retentionDays={Number(configs[RETENTION_DAYS_KEY]) || undefined}
-                />
-                </ChunkBoundary>
+                {/* 审计日志已收进「更多选项」统一中心 → NavigationCenterDialog audit 面板 */}
 
-                {/* 回收站：还原 / 彻底删除被软删除的站点、分组 */}
-                <ChunkBoundary when={openRecycle}>
-                <RecycleBinDialog
-                    open={openRecycle}
-                    onClose={() => setOpenRecycle(false)}
-                    client={api as unknown as NavigationClient}
-                    retentionDays={Number(configs[RETENTION_DAYS_KEY]) || undefined}
-                    onChanged={() => void fetchData({ silent: true })}
-                    onNotify={(msg, severity) => notify(msg, severity || "info")}
-                />
-                </ChunkBoundary>
+                {/* 回收站已收进「更多选项」统一中心 → NavigationCenterDialog recycle 面板 */}
 
                 {/* 密码保险库：端到端加密（方案 B）。client 即 api，结构上满足 VaultTransport */}
                 <VaultDialog
@@ -2288,8 +2346,8 @@ function App() {
                         },
                         // 和顶栏主按钮同一个动作：默认新增网站，没分组时才去建分组
                         onAdd: handleQuickAdd,
-                        onMore: event =>
-                            handleMenuOpen(event as React.MouseEvent<HTMLButtonElement>),
+                        // 与顶栏「更多选项」同一个中心，不再需要事件锚点
+                        onMore: handleMenuOpen,
                         // 窄屏（<=899.98px）顶栏没有记事本入口，底栏补一项 ——
                         // 之前那一档完全打不开记事本（2026-10-16 弹窗排查 P1）
                         onNotes: () => setNotesOpen(true),

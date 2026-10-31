@@ -630,6 +630,19 @@ html.dark .nav-skip-link {
     }
 }
 
+/* 设置工作区（导航页「更多选项」中心）右栏切面板时的淡入。
+   只做 opacity、不做位移：左右两栏是并排的，正文位移会让标题跟着晃；
+   时长走 --dur-base（220ms），与全站「默认档」一致，减少动效偏好由上面的
+   全局 @media (prefers-reduced-motion) 统一压到近乎瞬时。 */
+@keyframes navPanelFade {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
 /* 笔记列表整列淡入（2026-10-07 P1-5，inkstone 的 anim-view-content 同款）。
    inkstone 是把动画挂在**列表容器**上（NoteList.tsx:310），不是每一行 ——
    逐行动画会让长列表像在逐个蹦，几十行时很吵。 */

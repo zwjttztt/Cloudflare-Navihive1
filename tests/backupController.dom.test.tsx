@@ -189,6 +189,7 @@ function Harness(props: {
         setPrefSync,
         lastHealthPushRef,
         lastPrefPushRef,
+        onOpenBackupPanel: () => {},
     });
 
     controllerRef = c;

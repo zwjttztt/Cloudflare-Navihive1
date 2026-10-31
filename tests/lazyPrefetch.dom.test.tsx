@@ -6,8 +6,10 @@
 // 再次打开才恢复正常」）。修复是三层预取（同日用户要求去除 LazyFallback 转圈，
 // ChunkBoundary fallback 已回退为 null，不加回），这里把每层都钉住：
 //   1. prefetchChunk 的幂等 / 失败重试语义（lazyPrefetch.ts）；
-//   2. 静态守卫：三层挂载点（App 空闲预取 / HeaderActions 悬停 / MoreMenu 展开
-//      时预取目标弹窗 / SiteCard 卡片设置悬停）与 dialogChunks 只含动态 import。
+//   2. 静态守卫：三层挂载点（App 空闲预取 / HeaderActions 悬停 / 「更多选项」中心
+//      挂载时预取目标弹窗 / SiteCard 卡片设置悬停）与 dialogChunks 只含动态 import。
+//      （2026-10-29：MoreMenu 下拉菜单已被 NavigationCenterDialog 取代，
+//       这一层守卫跟着换到新文件，语义不变。）
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -75,7 +77,7 @@ test("App：登录后有空闲预取，且覆盖「更多选项」菜单与常�
     const code = strip(readSrc("App.tsx"));
     assert.match(code, /prefetchOnIdle\(\[/, "App 要在登录后调度空闲预取");
     for (const key of [
-        "moreMenu", "siteCardContextMenu", "addSite", "siteSettings", "settings", "stats",
+        "navigationCenter", "siteCardContextMenu", "addSite", "siteSettings", "settings", "stats",
         "backup", "recycle", "confirm", "snackbar", "bulk", "aiSuggest", "deleteAccount",
         "tagBar", "siteSkeleton",
     ]) {
@@ -86,15 +88,17 @@ test("App：登录后有空闲预取，且覆盖「更多选项」菜单与常�
 
 test("HeaderActions：「更多选项」与「新增」按钮有悬停预取", () => {
     const code = strip(readSrc("components", "HeaderActions.tsx"));
-    assert.match(code, /prefetchChunk\("moreMenu", dialogChunks\.moreMenu\)/);
+    assert.match(code, /prefetchChunk\("navigationCenter", dialogChunks\.navigationCenter\)/);
     assert.match(code, /prefetchChunk\("addSite", dialogChunks\.addSite\)/);
 });
 
-test("MoreMenu：展开时预取全部菜单项的目标弹窗块", () => {
-    const code = strip(readSrc("components", "MoreMenu.tsx"));
-    assert.match(code, /useEffect\(\(\) => \{/, "预取要挂在菜单挂载 effect 里");
-    for (const key of ["settings", "stats", "backup", "recycle", "audit", "aiAssistant", "account", "shortcuts", "editGroup"]) {
-        assert.match(code, new RegExp(`prefetchChunk\\("${key}"`), `菜单展开预取缺 ${key}`);
+test("「更多选项」中心：挂载时预取各面板的目标弹窗块", () => {
+    const code = strip(readSrc("components", "NavigationCenterDialog.tsx"));
+    assert.match(code, /useEffect\(\(\) => \{/, "预取要挂在中心挂载 effect 里");
+    // editGroup 不在这张表里：原来菜单里的「新增分组」已归到顶栏主按钮，
+    // 中心里没有对应的面板。
+    for (const key of ["settings", "stats", "backup", "recycle", "audit", "aiAssistant", "account", "shortcuts"]) {
+        assert.match(code, new RegExp(`prefetchChunk\\("${key}"`), `中心挂载预取缺 ${key}`);
     }
 });
 
