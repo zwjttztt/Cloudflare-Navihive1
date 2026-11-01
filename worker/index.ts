@@ -241,7 +241,9 @@ async function handleRequest(request: Request, env: Env, rid: string): Promise<R
             path: url.pathname.replace("/api/", ""),
             method: request.method,
             api,
-            ip: clientIp(request),
+            // trustXFF=false（自托管端口直暴）时不读 X-Real-IP / XFF：
+            // 那两条都是客户端自己填的，取了反而污染审计与限速桶
+            ip: clientIp(request, trustXFF),
             trustXFF,
             secureCookie,
             // 下面两个要等鉴权中间件验完令牌才知道，先占位

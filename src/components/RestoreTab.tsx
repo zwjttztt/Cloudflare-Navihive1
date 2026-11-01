@@ -338,7 +338,7 @@ export default function RestoreTab({
                                         disabled={deletingFiles.has(file.name)}
                                         onClick={event => {
                                             event.stopPropagation();
-                                            handleDeleteRemote(file.name);
+                                            void handleDeleteRemote(file.name);
                                         }}
                                         aria-label={`删除 ${file.name}`}
                                     >

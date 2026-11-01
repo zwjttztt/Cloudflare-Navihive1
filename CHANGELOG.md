@@ -6,6 +6,39 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-11-01 · 安全：堵住登录限速的伪造 XFF 绕过 + 15 项 P1 加固（25.0.0）
+
+全维度重审（60 条发现，见 `.workbuddy/artifacts/audit-full-2026-11-01.md`）后的 P0+P1 批量修复。
+
+**安全（P0）**
+
+- 🔴 登录限速可被伪造 XFF 绕过：`NAVIHIVE_TRUST_XFF=1` + Nginx `$proxy_add_x_forwarded_for`（追加模式）组合下，攻击者每请求换一个伪造 `X-Forwarded-For` 首段，`loginGuard` 就落进新桶，爆破锁定完全失效。修法（三处同改，缺一不可）：
+  - `worker/httpUtils.ts` 的 `clientIp` 增加 `trustXFF` 语义：优先级 CF-Connecting-IP → X-Real-IP（仅 TRUST_XFF=1 时信任）→ XFF 首段（仅 TRUST_XFF=1）→ socket 对端；`loginGuard` 审计桶与 `worker/index.ts` 审计 ctx 同步传入；
+  - `server/entry.ts` 在 TRUST_XFF=0 时直接剥掉 `x-real-ip` 头（防止客户端伪造这个替代通道）；
+  - 自托管 Nginx 模板（`deploy/nginx/.../navihive-selfhost.conf`）XFF 改为覆盖模式 `proxy_set_header X-Forwarded-For $remote_addr`——**已同步落在线上反代**，带随机 XFF 的连打实测会触发限速锁。
+
+**修复**
+
+- 全局快捷键穿透记事本全屏：`useGlobalShortcuts` 的遮罩检测补 `[data-notes-root]`（记事本全屏是普通 fixed div，非 MUI Modal，之前 Esc/快捷键会漏进去）；
+- 离线队列多标签页互相覆盖：抽出纯函数 `mergeQueues`/`saveQueueMerged`，六个非删除写盘点改合并写并监听 `storage` 事件（`takeAll`/`drop` 保持整份覆盖语义）；新增 `tests/offlineQueueMerge.test.ts`；
+- 附件写盘原子化：`server/file-kv.ts` 改同目录临时文件 + `rename`，进程中断不再留半个附件文件；
+- `notesAttachment` 的三处 `as unknown as` 改走 `coerceNoteAttachment` 窄化函数，脏数据运行期拒绝而不是静默带过。
+
+**性能**
+
+- Mermaid 图延迟加载：`MermaidNode` 改 IntersectionObserver（rootMargin 300px）+ 等高占位，视口外不加载 iframe，渲染一次不重挂，20s 看门狗兜底；无 IO 环境退回立即渲染；
+- 分组懒挂载补缺口：`GroupCard` 新增 `filterActive` prop，搜索/筛选时跳过 IO 全量挂载（否则被过滤的站点永远不渲染）；空分组立即挂载；
+- 触控守卫扩面：触控目标 ≥44px 的守卫提为无断点基础规则 + `@media (hover: none)`；MobileTabBar / TagBar 补透明热区伪元素。
+
+**工程**
+
+- cron 三处失败（notesBackup / inactiveSweep / retention）接 `recordCronFailure` 告警；沉睡清理删除时写审计日志；
+- CI unit/coverage 注入 `NAVIHIVE_STRICT_D1: "1"`（D1 模拟层严格模式进 CI，本地 SQLite 测不出的硬限制在 CI 挡住）；两工作流各加 `notify` job（失败时 POST `ALERT_WEBHOOK`，未配置则跳过）；
+- `docker-publish` 追加 `:v<version>` 镜像 tag（按版本回滚不再靠翻 digest）；compose 给 navihive `mem_limit: 384m`、upgrader `128m` + `NODE_OPTIONS=--max-old-space-size=256`；`docker:27-cli` → `docker:27.5-cli`；
+- `script/uptime-check.mjs` 拨测加磁盘水位（>85% 告警）与 TLS 证书过期（<14 天告警）两项，均自动降级（不支持 statfs/tls 的环境不误报）；
+- ESLint 升 `recommendedTypeChecked` + `no-floating-promises`(error)，src 全量 0 error（顺手修 8 处悬浮 Promise）；
+- 「全站设置」业务体从 `SettingsDialog.tsx` 整体迁往 `ConfigPanelBody.tsx`（导出面不变），旧文件退场删除；受牵连的 dialogChunks 预取、三处测试同步更新。
+
 ## 2026-11-01 · 重构：App.tsx 拆出「设置中心」prop 组装器与懒加载包装（24.8.0）
 
 审计报告 A1：`src/App.tsx` 单函数撑到 2400+ 行，其中「设置」统一中心（NavigationCenterDialog）的九面板 props 是约 140 行的内联对象/闭包，直接摊在 return 里。

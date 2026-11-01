@@ -70,4 +70,29 @@ export default tseslint.config(
       '@typescript-eslint/no-this-alias': ['error', { allowedNames: ['self'] }],
     },
   },
+  {
+    // 类型感知规则只对 src 开（tests/ / script/ / worker/ 暂不纳入，控制爆炸半径）。
+    // 代码里大量手工 `void fn()` 说明团队一直在手工弥补浮 Promise，
+    // 交给 no-floating-promises 统一盯。type-checked lint 需要类型信息，
+    // 走 projectService 自动按最近 tsconfig 匹配（src 命中 tsconfig.app.json）。
+    //
+    // 为什么只开这一条、不整包上 recommendedTypeChecked（2026-11-01 评估）：
+    // 预设全家桶在存量代码上一次性报 267 个 error，大头是
+    // no-unnecessary-type-assertion(67) / no-misused-promises(58) / require-await(41)
+    // / no-unsafe-*(60+)，且大半落在并行重构中的文件里 —— 直接开会把 CI 打红。
+    // 这批余量另行排期，先落地收益最明确、存量最少（10 个）的 no-floating-promises。
+    files: ['src/**/*.{ts,tsx}'],
+    // src/API 与 src/hooks 正被并行重构（2026-11-01），暂缓接入避免修复冲突；
+    // 并行改动合入后删掉这行 ignores 即可全量生效。
+    ignores: ['src/API/**', 'src/hooks/**'],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'error',
+    },
+  },
 )

@@ -19,9 +19,11 @@ export const dialogChunks = {
     // key 名跟着按钮走（那颗按钮现在叫「设置」），模块换成中心弹窗。
     navigationCenter: () => import("../components/NavigationCenterDialog"),
     siteCardContextMenu: () => import("../components/SiteCardContextMenu"),
-    // 设置中心「全站设置」两段的业务本体（独立设置弹窗已退场，现由中心内联）；
-    // key 仍叫 settings —— 中心挂载时按这个 key 预取该模块。
-    settings: () => import("../components/SettingsDialog"),
+    // 设置中心「全站设置」两段的业务本体（独立设置弹窗已退场，现由中心内联；
+    // 2026-11-01 业务体自 SettingsDialog.tsx 更名迁往 ConfigPanelBody.tsx）；
+    // key 仍叫 settings —— 中心挂载时按这个 key 预取该模块，与
+    // panels/ConfigPanel.tsx 的静态 import 指向同一模块，归同一个 chunk。
+    settings: () => import("../components/ConfigPanelBody"),
     stats: () => import("../components/StatsHubDialog"),
     backup: () => import("../components/BackupDialog"),
     recycle: () => import("../components/RecycleBinDialog"),

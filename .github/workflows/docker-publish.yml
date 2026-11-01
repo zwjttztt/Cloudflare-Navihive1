@@ -195,11 +195,23 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # 合并成一个 multi-arch manifest，才打 latest 与 sha 两个 tag
+  # 合并成一个 multi-arch manifest，打 latest / v版本号 / sha 三个 tag
   merge:
     needs: [gate, build]
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
+        with:
+          # 与 build 同理：必须 checkout 门禁吐出的那个 commit，读的才是被发布代码的版本号
+          ref: ${{ needs.gate.outputs.sha }}
+
+      # 从 package.json 读语义版本（bump-version.mjs 每次推送都会维护它），
+      # 给镜像追加 :v${version} tag（如 v24.9.0），供「按版本号回滚」用。
+      # ⚠️ v tag 不保证唯一：同版本多次发布会被互相覆盖，定位唯一构建仍然只认 sha tag。
+      - name: 读版本号
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
@@ -221,8 +233,57 @@ jobs:
         run: |
           docker buildx imagetools create \
             --tag ghcr.io/zwjttztt/navihive:latest \
+            --tag ghcr.io/zwjttztt/navihive:v${{ steps.version.outputs.version }} \
             --tag ghcr.io/zwjttztt/navihive:${{ needs.gate.outputs.sha }} \
             $(printf 'ghcr.io/zwjttztt/navihive@%s ' $(cat *))
 
       - name: 核对结果（两个平台都在才算成功）
         run: docker buildx imagetools inspect ghcr.io/zwjttztt/navihive:latest
+
+  # 失败通知（2026-11-01）：gate / build / merge 任一红 → POST 到 ALERT_WEBHOOK。
+  # 与 ci.yml 的 notify job 同一套约定（text 字段，没配 secret 就跳过，发送失败不改变结论）。
+  # 注意 gate 红有两种含义：CI 本来就没过（拦得对）或门禁脚本自身出错 —— 收到通知先看
+  # run 页面上 gate 的错误行，别急着当事故处理。
+  notify:
+    name: 失败通知
+    needs: [gate, build, merge]
+    if: failure()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+
+    steps:
+      - name: 组装失败摘要并 POST 到 ALERT_WEBHOOK
+        env:
+          ALERT_WEBHOOK: ${{ secrets.ALERT_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          R_GATE: ${{ needs.gate.result }}
+          R_BUILD: ${{ needs.build.result }}
+          R_MERGE: ${{ needs.merge.result }}
+        run: |
+          if [ -z "$ALERT_WEBHOOK" ]; then
+            echo "ALERT_WEBHOOK 未配置，跳过失败通知（在仓库 Settings → Secrets 里配置）"
+            exit 0
+          fi
+
+          failed=""
+          for pair in "gate:$R_GATE" "build:$R_BUILD" "merge:$R_MERGE"; do
+            name="${pair%%:*}"
+            result="${pair#*:}"
+            if [ "$result" != "success" ]; then failed="$failed $name($result)"; fi
+          done
+          echo "失败 job：$failed"
+
+          TEXT=$(printf '[NavHive] 镜像发布失败 %s@%s\n失败 job:%s\n%s\n' "$REPO" "$BRANCH" "$failed" "$RUN_URL")
+          node -e '
+            const text = process.argv[1];
+            process.stdout.write(JSON.stringify({ text, repo: process.env.REPO, branch: process.env.BRANCH, run_id: process.env.RUN_ID }));
+          ' "$TEXT" > /tmp/payload.json
+
+          curl -fsS -m 10 -X POST \
+            -H 'Content-Type: application/json' \
+            --data-binary @/tmp/payload.json \
+            "$ALERT_WEBHOOK" \
+            || echo "::warning::失败通知发送不出去（webhook 不可达或被限流），不影响工作流结论"

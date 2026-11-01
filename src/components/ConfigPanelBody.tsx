@@ -1,10 +1,14 @@
-// src/components/SettingsDialog.tsx
-// 「全站设置」的**业务本体**，现在只做导航中心的内嵌面板（独立弹窗已退场）：
-// section 必填（appearance / data），分段导航交给中心左栏 —— 这里不再有页签栏、
-// 不再自带 Dialog 外壳。命令面板「打开网站设置」也改成直达中心 config-appearance，
-// 所以「独立弹窗」这条路径整条删掉了（openConfig / handleOpenConfig 一并清理）。
-// 所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰 API，只负责渲染和回调；
-// 保存按钮放在内容末尾，取消 / 完成由中心统一提供。
+// src/components/ConfigPanelBody.tsx
+// 「全站设置」的**业务本体**：导航中心内嵌面板（原 SettingsDialog.tsx 整体迁入）。
+// 原文件叫「SettingsDialog」，但独立弹窗早已退场（外壳已整块删除），文件实际
+// 只剩中心内联面板的业务体 —— 名字误导，2026-11-01 更名迁移：业务代码逐行原样
+// 搬运、导出面不变（ConfigPanel / ConfigPanelProps / ConfigSection），调用方
+// 只有 navigationCenter/panels/ConfigPanel.tsx（懒加载转发层）与 dialogChunks
+// 的 settings 预取条目。
+//
+// section 必填（appearance / data），分段导航交给中心左栏 —— 这里没有页签栏、
+// 不自带 Dialog 外壳。所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰
+// API，只负责渲染和回调；保存按钮放在内容末尾，取消 / 完成由中心统一提供。
 import type { ChangeEvent } from "react";
 import { Section, SwitchRow } from "./dialogSection";
 import {
@@ -124,10 +128,6 @@ export interface ConfigPanelProps extends SettingsDialogProps {
      */
     section: ConfigSection;
 }
-
-// Section / SwitchRow 已搬到 ./dialogSection（AI 助手弹窗要用同一套排版，
-// 从本文件导入会把整个设置弹窗的代码块一起拖过去）。这里 re-export 保持老引用不动。
-export { Section, SwitchRow } from "./dialogSection";
 
 /** 窄屏堆叠、宽屏并排的两列栅格：短字段用它省掉一整行高度 */
 function TwoCol({ children }: { children: React.ReactNode }) {

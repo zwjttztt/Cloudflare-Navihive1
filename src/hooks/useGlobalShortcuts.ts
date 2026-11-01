@@ -49,9 +49,20 @@ function isTypingTarget(target: EventTarget | null): boolean {
     return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable === true;
 }
 
-/** 有弹窗 / 菜单 / 浮层开着：这些「直接动手」的快捷键一律不响应 */
+/** 有弹窗 / 菜单 / 浮层开着：这些「直接动手」的快捷键一律不响应。
+ * 选择器分四类，缺一不可：
+ * - .MuiModal-root / .MuiMenu-root / .MuiPopover-root：MUI 三大弹层（Dialog 底层也是 Modal）。
+ * - [role="dialog"]：自制浮层的通用判据（与 useNotesPageModel.tsx 的 zen 模式 Esc 守卫
+ *   同一套），比如记事本里的图片灯箱 NotesPageShell —— 它不是 MUI Modal，不查这个会漏。
+ * - [data-lightbox]：图片灯箱的显式标记，双保险。
+ * - [data-notes-root]：记事本全屏覆盖层（NotesPageShell 的根，position:fixed 的普通 div，
+ *   既不是 MuiModal-root 也没有 role="dialog"）。不查它的话，记事本开着时按 1~9 / ?
+ *   会穿透到底层页面（打开背后的网站、弹出快捷键表）—— 2026-11 实测确认过的缺口。
+ */
 function hasOverlayOpen(): boolean {
-    return !!document.querySelector(".MuiModal-root, .MuiMenu-root, .MuiPopover-root");
+    return !!document.querySelector(
+        '.MuiModal-root, .MuiMenu-root, .MuiPopover-root, [role="dialog"], [role="menu"], [data-lightbox], [data-notes-root]'
+    );
 }
 
 /**

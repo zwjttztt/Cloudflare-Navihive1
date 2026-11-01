@@ -34,7 +34,8 @@ export default function MaintenanceBanner({ client }: { client: MaintenanceProbe
                 // （不兜的话这里是 unhandledRejection，node:test 会直接判红）
             }
         };
-        poll();
+        // 轮询是火忘的：poll 内部自带 try/catch，失败即视为「没在维护」
+        void poll();
         const timer = setInterval(poll, POLL_MS);
         return () => {
             cancelled = true;

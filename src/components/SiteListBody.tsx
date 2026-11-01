@@ -119,6 +119,11 @@ export default function SiteListBody({
         ...group.sites.map((site, index) => ({ id: `site-${site.id || index}`, label: site.name })),
     ]);
 
+    // 搜索 / 筛选（关键词、星标、失效、标签）任一生效：派生结果至多 60 条
+    // （useSiteSearch 的 SEARCH_TOTAL_LIMIT），组内网格直接全量挂载，不再懒。
+    const filterActive =
+        query.trim() !== "" || starFilter || deadOnly || activeTags.length > 0;
+
     return (
         <Box
             sx={{
@@ -228,6 +233,7 @@ export default function SiteListBody({
                             onDeleteGroup={onGroupDelete}
                             onShareGroup={onShareGroup}
                             searchQuery={query}
+                            filterActive={filterActive}
                             accentColor={
                                 configs[`group.color.${group.id}`] ||
                                 groupAccent(group.id, darkMode ? "dark" : "light")

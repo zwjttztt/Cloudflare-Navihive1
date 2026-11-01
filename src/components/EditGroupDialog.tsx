@@ -206,7 +206,7 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
                                 onKeyDown={e => {
                                     if (e.key === "Enter" || e.key === " ") {
                                         e.preventDefault();
-                                        handleCopyGroupName();
+                                        void handleCopyGroupName();
                                     }
                                 }}
                                 sx={{

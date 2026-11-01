@@ -30,6 +30,17 @@ export const TOKEN_COOKIE = "navihive_token";
 export const REAL_IP_HEADER = "x-navihive-client-ip";
 
 /**
+ * 受信任反代（Nginx）**覆盖写入**的客户端真实 IP 头（2026-11-01 XFF 绕过加固）。
+ *
+ * 自托管且 `NAVIHIVE_TRUST_XFF=1` 时，限速分桶优先读它，其次才回退 XFF 首段。
+ * 为什么它能防伪造：反代必须写成覆盖模式（`proxy_set_header X-Real-IP $remote_addr`），
+ * 客户端带来的值在 Nginx 那一层就被顶掉了 —— 与「追加式 XFF 首段可以被攻击者
+ * 每次随机换新」有本质区别。它排在 XFF 之前，正是为了让「Nginx 覆盖头」赢过
+ * 「链上任何一环都可能被污染的 XFF」。
+ */
+export const X_REAL_IP_HEADER = "x-real-ip";
+
+/**
  * Worker 返回的纯文本响应统一带上安全头。
  * `_headers` 里那套 CSP / nosniff 只作用于静态资源，Worker 响应得自己加，详见 util.ts。
  */
@@ -38,21 +49,30 @@ export const TEXT_HEADERS = () => securityHeaders({ "Content-Type": "text/plain;
 /**
  * 取客户端 IP（审计日志 / 登录设备显示用）。
  *
- * 优先级：CF-Connecting-IP（Cloudflare 边缘注入）→ X-Forwarded-For（代理链首段）
- * → 自托管入口注入的真实地址 → unknown。
- * 前两条都可能被客户端伪造（自托管部署下没有 Cloudflare 在前面），
+ * 优先级：CF-Connecting-IP（Cloudflare 边缘注入）→ X-Real-IP（可信反代覆盖写入，
+ * 仅 trustXFF 时读）→ X-Forwarded-For（代理链首段）→ 自托管入口注入的真实地址
+ * → unknown。
+ * X-Real-IP 排在 XFF 之前（2026-11-01）：Nginx 用覆盖模式写它（见部署模板），
+ * 伪造不了；而 XFF 若是追加模式（$proxy_add_x_forwarded_for），首段永远来自
+ * 客户端自己 —— 有覆盖头可用时不能让可伪造的 XFF 抢在前面。
+ * 前两条之外的档位都可能被客户端伪造（自托管部署下没有 Cloudflare 在前面），
  * 那条「入口注入」的是最后一档：由 server/entry.ts 从 socket 对端地址写进来，
  * 客户端带的一律被它盖掉；Workers 部署下这条头不存在。
  */
-export function clientIp(request: Request): string {
+export function clientIp(request: Request, trustXFF = true): string {
     const cf = request.headers.get("CF-Connecting-IP");
     if (cf) return cf;
-    const xff = request.headers.get("X-Forwarded-For");
-    if (xff) {
-        // XFF 是链式头：「客户端, 代理1, 代理2」—— 第一个才是真实客户端。
-        // 整条存下来，登录设备列表里的 IP 会显示成「1.2.3.4, 5.6.7.8」一串。
-        const first = xff.split(",")[0].trim();
-        if (first) return first;
+    if (trustXFF) {
+        // 可信反代覆盖写入的真实地址，伪造不了，优先于可被污染的 XFF
+        const real = request.headers.get(X_REAL_IP_HEADER);
+        if (real) return real.trim().slice(0, 64);
+        const xff = request.headers.get("X-Forwarded-For");
+        if (xff) {
+            // XFF 是链式头：「客户端, 代理1, 代理2」—— 第一个才是真实客户端。
+            // 整条存下来，登录设备列表里的 IP 会显示成「1.2.3.4, 5.6.7.8」一串。
+            const first = xff.split(",")[0]?.trim();
+            if (first) return first;
+        }
     }
     // 自托管：入口用 socket 对端地址补的那一档（没人伪造得了）
     const real = request.headers.get(REAL_IP_HEADER);

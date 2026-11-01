@@ -256,6 +256,33 @@ test("带 Alt / Cmd 的数字键不响应（那是浏览器切标签页的）", 
     assert.equal(rec.opened.length, 0);
 });
 
+test("自制 [role=dialog] 浮层开着时 1~9 不响应（不是 MUI Modal 也要让路）", () => {
+    mount();
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.appendChild(dialog);
+    key("1");
+    assert.equal(rec.opened.length, 0, "自制浮层开着时不该打开卡片");
+    dialog.remove();
+    key("1");
+    assert.equal(rec.opened.length, 1, "浮层关掉后恢复响应");
+});
+
+test("记事本全屏覆盖层（data-notes-root）开着时 1~9 不响应", () => {
+    // 记事本根节点是 position:fixed 的普通 div（NotesPageShell），
+    // 既不是 MuiModal-root 也没有 role=dialog —— 不查这个标记的话，
+    // 记事本开着时按 1~9 会穿透到底层页面把背后的网站打开。
+    mount();
+    const notes = document.createElement("div");
+    notes.setAttribute("data-notes-root", "");
+    document.body.appendChild(notes);
+    key("1");
+    assert.equal(rec.opened.length, 0, "记事本盖着屏幕时不该穿透到底层");
+    notes.remove();
+    key("1");
+    assert.equal(rec.opened.length, 1, "记事本关掉后恢复响应");
+});
+
 // ---------- 「?」快捷键说明表 ----------
 
 test("按「?」打开快捷键说明表，弹窗开着时不抢", () => {

@@ -7,7 +7,7 @@
 // key 形如 attachments/<userId>/<uuid>（worker/attachments.ts:67 attachmentObjectKey），
 // 所以必须支持子目录。
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface FileKv {
@@ -80,7 +80,22 @@ export function makeFileKv(root: string): FileKv {
         async put(key: string, value: ArrayBuffer | ArrayBufferView | string): Promise<void> {
             const target = safe(key);
             await mkdir(path.dirname(target), { recursive: true });
-            await writeFile(target, typeof value === "string" ? value : toBuffer(value));
+            // 2026-11-01 写入原子化：直接 writeFile(target) 时进程在中途被杀 /
+            // 磁盘写满会把目标文件留成**半截**，读回来的是损坏的图片且无从察觉。
+            // 改为先写同目录临时文件、再 rename —— 同目录 rename 在同一文件系统上
+            // 是原子操作，读者看到的要么是旧文件、要么是完整的新文件。
+            // 临时文件必须与目标同目录（跨目录 rename 可能跨文件系统，退化为拷贝就
+            // 不原子了）；后缀带随机值，避免并发写同一个 key 时互相踩对方的临时文件。
+            const tmp = `${target}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+            try {
+                await writeFile(tmp, typeof value === "string" ? value : toBuffer(value));
+                await rename(tmp, target);
+            } catch (error) {
+                // 写一半失败的临时文件必须清掉：留着既占磁盘，还会让目录里堆满
+                // 谁都不敢动的垃圾。清理失败不掩盖原始错误（真正的失败原因在上面）。
+                await rm(tmp, { force: true }).catch(() => {});
+                throw error;
+            }
         },
         async delete(key: string): Promise<void> {
             await rm(safe(key), { force: true });

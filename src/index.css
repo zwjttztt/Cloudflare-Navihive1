@@ -1441,13 +1441,24 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
 }
 
 /* ============================================================
-   小屏（手机）：触控目标、底部面板、键盘遮挡、安全区
-   目测「差不多能点」不够 —— WCAG 与两大平台的人机规范都要求主要触控目标
-   不小于 44px，而 MUI 的 size="small" 图标按钮只有 30px。这里统一兜底：
-   能撑开的就撑到 44px，撑开会把卡片挤变形的（卡片右上角那几个小图标）
-   改用透明热区，视觉尺寸不变、手指可点范围照样 44px。
+   触控目标守卫：无断点基础规则，仅真触屏生效
+   WCAG 与两大平台的人机规范都要求主要触控目标不小于 44px，而 MUI 的
+   size="small" 图标按钮只有 30px。原来整段守卫包在 max-width: 599.95px
+   里，600~899px 的平板触屏完全裸奔 —— 热区大小只取决于「是不是触屏」、
+   跟屏宽无关，所以提为无断点基础规则。
+
+   判据用 (hover: none) and (pointer: coarse)，与 src/utils/device.ts
+   判定真触屏的双条件同款，刻意不用裸 hover:none：
+   无头浏览器/CI 容器里 Chrome 把 hover 报成 none（device.ts 顶部注释、
+   ci-smoke 都踩过），裸用会把桌面端也撑大热区，1440/864 宽度的视觉
+   基线会整体漂移。补上 pointer: coarse 后：真手机/真平板（② 有触摸点、
+   指针为粗）全宽生效；无头 CI（hover:none 但 pointer:fine）与
+   桌面鼠标用户都不吃这组规则。带触摸屏的笔记本（hover:hover）也不变。
+   ⚠️ CI 的 mobile(390) 视觉基线是在「宽度守卫生效」的旧规则下录的，
+   本改动后守卫在无头环境不再生效 —— 若 audit:visual 报 mobile 基线
+   失配，属预期漂移，重新生成 mobile 基线即可（真机行为不受影响）。
    ============================================================ */
-@media (max-width: 599.95px) {
+@media (hover: none) and (pointer: coarse) {
     /* 顶栏 / 设置 / 对话框里的文字按钮：直接撑到 44px */
     .MuiDialog-root .MuiButton-root,
     .MuiDialogActions-root .MuiButton-root,
@@ -1479,6 +1490,47 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
         transform: translate(-50%, -50%);
     }
 
+    /* 底部导航的自绘按钮（MobileTabBar）：py 0.5 + fontSize 11，实高约 40px，
+       且不是 MUI ButtonBase，吃不到上面的 min-height 兜底。
+       同样用透明伪元素补热区，可见视觉尺寸（字号/内边距）一概不动。
+       宽度取 max(自身宽, 44px)：六个按钮平分一行，窄屏上单个可能不足 44 宽，
+       相邻热区小幅重叠是 44px 目标的常态，可接受。 */
+    .nav-mobile-tabbar .nav-tabbar-btn {
+        position: relative;
+    }
+    .nav-mobile-tabbar .nav-tabbar-btn::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: max(100%, var(--touch-min));
+        height: var(--touch-min);
+        transform: translate(-50%, -50%);
+    }
+
+    /* 标签筛选栏的 chip（TagBar）：size="small" 实高只有 24px，差得最多。
+       TagBar 在桌面端同样渲染，所以这块必须锁在「真触屏」判据里 ——
+       鼠标用户不会被一块 44px 的隐形热区挡住相邻元素。 */
+    .nav-tag-bar .MuiChip-root {
+        position: relative;
+    }
+    .nav-tag-bar .MuiChip-root::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: max(100%, var(--touch-min));
+        height: var(--touch-min);
+        transform: translate(-50%, -50%);
+    }
+}
+
+/* ============================================================
+   小屏（手机）：底部面板、键盘遮挡、安全区
+   （触控目标守卫已上提到上方「真触屏」段；这里只留真正跟
+   「屏宽」有关的部分 —— 弹窗贴底、320px 内边距、safe-area 让位）
+   ============================================================ */
+@media (max-width: 599.95px) {
     /* 设置 / 编辑类弹窗在小屏走底部面板：
        拇指够得到，也比居中弹窗少一次「抬头找按钮」。
        MUI 的 Dialog 容器是 flex 居中，改成贴底即可，不用换组件。

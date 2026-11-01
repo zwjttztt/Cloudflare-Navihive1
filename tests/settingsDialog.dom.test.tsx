@@ -12,7 +12,7 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
     ConfigPanel as ConfigPanelBody,
-} from "../src/components/SettingsDialog";
+} from "../src/components/ConfigPanelBody";
 import type { FontScale, RadiusStyle } from "../src/context/uiPrefsStore";
 
 if (typeof globalThis.localStorage === "undefined") {

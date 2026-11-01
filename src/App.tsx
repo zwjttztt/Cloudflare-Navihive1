@@ -425,7 +425,8 @@ function App() {
         if (authRequiredRef.current) return;
         authRequiredRef.current = true;
         // 只有登录过的人才需要吊销会话；没登录过的那次 401 本来就是正常答复
-        if (hadSessionRef.current) api.logout();
+        // 登出是网络请求，认证已失败的收尾流程不等它（内部自带失败兜底）
+        if (hadSessionRef.current) void api.logout();
         setIsAuthRequired(true);
         setIsAuthenticatedTracked(false);
     }
@@ -794,8 +795,8 @@ function App() {
     useEffect(() => {
         // 首屏「先画后取」已下沉到 useSites：挂载即把可用缓存画出来，并让初始
         // bootstrap 走静默，骨架屏不再被重新举起。这里只负责认证状态探活。
-        // 检查认证状态
-        checkAuthStatus();
+        // 检查认证状态（探活是异步的，挂载阶段火忘；结果经状态回调回来）
+        void checkAuthStatus();
         // 当初这里顺手重置过排序状态（setSortMode(None) / setCurrentSortingGroupId(null)）。
         // 排序域搬到 useSortController 后，这两个状态本来就以 None 初始化，
         // 挂载时再设一遍是空操作；而 hook 的调用点在 handleError 之后，
@@ -871,7 +872,8 @@ function App() {
     useEffect(() => {
         if (typeof navigator === "undefined" || !navigator.onLine) return;
         if (pendingCount() === 0) return;
-        flushOfflineQueue(api as unknown as MutationApi).then(done => {
+        // 启动重放是尽力而为：失败不打断首屏（保持原有火忘语义，显式 void 标注）
+        void flushOfflineQueue(api as unknown as MutationApi).then(done => {
             if (done > 0) {
                 notify(`已自动同步 ${done} 项离线改动`, "success");
                 void fetchDataRef.current({ silent: true });

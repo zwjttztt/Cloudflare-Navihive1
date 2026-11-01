@@ -130,6 +130,7 @@ export default function MobileTabBar({
                     key={item.key}
                     component='button'
                     type='button'
+                    className='nav-tabbar-btn'
                     onClick={item.onClick}
                     aria-label={item.label}
                     aria-pressed={item.active ? true : undefined}

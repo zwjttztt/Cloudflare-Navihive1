@@ -33,6 +33,61 @@ function relabelAttachmentLink(content: string, id: string, filename: string): s
     });
 }
 
+/**
+ * 把 D1 返回的原始行**窄化**成 NoteAttachment（2026-11-01）。
+ *
+ * 之前三处查询都是 `as unknown as NoteAttachment` 一转了事 —— 类型系统被绕过，
+ * 行里缺字段 / 类型不对（schema 漂移、手写迁移改列、SQLite 适配器差异）时
+ * 坏数据会一路流到前端，炸点远离根因。这里逐字段校验关键字段，不合法就当场抛
+ * 带上下文的错误：接口 500 但日志里能直接看到「哪一行、哪个字段」坏了。
+ *
+ * 只校验「存在与否 + 类型」，不校验取值范围 —— 这层防线挡的是结构性损坏，
+ * 不是业务规则。
+ */
+function coerceNoteAttachment(row: Record<string, unknown>, context: string): NoteAttachment {
+    const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+    const isOptNum = (v: unknown): boolean => v === undefined || v === null || isNum(v);
+    // 列缺失时 SQLite 适配器可能给 undefined，也可能根本不带这个键 —— 两种都按缺处理
+    const has = (k: string): boolean => row[k] !== undefined && row[k] !== null;
+
+    if (typeof row.id !== "string" || row.id.length === 0) {
+        throw new Error(`附件元数据异常（${context}）：id 缺失或不是非空字符串`);
+    }
+    if (row.note_id !== null && !isNum(row.note_id)) {
+        throw new Error(`附件元数据异常（${context}）：note_id 不是数字或 null`);
+    }
+    if (typeof row.filename !== "string" || typeof row.mime !== "string") {
+        throw new Error(`附件元数据异常（${context}）：filename / mime 缺失或不是字符串`);
+    }
+    if (!isNum(row.size)) {
+        throw new Error(`附件元数据异常（${context}）：size 缺失或不是数字`);
+    }
+    if (row.storage !== "r2" && row.storage !== "kv") {
+        throw new Error(`附件元数据异常（${context}）：storage 不是 "r2" / "kv"（实际 ${String(row.storage)}）`);
+    }
+    if (!isNum(row.created_at)) {
+        throw new Error(`附件元数据异常（${context}）：created_at 缺失或不是数字`);
+    }
+    if (!isOptNum(row.width) || !isOptNum(row.height) || !isOptNum(row.ref_count)) {
+        throw new Error(`附件元数据异常（${context}）：width / height / ref_count 不是数字或 null`);
+    }
+
+    const out: NoteAttachment = {
+        id: row.id,
+        note_id: row.note_id as number | null,
+        filename: row.filename,
+        mime: row.mime,
+        size: row.size,
+        storage: row.storage,
+        created_at: row.created_at,
+    };
+    if (has("width")) out.width = row.width as number;
+    if (has("height")) out.height = row.height as number;
+    if (has("object_key")) out.object_key = String(row.object_key);
+    if (has("ref_count")) out.ref_count = row.ref_count as number;
+    return out;
+}
+
 export const attachmentMethods: Pick<NotesApi,
     "listAttachments" | "getAttachment" | "getPublicAttachment" | "createAttachment" |
     "deleteAttachment" | "renameAttachment" | "pruneAttachments"> = {
@@ -73,7 +128,9 @@ export const attachmentMethods: Pick<NotesApi,
                 .bind(...this.scopeParams([]), ...this.scopeParams([]))
                 // 纯读用 all()（D1 的 run()/all() 都带 results，但真 SQLite 适配器只有 all() 给行）
                 .all();
-            return result.results as unknown as NoteAttachment[];
+            return (result.results as unknown as Record<string, unknown>[]).map(row =>
+                coerceNoteAttachment(row, `listAttachments id=${String(row?.id ?? "?")}`)
+            );
         });
     },
 
@@ -87,7 +144,7 @@ export const attachmentMethods: Pick<NotesApi,
                 .prepare(`SELECT * FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
                 .bind(...this.scopeParams([id]))
                 .first<Record<string, unknown>>();
-            return row ? ({ ...row } as unknown as NoteAttachment) : null;
+            return row ? coerceNoteAttachment(row, `getAttachment id=${id}`) : null;
         });
     },
 
@@ -126,7 +183,7 @@ export const attachmentMethods: Pick<NotesApi,
                 )
                 .bind(id, Date.now())
                 .first<Record<string, unknown>>();
-            return row ? ({ ...row } as unknown as NoteAttachment) : null;
+            return row ? coerceNoteAttachment(row, `getPublicAttachment id=${id}`) : null;
         });
     },
 

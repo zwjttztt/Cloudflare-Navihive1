@@ -293,6 +293,65 @@ function saveQueue(queue: PendingMutation[]): void {
     writeJson(storageKey, queue);
 }
 
+/**
+ * 合并两份队列，按幂等键（opId）去重（2026-11-01 多标签页加固，纯函数可测）。
+ *
+ * 多标签页各自持有整份队列的内存副本，写盘又是整份覆盖 —— 谁后写谁赢，
+ * B 标签页落盘会把 A 刚入队的操作抹掉。解法是写盘前把盘上「本页没有」的
+ * 条目并进来。同 opId 时**以本页版本为准**：本页的条目承载着自己的状态机
+ * （sending 租期、attempts、退避时刻），盘上那份只是它早前落盘的快照，
+ * 拿旧快照盖新状态会把「发送中」的错误状态写回队列。
+ *
+ * 没有 opId 的条目（旧版本数据）无法判定同一性，两边都保留 —— 宁可重复
+ * 入队一次，也不能静默丢掉用户的编辑；重放时服务端幂等键缺失是既有行为。
+ */
+export function mergeQueues(
+    mine: PendingMutation[],
+    disk: PendingMutation[]
+): PendingMutation[] {
+    const mineIds = new Set(
+        mine.map(op => op.opId).filter((id): id is string => typeof id === "string" && id.length > 0)
+    );
+    const out = [...mine];
+    for (const op of disk) {
+        if (op.opId && mineIds.has(op.opId)) continue;
+        out.push(op);
+    }
+    return out;
+}
+
+/**
+ * 写盘（合并版）：写之前重读盘上最新内容并与内存队列合并。
+ *
+ * 用于所有「不删条目」的写盘点（入队 / 重排 / 标 sending / 退避更新）。
+ * drop / takeAll 这类**删除语义**的写必须走 saveQueue 整份覆盖 —— 否则
+ * 「服务端已确认、刚划掉」的条目会被盘上残留捡回来，重放 → 划掉 → 捡回
+ * 无限循环。外部新增条目的残余竞态（storage 事件到达前恰好 drop 写盘）
+ * 由下面的 storage 监听兜住：它把别页新入队的条目并进本页内存，之后本页
+ * 任何写盘自然带上它们。
+ */
+function saveQueueMerged(): void {
+    const disk = loadQueue();
+    queue = mergeQueues(queue, disk);
+    writeJson(storageKey, queue);
+}
+
+// 多标签页同步：别的标签页写盘时（storage 事件只在**其它**页面写时触发，
+// 本页写不会，天然无循环），把盘上本页没有的条目并进内存。这样即便本页
+// 接下来做删除式写盘（drop / takeAll 的整份覆盖），也不会把别页刚入队的
+// 操作抹掉。只监听当前账号的分片键 —— 别的账号的队列与本页无关。
+// sending 租期不受影响：本页已有的 opId 一律不覆盖（mergeQueues 以内存为
+// 准），外部条目带着的 sending 状态由既有的 reclaimStuckSending 按租期收回。
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("storage", event => {
+        if (event.key !== storageKey || event.newValue === null) return;
+        const disk = loadQueue();
+        const before = queue.length;
+        queue = mergeQueues(queue, disk);
+        if (queue.length !== before) notifyChange();
+    });
+}
+
 let queue: PendingMutation[] = loadQueue();
 let failed: FailedMutation[] = readJson<FailedMutation[]>(failedStorageKey, []);
 if (!Array.isArray(failed)) failed = [];
@@ -454,7 +513,7 @@ export function enqueueMutation(kind: string, args: unknown[]): PendingMutation 
         ...(needsTempId ? { tempId: newTempId() } : {}),
     };
     queue.push(op);
-    saveQueue(queue);
+    saveQueueMerged();
     notifyChange();
     return op;
 }
@@ -487,7 +546,7 @@ export function takeAll(): PendingMutation[] {
 /** 把一次操作重新放回队列（重放仍失败时用） */
 export function requeue(op: PendingMutation): void {
     queue.push(op);
-    saveQueue(queue);
+    saveQueueMerged();
     notifyChange();
 }
 
@@ -563,7 +622,7 @@ export function retryFailedMutation(opId: string): boolean {
         state: "pending",
         attempts: 0,
     });
-    saveQueue(queue);
+    saveQueueMerged();
     notifyChange();
     return true;
 }
@@ -638,7 +697,7 @@ function scheduleRetry(op: PendingMutation, reason: string): void {
         return;
     }
     op.nextAttemptAt = Date.now() + backoffDelayMs(op.attempts);
-    saveQueue(queue);
+    saveQueueMerged();
 }
 
 /** 收回到期还没落地的 sending 操作：发它的那个页面多半已经关了 */
@@ -653,7 +712,7 @@ function reclaimStuckSending(): void {
             changed = true;
         }
     }
-    if (changed) saveQueue(queue);
+    if (changed) saveQueueMerged();
 }
 
 /**
@@ -699,7 +758,7 @@ export async function flushOfflineQueue(api: MutationApi): Promise<number> {
                 // 而不是像「先取出再执行」那样凭空消失。
                 op.state = "sending";
                 op.sentAt = Date.now();
-                saveQueue(queue);
+                saveQueueMerged();
 
                 // 占位 id 这里翻译：离线新建的分组拿到的真实 id 要回填到后续操作里，
                 // 否则站点会挂在一个本地才有的负数分组上。

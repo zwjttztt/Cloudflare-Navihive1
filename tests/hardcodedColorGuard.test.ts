@@ -137,7 +137,9 @@ const EXEMPT: Record<string, { reason: string; cap: number }> = {
         reason: "装饰性极光渐变：两组多段 radial-gradient 是一次性调出来的美术值，没有语义可抽",
         cap: 6,
     },
-    "src/components/SettingsDialog.tsx": {
+    // 2026-11-01 业务体自 SettingsDialog.tsx 原样迁入本文件，豁免条目跟着搬
+    // （cap 与命中数逐字节一致，未变）。
+    "src/components/ConfigPanelBody.tsx": {
         reason: "用户**可选**的背景渐变预设与强调色色板（`#1976d2` 还是 <input type=color> 的默认值，是数据不是样式）——色板不能跟着主题变，否则用户挑的颜色会自己漂移",
         cap: 23,
     },

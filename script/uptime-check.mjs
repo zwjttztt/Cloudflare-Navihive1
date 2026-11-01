@@ -27,8 +27,22 @@
 // 告警：环境变量 ALERT_WEBHOOK 非空时 POST 一段 JSON（`{text, base, failures[], at}`，
 // 通用形态，Slack / 飞书 / 自建 webhook 都能收）；为空就只打到 stdout（cron 会把
 // stdout 发邮件，这也是一种告警）。
+//
+// 两条**可选**的本地检查（2026-11-01，都做成「配了才跑、失败自动降级为说明」，
+// 绝不因自身问题改变原有探测的结论）：
+//   · 磁盘水位：UPTIME_DISK_PATH 指向的文件系统使用率 > UPTIME_DISK_MAX_PCT（默认 85）
+//     判失败。默认路径 /var/lib/docker/volumes —— 镜像层与命名卷都在这个文件系统上，
+//     SQLite 库 + 附件 + 日志全往这里长；自建机一般与 / 同盘，所以它实际量的是整机水位。
+//     statfs 需要 node ≥ 18.15（engines 要求 ≥22.22，满足）。
+//   · 证书剩余天数：UPTIME_TLS_HOST 指定的主机（默认从 --base 的 https URL 推导 hostname）
+//     连 443 读对端证书 valid_to，剩余 < UPTIME_TLS_MIN_DAYS（默认 14）判失败。
+//     Let's Encrypt 一签 90 天，14 天是「还来得及手动续」的最后窗口。
+//     连不上 / 握手超时**不算失败只留说明** —— 那种故障上面的 / 探测已经报了，
+//     这里重复报一次只会稀释信号。
 import { execFile } from "node:child_process";
+import { statfs } from "node:fs/promises";
 import { realpathSync } from "node:fs";
+import tls from "node:tls";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -36,6 +50,10 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_5XX = 5;
 const DEFAULT_MAX_5XX_RATIO = 0.05;
 const DEFAULT_LOG_MINUTES = 15;
+const DEFAULT_DISK_PATH = "/var/lib/docker/volumes";
+const DEFAULT_DISK_MAX_PCT = 85;
+const DEFAULT_TLS_PORT = 443;
+const DEFAULT_TLS_MIN_DAYS = 14;
 
 const USAGE = `用法: node script/uptime-check.mjs --base <url> [选项]
 
@@ -51,7 +69,12 @@ const USAGE = `用法: node script/uptime-check.mjs --base <url> [选项]
   -h, --help            显示这段说明
 
 环境变量:
-  ALERT_WEBHOOK         非空时把失败 POST 过去（JSON: {text, base, failures[], at}）`;
+  ALERT_WEBHOOK         非空时把失败 POST 过去（JSON: {text, base, failures[], at}）
+  UPTIME_DISK_PATH      磁盘水位检查的目标路径，默认 ${DEFAULT_DISK_PATH}；留空关闭该检查
+  UPTIME_DISK_MAX_PCT   磁盘使用率告警阈值（百分比），默认 ${DEFAULT_DISK_MAX_PCT}
+  UPTIME_TLS_HOST       证书检查的目标主机，默认从 --base（https 时）推导；两者都空则关闭
+  UPTIME_TLS_PORT       证书检查的端口，默认 ${DEFAULT_TLS_PORT}
+  UPTIME_TLS_MIN_DAYS   证书剩余天数告警阈值，默认 ${DEFAULT_TLS_MIN_DAYS}`;
 
 /**
  * 解析命令行。只认 `--key value` / `--key=value` 两种写法，
@@ -273,6 +296,76 @@ export function countStatuses(raw) {
     return { total, fiveXx, unparsed, ratio: total > 0 ? fiveXx / total : 0 };
 }
 
+/**
+ * 磁盘水位：对 path 所在文件系统算使用率（按非特权用户可用的 bavail 算 ——
+ * root 保留块不算可用空间，用 bfree 会长期虚低 5% 左右）。
+ *
+ * 返回 `{ ok, available, line }`：available=false 表示这项检查没法做（路径不存在 /
+ * 文件系统不支持 statfs / Node 太老），调用方只把原因记进 notes，**不判失败** ——
+ * 拨测自己报不了数，运维会永久忽略它；这是与 5xx 统计同一条纪律。
+ */
+async function checkDiskUsage(path, maxPct) {
+    try {
+        const s = await statfs(path);
+        const blocks = Number(s.blocks);
+        const bavail = Number(s.bavail);
+        if (!Number.isFinite(blocks) || blocks <= 0 || !Number.isFinite(bavail)) {
+            return { ok: false, available: false, line: `磁盘检查跳过：statfs(${path}) 返回的数据不可解析` };
+        }
+        const usedPct = ((blocks - bavail) / blocks) * 100;
+        const line = `磁盘 ${path} 使用率 ${usedPct.toFixed(1)}%（阈值 ${maxPct}%）`;
+        if (usedPct > maxPct) return { ok: false, available: true, line };
+        return { ok: true, available: true, line };
+    } catch (error) {
+        const detail = error && error.message ? error.message : String(error);
+        return { ok: false, available: false, line: `磁盘检查跳过：statfs(${path}) 失败（${detail}）` };
+    }
+}
+
+/**
+ * 证书剩余天数：连 host:port 读对端证书的 valid_to（不校验链 —— 我们只问
+ * 「这张证书哪天到期」，校验交给浏览器与上面的 / 探测）。
+ *
+ * 连不上 / 超时 / 读不到证书一律 `{ available: false }` 跳过：站点挂了上面两条探测
+ * 已经红了，这里再报一次只是噪音；「证书还挂着、只是快到期」才是这条检查独有的信号。
+ */
+function checkTlsDaysLeft(host, port, minDays, timeoutMs) {
+    return new Promise(resolve => {
+        let settled = false;
+        const socket = tls.connect(
+            { host, port, servername: host, rejectUnauthorized: false, timeout: timeoutMs },
+            () => {
+                const cert = socket.getPeerCertificate();
+                const validTo = cert && cert.valid_to ? new Date(cert.valid_to) : null;
+                if (!validTo || Number.isNaN(validTo.getTime())) {
+                    finish({ available: false, line: `证书检查跳过：${host} 没返回可解析的 valid_to` });
+                    return;
+                }
+                const daysLeft = Math.floor((validTo.getTime() - Date.now()) / 86_400_000);
+                const line =
+                    `证书 ${host} 到期 ${validTo.toISOString().slice(0, 10)}，剩 ${daysLeft} 天` +
+                    `（阈值 ${minDays} 天）`;
+                finish({ available: true, ok: daysLeft >= minDays, daysLeft, line });
+            }
+        );
+        socket.on("timeout", () =>
+            finish({ available: false, line: `证书检查跳过：${host}:${port} ${timeoutMs}ms 内没完成握手` }),
+        );
+        socket.on("error", error =>
+            finish({
+                available: false,
+                line: `证书检查跳过：${host}:${port} 连不上（${error && error.message ? error.message : error}）`,
+            }),
+        );
+        function finish(result) {
+            if (settled) return;
+            settled = true;
+            socket.destroy();
+            resolve(result);
+        }
+    });
+}
+
 /** 组装一句给人看的话：告警文本、stdout、退出码三处共用同一份事实 */
 function buildReport(base, failures, notes) {
     const header = failures.length === 0 ? `[NavHive] 拨测通过 ${base}` : `[NavHive] 拨测失败 ${base}`;
@@ -363,6 +456,43 @@ async function main() {
             if (stats.unparsed > 0) {
                 notes.push(`另有 ${stats.unparsed} 行日志不是可解析的访问日志，未计入分母`);
             }
+        }
+    }
+
+    // ---- 4. 可选：磁盘水位（UPTIME_DISK_PATH 配了才跑；检查自身失败只降级为说明）----
+    const diskPath = (process.env.UPTIME_DISK_PATH || "").trim();
+    if (diskPath) {
+        const maxPct = Number(process.env.UPTIME_DISK_MAX_PCT ?? DEFAULT_DISK_MAX_PCT);
+        if (!Number.isFinite(maxPct) || maxPct <= 0 || maxPct >= 100) {
+            notes.push(`磁盘检查跳过：UPTIME_DISK_MAX_PCT=${process.env.UPTIME_DISK_MAX_PCT} 不是 0~100 的数`);
+        } else {
+            const disk = await checkDiskUsage(diskPath, maxPct);
+            if (!disk.available) notes.push(disk.line);
+            else if (disk.ok) notes.push(disk.line);
+            else failures.push(disk.line);
+        }
+    }
+
+    // ---- 5. 可选：证书剩余天数（UPTIME_TLS_HOST 显式配，或 --base 是 https 时自动推导）----
+    const tlsHost = (process.env.UPTIME_TLS_HOST || "").trim();
+    let tlsHostEffective = tlsHost;
+    if (!tlsHostEffective && args.base.startsWith("https://")) {
+        try {
+            tlsHostEffective = new URL(args.base).hostname;
+        } catch {
+            // parseArgs 已校验过 base，理论上走不到；走到就当没这项检查
+        }
+    }
+    if (tlsHostEffective) {
+        const minDays = Number(process.env.UPTIME_TLS_MIN_DAYS ?? DEFAULT_TLS_MIN_DAYS);
+        if (!Number.isFinite(minDays) || minDays < 0) {
+            notes.push(`证书检查跳过：UPTIME_TLS_MIN_DAYS=${process.env.UPTIME_TLS_MIN_DAYS} 不是非负数`);
+        } else {
+            const tlsPort = Number(process.env.UPTIME_TLS_PORT || DEFAULT_TLS_PORT);
+            const tls = await checkTlsDaysLeft(tlsHostEffective, tlsPort, minDays, args.timeoutMs);
+            if (!tls.available) notes.push(tls.line);
+            else if (tls.ok) notes.push(tls.line);
+            else failures.push(tls.line);
         }
     }
 

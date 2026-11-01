@@ -373,7 +373,7 @@ export function VaultPanel({ client, onNotify, withDialog = false, onClose }: Va
                             <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: "action.hover", fontFamily: "ui-monospace, Menlo, monospace", fontSize: 15, letterSpacing: 1, wordBreak: "break-all" }}>
                                 {showRecovery}
                             </Box>
-                            <Button variant='contained' onClick={() => { copyPassword(showRecovery); setShowRecovery(null); }}>
+                            <Button variant='contained' onClick={() => { void copyPassword(showRecovery); setShowRecovery(null); }}>
                                 我已保存，进入保险库
                             </Button>
                         </>
@@ -385,7 +385,7 @@ export function VaultPanel({ client, onNotify, withDialog = false, onClose }: Va
                             <TextField
                                 fullWidth size='small' type='password' label='主密码'
                                 value={masterPw} onChange={e => setMasterPw(e.target.value)}
-                                onKeyDown={e => { if (e.key === "Enter") doUnlock(); }}
+                                onKeyDown={e => { if (e.key === "Enter") void doUnlock(); }}
                                 autoComplete='current-password'
                             />
                             <Button variant='contained' onClick={doUnlock} disabled={busy} startIcon={busy ? <CircularProgress size={16} /> : <LockOpenIcon />}>

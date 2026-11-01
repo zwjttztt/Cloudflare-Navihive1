@@ -228,11 +228,21 @@ async function proxyToWorker(req: IncomingMessage, res: ServerResponse, rid: str
     // 这正是 NAVIHIVE_TRUST_XFF 这个开关该起作用的地方：只有明确声明「前面挡着
     // 一层会老实填头的可信反代」时才保留 X-Forwarded-*，否则一律删掉，
     // 真实地址由下面的 socket 对端提供。
+    //
+    // 信任模型（2026-11-01 XFF 绕过加固后）：TRUST_XFF=1 时， worker 侧的
+    // clientIp / clientBucket 会依次读 X-Real-IP（部署模板要求 Nginx 以覆盖模式
+    // 写入，客户端带来的值到不了应用）与 XFF 首段。这里**原样保留**客户端的
+    // X-Forwarded-For 是有意为之：XFF 可能是一条更长的反代链（Nginx 前面还有
+    // CDN / WAF），只有最外层知道完整链路；应用侧已经把可伪造的追加式首段
+    // 降级为次优先级，且 Nginx 覆盖写的 X-Real-IP 恒赢它，所以保留 XFF 已无害。
+    // TRUST_XFF=0 时连 X-Real-IP 也要删：worker 新增了对它的读取，而直暴部署下
+    // 它同样来自客户端，不删的话伪造它就能污染审计 IP / 换限速桶。
     headers.delete("cf-connecting-ip");
     headers.delete("cf-visitor");
     if (!trustXFF) {
         headers.delete("x-forwarded-for");
         headers.delete("x-forwarded-proto");
+        headers.delete("x-real-ip");
     }
 
     // 用反代给的 scheme 拼 URL：requestIsSecure() 在没有 CF-Visitor 时只认

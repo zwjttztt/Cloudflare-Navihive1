@@ -83,7 +83,7 @@ npm run smoke:selfhost http://127.0.0.1:8787
 | `NAVIHIVE_DB` | `./data/navihive.db` | SQLite 库文件路径（目录会自动建） |
 | `NAVIHIVE_FILES` | `./data/files` | 附件根目录 |
 | `NAVIHIVE_STATIC_DIR` | `./dist/client` | 构建产物目录 |
-| `NAVIHIVE_TRUST_XFF` | `0` | 是否信任 `X-Forwarded-For`（限速分桶用）。**默认 0（安全）**：端口直接暴露公网时保持 0，否则改个请求头就能换限速桶、绕开爆破防护。前面确实挡了 Nginx（由它覆盖 XFF）才设 `1` —— `docker-compose.yml` 默认已写 1 |
+| `NAVIHIVE_TRUST_XFF` | `0` | 是否信任 `X-Forwarded-For`（限速分桶用）。**默认 0（安全）**：端口直接暴露公网时保持 0，否则改个请求头就能换限速桶、绕开爆破防护。前面确实挡了 Nginx（由它**覆盖** XFF 为 `$remote_addr`、并同样覆盖 `X-Real-IP`，见 `navihive-selfhost.conf`）才设 `1` —— `docker-compose.yml` 默认已写 1。2026-11-01 起应用侧分桶优先读 `X-Real-IP`，XFF 作为回退；两者都必须由反代覆盖写入，客户端伪造的头进不来 |
 | `NAVIHIVE_CRON` | `1` | 进程内每小时跑一次定时任务。多副本部署必须设 `0`（否则每个副本各跑一遍），改用 `POST /__cron` |
 | `NAVIHIVE_CRON_TOKEN` | 空 | `POST /__cron` 的 bearer token。**不配 = 该端点 404** |
 
@@ -592,9 +592,10 @@ docker inspect --format='{{.State.Health.Status}}' navihive    # → healthy
 
 ### 8.2 回滚：三步，别只做第一步
 
-镜像每次构建都会打两个 tag：`:latest` 和 `:<commit sha>`
-（`.github/workflows/docker-publish.yml` 里 `--tag ...:latest --tag ...:${{ github.sha }}`）。
-**回滚靠的就是 sha tag** —— `:latest` 是唯一会被覆盖的那个，拿它回滚等于没回滚。
+镜像每次构建会打三个 tag：`:latest`、`:v<版本号>`（如 `v24.8.0`，2026-11-01 起新增）
+和 `:<commit sha>`（`.github/workflows/docker-publish.yml`）。
+**回滚首选 sha tag** —— `:latest` 是唯一会被覆盖的；`:v<版本号>` 同版本多次发布也会被
+覆盖（同版本号不保证唯一），它的价值是「人读得懂」，定位唯一构建仍然只认 sha。
 
 **第 1 步：在 GHCR 上找到要回退到的 sha**
 
@@ -607,6 +608,18 @@ docker buildx imagetools inspect ghcr.io/<owner>/navihive:<旧sha>
 
 > 手头没有旧 sha 时：`git log --oneline -20` 找那个「上一个好版本」的提交号。
 > 从没记过版本号的话，去 GitHub Actions 的 `docker-publish` 历史里翻那一次绿色的运行。
+>
+> **按版本号回滚**（`:v<版本号>` tag，2026-11-01 起才有；旧镜像没有这个 tag）：
+>
+> ```bash
+> # 先确认这个版本号在 GHCR 上存在（同版本号可能被后来的发布覆盖，看最后更新时间）
+> docker buildx imagetools inspect ghcr.io/zwjttztt/navihive:v24.8.0
+> NAVIHIVE_IMAGE=ghcr.io/zwjttztt/navihive:v24.8.0 docker compose up -d --force-recreate navihive
+> ```
+>
+> 版本号与 commit 的对应关系：package.json 的 version（仓库历史里查），或
+> `docker buildx imagetools inspect ghcr.io/zwjttztt/navihive:v24.8.0` 输出的
+> digest 与 sha tag 的 digest 对得上就是同一次构建。
 
 **第 2 步：用旧镜像重建**
 
@@ -618,6 +631,25 @@ NAVIHIVE_IMAGE=ghcr.io/<owner>/navihive:<旧sha> docker compose up -d --force-re
 > ⚠️ 必须用 `NAVIHIVE_IMAGE=... docker compose ...` 这种**同一条命令里**赋值的写法。
 > 写成 `export NAVIHIVE_IMAGE=...` 然后忘了它，下次网页一键升级会把 `NAVIHIVE_IMAGE`
 > 又读成新版本 —— 回滚就白做了。想固定下来就写进 `.env`，并记住它在哪。
+>
+> **按摘要固定（digest pinning）**：不想「回滚到某个 tag 之后又被人覆盖」，可以把
+> `NAVIHIVE_IMAGE` 写成摘要形式，直接钉死某一次构建的 manifest digest：
+>
+> ```bash
+> # digest 从 imagetools inspect（或 GHCR 包页面）里抄，形如 sha256:734cbed7…
+> NAVIHIVE_IMAGE=ghcr.io/zwjttztt/navihive@sha256:734cbed7ada8e00d8f19eb8206f8a6f61269c6dace5609dfccb0af6db57fed50 \
+>   docker compose up -d --force-recreate navihive
+> ```
+>
+> 摘要是**内容寻址**的：指向的那次构建永远不会变（tag 会漂，digest 不会），
+> 这是把「我要的就是这一版」写死的最强形式。
+>
+> ⚠️ 适用范围（2026-11-01 核实）：**只走 compose / upgrader 这条路**。upgrader 的
+> `docker pull "$NAVIHIVE_IMAGE"`（docker-compose.yml）原样透传引用，daemon 原生认
+> `repo@sha256:…`；网页一键升级在 spool 模式（标准 compose 部署）下也只写请求文件、
+> 同样由 upgrader 拉取，均可用。但**非 spool 直连 docker.sock 的旧部署形态**不要用：
+> 那条路的 `dockerPull`（server/entry.ts:481-484）按最后一个 `:` 切分 image:tag，
+> 会把 `@sha256:…` 解析成错误的 repo/tag，升级必失败。
 
 **第 3 步：验证真的回退了（三项都要做）**
 
@@ -1002,6 +1034,8 @@ DNS、Cloudflare、宿主反代、证书这几层 —— 也就是说下面这�
    统计 `5xx` 的条数与占比，超过阈值（默认 5 条或 5%）算失败。
    **抓不到日志（没装 docker / 容器名不对 / 日志不是 JSON）只跳过并说明，不判失败** ——
    拨测自己误报一次，运维就会永久忽略它的告警。
+4. 可选磁盘水位与证书到期（`UPTIME_DISK_PATH` / `UPTIME_TLS_HOST`）—— 见本节末尾
+   「可选：磁盘水位与证书到期」，同样是「配了才跑、自身失败自动降级」。
 
 #### 这一条统计的是什么（以及它统计不到什么）
 
@@ -1108,6 +1142,30 @@ crontab -e
   要么改用 Slack 或自建 webhook。
 - **留空**：只打 stdout/stderr。cron 默认会把输出发邮件给 crontab 的主人 —— 这也是一种告警，
   适合还没搭告警通道的时候先用着。
+
+### 可选：磁盘水位与证书到期（2026-11-01 起内置）
+
+拨测脚本另外带两条**本地**检查，都是「配了环境变量才跑、自身失败自动降级为一条说明」，
+不会影响上面三条探测的结论：
+
+```cron
+# NaviHive 外部拨测：附加磁盘水位 + 证书到期检查
+*/5 * * * * cd /opt/navihive && ALERT_WEBHOOK='https://<your-webhook>' \
+  UPTIME_DISK_PATH=/var/lib/docker/volumes UPTIME_DISK_MAX_PCT=85 \
+  UPTIME_TLS_HOST=<your-host> UPTIME_TLS_MIN_DAYS=14 \
+  /usr/bin/node script/uptime-check.mjs --base https://<your-host> --container navihive >> /var/log/navihive-uptime.log 2>&1
+```
+
+- **磁盘水位**：`UPTIME_DISK_PATH` 指定要看的文件系统上的任意路径，默认
+  `/var/lib/docker/volumes`（镜像层与命名卷都在这里长，SQLite 库、附件、日志全在其中；
+  自建机一般与 `/` 同盘，所以它实际量的是整机水位）。使用率超过
+  `UPTIME_DISK_MAX_PCT`（默认 `85`）就报警。留空（不设这个变量）= 关闭这条检查。
+  磁盘满对自托管是**慢性绝症**：SQLite 写不进、附件丢、日志断，而且是在半夜最没人的时候。
+- **证书到期**：`UPTIME_TLS_HOST` 不设时自动从 `--base`（https 时）推导主机名，连 443 读
+  对端证书的 `valid_to`，剩余天数低于 `UPTIME_TLS_MIN_DAYS`（默认 `14`）就报警 ——
+  Let's Encrypt 一签 90 天，14 天是「还来得及手动续」的最后窗口。连不上 / 握手超时
+  **不算失败只留说明**（站点挂了上面两条探测已经报了，这里重复报只是噪音）。
+  用 http 部署（内网无 TLS）时保持 `UPTIME_TLS_HOST` 不设即可。
 
 > ⚠️ 别把 webhook 地址写进仓库：它是凭据（谁拿到谁就能往你的群里发消息）。
 > 跑在 crontab 里时直接写在那一行，或放进 `EnvironmentFile` 之类的地方。

@@ -2,7 +2,7 @@
 
 import type { NavigationAPI } from "../src/API/navigationApi";
 import { ApiError, errorResponse } from "./lib/apiError";
-import { REAL_IP_HEADER } from "./httpUtils";
+import { REAL_IP_HEADER, X_REAL_IP_HEADER } from "./httpUtils";
 
 // ============ 登录失败限速 ============
 // 连续输错会越等越久，避免密码被无限次猜。
@@ -43,6 +43,16 @@ type GuardStore = Record<string, GuardState>;
  * 否则攻击者每次换一个 XFF 首段就能换一个新桶，把爆破限速彻底绕过去。
  * 只有在「明确把 Worker 放在可信反代后面、反代会老实填 XFF」的部署里，
  * 才把 `NAVIHIVE_TRUST_XFF=1` 打开、显式允许读 XFF 首段。
+ *
+ * ⚠️ 2026-11-01 XFF 绕过加固：即便 TRUST_XFF=1，只要反代用的是**追加模式**
+ * （`$proxy_add_x_forwarded_for`），XFF 首段仍是客户端自己填的 —— 随机换一个
+ * 就换一个新桶，登录 / 注册 / 分享口令的爆破锁等于没有。所以信任链里插一档
+ * `X-Real-IP`（见 X_REAL_IP_HEADER）：部署模板让 Nginx 用覆盖模式写它，
+ * 客户端带来的值进不了应用，伪造不了。取值顺序变为：
+ *   CF-Connecting-IP → X-Real-IP（TRUST_XFF=1 时）→ XFF 首段 → 入口 socket 对端
+ * 反代没配 X-Real-IP 的老部署自动回退 XFF 首段（与旧行为一致），
+ * 部署侧把 XFF 改成覆盖模式（见 deploy/nginx 模板）后彻底封死。
+ *
  * 不信任且又拿不到真实 IP 时所有来源共用一个 `unknown` 桶 —— 最多只是限速粒度变粗，
  * 不会失守。
  *
@@ -56,7 +66,10 @@ export function clientBucket(request: Request, trustXForwardedFor = false): stri
     const cf = request.headers.get("CF-Connecting-IP");
     if (cf) return cf.slice(0, 64);
     if (trustXForwardedFor) {
-        const xff = (request.headers.get("X-Forwarded-For") || "").split(",")[0].trim();
+        // 先问 Nginx 覆盖写入的 X-Real-IP（伪造不了），再回退 XFF 首段（追加模式下可伪造）
+        const real = request.headers.get(X_REAL_IP_HEADER);
+        if (real && real.trim()) return real.trim().slice(0, 64);
+        const xff = (request.headers.get("X-Forwarded-For") || "").split(",")[0]?.trim();
         if (xff) return xff.slice(0, 64);
     }
     const real = request.headers.get(REAL_IP_HEADER);

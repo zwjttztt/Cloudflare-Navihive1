@@ -22,7 +22,10 @@
 # 拆分不改语义：26 个步骤一步不少，命令 / env / continue-on-error 全部照抄。特别注意：
 #   · gitleaks 仍在 npm ci **之前**（理由见那一步的注释）；
 #   · NAVIHIVE_STRICT_D1 仍**逐步骤**声明，不提到 job 级 —— 提到 job 级会让本来没声明它的
-#     步骤（构建 / 冒烟 / 各审计）也吃上这个开关，那就是语义变化；
+#     步骤（构建 / 冒烟 / 各审计）也吃上这个开关，那就是语义变化。2026-11-01 起声明它的
+#     步骤从 build_and_e2e 的六条 e2e 扩到 unit 的「单元测试」与 coverage 的「覆盖率分层
+#     门禁」—— 那两步会真实执行 server/sqlite-d1.ts 适配层，不开严格模式就验不出
+#     「本机全绿、上线才炸」的那类缺陷；
 #   · 视觉回归仍 continue-on-error: true（观察期不卡门）；
 #   · coverage 那边的锁与清理逻辑一行没动：拆并行后各 job 在不同 runner 上，script/tmp-tests
 #     本来就不会互删，但那是「顺便消失的问题」，不构成删掉防御逻辑的理由。
@@ -147,7 +150,15 @@ jobs:
       # ⚠️ 名字别写回「纯函数单测」：这一步跑的是 `npm run test`（全套，含 .dom.test.tsx
       # 那几千条组件用例），不是只跑纯函数。名字写窄了，下一个人就会照着名字把它改成
       # 只跑 pure —— DOM 那一半会**静默失去 CI 覆盖**，而没有任何东西会报错。
+      #
+      # NAVIHIVE_STRICT_D1=1（2026-11-01 补）：`npm run test` 里有三条用例真实执行
+      # server/sqlite-d1.ts 适配层（serverSqliteD1 / serverSlowQuery / sessionDeviceParity），
+      # 以前只有 build_and_e2e 的 e2e 步骤开着严格模式，单测这条线一直在「非严格」下跑。
+      # 全局打开不会误伤：唯一钉「非严格行为」的用例（serverSqliteD1.test.ts 的
+      # 「严格模式默认关」）走 withStrict(false)，它自己会删掉这个环境变量再跑。
       - name: 单元测试（含组件）
+        env:
+          NAVIHIVE_STRICT_D1: "1"
         run: npm run test
 
   # 为什么单独一组：278s 是整条流水线最长的一步，拆分后它就是**关键路径** ——
@@ -175,7 +186,13 @@ jobs:
       # 按层统计「哪个源文件从未被任何用例间接引入」，并对每个层设文件触及率下限。
       # 现在绿，抓的是以后往某个层塞了没测的文件。纯类型声明 / 入口文件已排除，
       # 不会逼出无意义测试（详见 script/coverage.mjs 的 EXCLUDE 与 MIN_TOUCH）。
+      #
+      # NAVIHIVE_STRICT_D1=1（2026-11-01 补）：c8 行覆盖率那层会**真实执行**整套用例
+      #（含 serverSqliteD1.test.ts 这组直接打 server/sqlite-d1.ts 适配层的），与 unit job
+      # 同理开严格模式 —— 触及率那层是静态 import 分析，不受影响，注入无害。
       - name: 覆盖率分层门禁
+        env:
+          NAVIHIVE_STRICT_D1: "1"
         run: npm run check:coverage
 
   # 为什么这些步骤归到一组：它们**都依赖构建产物**（dist/ 或 dist-server/），
@@ -408,3 +425,62 @@ jobs:
             exit 1
           fi
           echo "四个并行 job 全部 success"
+
+  # 失败通知（2026-11-01）：任何 job 红 → POST 一条到 ALERT_WEBHOOK（Slack/飞书通用
+  # text 字段，形态与 script/uptime-check.mjs 的告警一致）。
+  #
+  # 为什么挂在 verify 之后而不是每个 job 里各塞一步：塞在四个并行 job 里，两个同时红
+  # 就会发两条，还得在每步里重复「webhook 没配就跳过」的判断。收口在唯一结论点
+  # （verify）之后，任何红都恰好触发一次。
+  #
+  # ⚠️ if: failure() 而不是 always()：全绿时这个 job 必须是 skipped 而不是跑一遍又退出 0
+  #    —— 否则它会出现在每一次运行的 job 列表里，把「真的失败了」淹没。
+  # ⚠️ ALERT_WEBHOOK 没配时明确跳过：curl POST 到空 URL 必然失败，那会让通知本身
+  #    变成一条新红灯 —— 通知是附属品，绝不反过来改变工作流结论。
+  notify:
+    name: 失败通知
+    needs: [lint_and_types, unit, coverage, build_and_e2e, verify]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: 组装失败摘要并 POST 到 ALERT_WEBHOOK
+        env:
+          ALERT_WEBHOOK: ${{ secrets.ALERT_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          R_LINT: ${{ needs.lint_and_types.result }}
+          R_UNIT: ${{ needs.unit.result }}
+          R_COV: ${{ needs.coverage.result }}
+          R_BUILD: ${{ needs.build_and_e2e.result }}
+          R_VERIFY: ${{ needs.verify.result }}
+        run: |
+          if [ -z "$ALERT_WEBHOOK" ]; then
+            echo "ALERT_WEBHOOK 未配置，跳过失败通知（在仓库 Settings → Secrets 里配置）"
+            exit 0
+          fi
+
+          failed=""
+          for pair in "lint_and_types:$R_LINT" "unit:$R_UNIT" "coverage:$R_COV" "build_and_e2e:$R_BUILD" "verify:$R_VERIFY"; do
+            name="${pair%%:*}"
+            result="${pair#*:}"
+            if [ "$result" != "success" ]; then failed="$failed $name($result)"; fi
+          done
+          echo "失败 job：$failed"
+
+          # JSON 转义交给 node（runner 预装）：手工拼转义引号迟早翻车
+          TEXT=$(printf '[NavHive] CI 失败 %s@%s\n失败 job:%s\n%s\n' "$REPO" "$BRANCH" "$failed" "$RUN_URL")
+          node -e '
+            const text = process.argv[1];
+            process.stdout.write(JSON.stringify({ text, repo: process.env.REPO, branch: process.env.BRANCH, run_id: process.env.RUN_ID }));
+          ' "$TEXT" > /tmp/payload.json
+
+          # 发送失败只留日志：站点/镜像的门禁结论已经红了，通知不该再制造第二条
+          curl -fsS -m 10 -X POST \
+            -H 'Content-Type: application/json' \
+            --data-binary @/tmp/payload.json \
+            "$ALERT_WEBHOOK" \
+            || echo "::warning::失败通知发送不出去（webhook 不可达或被限流），不影响工作流结论"

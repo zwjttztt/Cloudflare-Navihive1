@@ -51,8 +51,8 @@ test("dialogShell 的公共正文样式带断词规则（用外壳的弹窗全�
     assert.ok(WRAP_RULE.test(src), "dialogContentSx 里要有 overflowWrap: anywhere");
 });
 
-test("SettingsDialog 两个带长 URL 的字段各自带断词规则", () => {
-    const src = read("src/components/SettingsDialog.tsx");
+test("全站设置业务体（ConfigPanelBody，原 SettingsDialog）两个带长 URL 的字段各自带断词规则", () => {
+    const src = read("src/components/ConfigPanelBody.tsx");
     for (const id of ["site-icon-api", "site-thumb-api"]) {
         const at = src.indexOf(id);
         assert.ok(at > 0, `找不到字段 ${id}`);

@@ -247,3 +247,16 @@ test("withSecurityHeaders 不覆盖已经设过的头（图标代理那条 CSP s
     assert.equal(out.headers.get("X-Frame-Options"), "SAMEORIGIN");
     assert.equal(out.headers.get("Referrer-Policy"), "strict-origin");
 });
+
+test("clientIp：trustXFF 时 X-Real-IP（反代覆盖头）优先于 XFF 首段（2026-11-01 加固）", () => {
+    const req = (headers: Record<string, string>) => new Request("https://nav.example.com/", { headers });
+    // Nginx 覆盖写的 X-Real-IP 伪造不了，必须赢过追加式 XFF 的可伪造首段
+    assert.equal(
+        clientIp(req({ "X-Real-IP": "8.8.8.8", "X-Forwarded-For": "6.6.6.6, 10.0.0.1" })),
+        "8.8.8.8"
+    );
+    // 反代没配 X-Real-IP 的老部署：回退 XFF 首段，与旧行为一致
+    assert.equal(clientIp(req({ "X-Forwarded-For": "6.6.6.6" })), "6.6.6.6");
+    // 不信任反代（自托管端口直暴）：X-Real-IP 同样来自客户端，不该被读
+    assert.equal(clientIp(req({ "X-Real-IP": "6.6.6.6" }), false), "unknown");
+});

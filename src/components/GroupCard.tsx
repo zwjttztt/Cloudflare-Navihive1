@@ -78,6 +78,10 @@ interface GroupCardProps {
     selectMode?: boolean;
     selectedIds?: number[];
     onToggleSelect?: (siteId: number) => void;
+    /** 搜索 / 筛选（关键词、星标、失效、标签）任一生效：结果至多 60 条
+     *  （useSiteSearch 的 SEARCH_TOTAL_LIMIT），组内网格不值得懒，直接全量挂载。
+     *  同时保证搜索结果一出来就是挂好的，锚点 / 键盘导航不会撞上占位符。 */
+    filterActive?: boolean;
 }
 
 // 卡片多的分组先渲染一批，滚到底再补，避免一次铺几百张卡拖慢首屏
@@ -102,6 +106,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
     selectMode = false,
     selectedIds,
     onToggleSelect,
+    filterActive = false,
 }) => {
     // 分组本身不显示访问次数：订阅稳定那份 + 星标那份就够了，
     // 每次点卡片都不必把整组重渲染一遍
@@ -119,10 +124,18 @@ const GroupCard: React.FC<GroupCardProps> = ({
     // 分组懒挂载：视口外的分组先不创建卡片（只留占位高度），
     // content-visibility 只省了布局与绘制，React 元素和 DOM 节点照样是全量建的，
     // 几百张卡片时那部分开销才是大头。排序模式必须全量渲染，否则拖拽落点会算错。
-    const [sitesMounted, setSitesMounted] = useState(sortMode === "None" ? false : true);
+    const [sitesMounted, setSitesMounted] = useState(
+        sortMode !== "None" || filterActive || group.sites.length === 0
+    );
     const panelRef = useRef<HTMLDivElement | null>(null);
     useEffect(() => {
-        if (sortMode !== "None") {
+        // 三种情况不懒、直接全量挂：
+        //   1. 排序模式 —— DndContext / SortableContext 需要完整树，拖拽落点才算得准；
+        //   2. 搜索 / 筛选生效 —— 结果至多 60 条，懒挂载没有收益，还可能让
+        //      锚点跳转 / 键盘焦点导航撞上占位符；
+        //   3. 空分组 —— 挂的只是几节点的引导空状态，直接挂还能避免
+        //      120px 占位换成 250px 真身时把下面整列内容顶得跳一下。
+        if (sortMode !== "None" || filterActive || group.sites.length === 0) {
             setSitesMounted(true);
             return;
         }
@@ -143,7 +156,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
         );
         io.observe(el);
         return () => io.disconnect();
-    }, [sortMode]);
+    }, [sortMode, filterActive, group.sites.length]);
 
     // 未挂载时的占位高度：按「一行约 3 张、每张约 150px」粗估，
     // 与 content-visibility 的 contain-intrinsic-size 思路一致，滚动条不会大幅跳动

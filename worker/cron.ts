@@ -454,6 +454,17 @@ export async function runInactiveSweep(api: SchedulerDB): Promise<void> {
     const result = await nav.sweepInactiveUsers();
     if (result.disabled > 0 || result.deleted > 0) {
         console.log(`沉睡账号扫描完成：停用 ${result.disabled} 个、清除 ${result.deleted} 个`);
+        // 停用 / 清除账号是破坏性动作，只留一行 console 的话，事后（用户来问
+        // 「账号怎么没了」时）审计日志里查无此事。动作代号沿用 cron.<task> 风格；
+        // writeAudit 可能不存在（验证脚本注入的假实现），探测不到就只留 console。
+        if (typeof nav.writeAudit === "function") {
+            await nav.writeAudit(
+                "cron.inactiveSweep",
+                "system",
+                "cron",
+                `沉睡账号清理：停用 ${result.disabled} 个、清除 ${result.deleted} 个`
+            );
+        }
     }
 }
 
@@ -655,20 +666,44 @@ export async function runScheduledTasks(
 
     // 记事本自动备份调度：到没到点由各账号自己的频率配置判定，任何触发频率下行为都正确
     {
+        // api 要留在块作用域里：withDeadline 失败时 recordCronFailure 还得拿它写留痕
+        let notesBackupApi: SchedulerDB | undefined;
         const r = await withDeadline("notesBackup", async () => {
-            await runNotesBackupSchedule(makeApi(env), env);
+            notesBackupApi = makeApi(env);
+            await runNotesBackupSchedule(notesBackupApi, env);
         });
-        if (!r.ok) console.error("记事本自动备份调度未完成:", r.error);
+        // 破坏性任务失败不能只有一行 console：定时任务没人盯控制台，「自动备份连着
+        // 失败好几个月」只能等到真要恢复那天才发现。与 backup / linkSweep 同一模板留痕。
+        if (!r.ok && notesBackupApi) {
+            const why = r.timedOut ? "超过单任务耗时上限" : `异常：${(r.error as Error)?.message || "未知错误"}`;
+            await recordCronFailure(notesBackupApi, "notesBackup", `记事本自动备份调度${why}`);
+        }
     }
 
     // 沉睡账号扫描：对普通账号继续生效（owner 在后端就被排除，见 runInactiveSweep 注释）
     {
-        const r = await withDeadline("inactiveSweep", () => runInactiveSweep(makeApi(env)));
-        if (!r.ok) console.error("沉睡账号扫描未完成:", r.error);
+        let sweepUsersApi: SchedulerDB | undefined;
+        const r = await withDeadline("inactiveSweep", async () => {
+            sweepUsersApi = makeApi(env);
+            await runInactiveSweep(sweepUsersApi);
+        });
+        // 扫描会**停用甚至清除账号**，失败静默的话用户无从得知「为什么人没了/没处理」
+        if (!r.ok && sweepUsersApi) {
+            const why = r.timedOut ? "超过单任务耗时上限" : `异常：${(r.error as Error)?.message || "未知错误"}`;
+            await recordCronFailure(sweepUsersApi, "inactiveSweep", `沉睡账号扫描${why}`);
+        }
     }
 
     {
-        const r = await withDeadline("retention", () => runRetentionCleanup(makeApi(env)));
-        if (!r.ok) console.error("过期数据清理未完成:", r.error);
+        let retentionApi: SchedulerDB | undefined;
+        const r = await withDeadline("retention", async () => {
+            retentionApi = makeApi(env);
+            await runRetentionCleanup(retentionApi);
+        });
+        // 保留清理会真删数据（审计 / 回收站 / 令牌黑名单），失败必须留痕可查
+        if (!r.ok && retentionApi) {
+            const why = r.timedOut ? "超过单任务耗时上限" : `异常：${(r.error as Error)?.message || "未知错误"}`;
+            await recordCronFailure(retentionApi, "retention", `过期数据清理${why}`);
+        }
     }
 }
