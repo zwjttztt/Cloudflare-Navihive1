@@ -302,15 +302,17 @@ export default function AttachmentManager({
         setUploadProgress({ done: 0, total: files.length });
         let ok = 0;
         const errors: string[] = [];
-        for (let i = 0; i < files.length; i++) {
-            try {
-                await mgr.upload(files[i]);
-                ok++;
-            } catch (err) {
-                errors.push(`${files[i].name}：${err instanceof Error ? err.message : "未知错误"}`);
-            }
-            setUploadProgress({ done: i + 1, total: files.length });
+    for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (!file) continue;
+        try {
+            await mgr.upload(file);
+            ok++;
+        } catch (err) {
+            errors.push(`${file.name}：${err instanceof Error ? err.message : "未知错误"}`);
         }
+        setUploadProgress({ done: i + 1, total: files.length });
+    }
         try {
             const list = await mgr.list();
             setFiles(list);
@@ -448,7 +450,7 @@ export default function AttachmentManager({
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "center",
-                            bgcolor: "rgba(25,118,210,0.10)",
+                            bgcolor: "color-mix(in srgb, var(--accent) 10%, transparent)",
                             border: "2px dashed var(--accent)",
                             borderRadius: 2,
                             pointerEvents: "none",
