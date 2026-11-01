@@ -3,7 +3,13 @@ import { EditorState, StateEffect, StateField, Transaction } from "@codemirror/s
 import { EditorView, keymap, lineNumbers, highlightActiveLine, placeholder, Decoration, type DecorationSet } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentUnit } from "@codemirror/language";
+import { syntaxHighlighting, defaultHighlightStyle, HighlightStyle, bracketMatching, indentUnit } from "@codemirror/language";
+// ⚠️ `@lezer/highlight` 没写进 package.json，这里**是故意的**：它是 @codemirror/language 的
+// 硬运行时依赖（`@codemirror/language/dist/index.d.ts` 第 6 行就 `import ... from '@lezer/highlight'`），
+// 所以 `npm ci` 一定会装上、import 一定解析得到。
+// 往 package.json 里加它等于必须同步 package-lock.json，而 CI 四个 job 全跑 `npm ci`，
+// 锁文件不一致就是整场红 —— 为了一个「本来就已经在依赖树里」的包付这个代价不值。
+import { tags as t } from "@lezer/highlight";
 import { search, searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { autocompletion, completionKeymap } from "@codemirror/autocomplete";
 
@@ -178,6 +184,31 @@ const completionTheme = EditorView.theme({
         textAlign: "right",
     },
 });
+
+/**
+ * Markdown 结构记号（`#` / `-` / `>` 这些）的颜色覆盖。
+ *
+ * 为什么需要：`defaultHighlightStyle` 把 `tags.meta` 钉成 `#404740`，而 Markdown 的
+ * `HeaderMark` / `ListMark`（`#`、`-`）标的是 `tags.processingInstruction` ——
+ * 它是 `tags.meta` 的**子标签**，于是也吃这条色。亮色下 #404740 压白纸面是 9.4:1（没问题），
+ * 暗色下压深纸面只有 **1.7:1**（对比度审计实测 1.55:1）：14px 的 `#` 和 `-` 基本等于看不见
+ *（2026-10-31 对比度审计报的那 3 处）。
+ *
+ * 修法：这里只覆盖「结构记号」这一个 tag，颜色交给 CSS 变量 --notes-mark 随主题走
+ * （亮 #404740 = 原值，视觉零变化；暗 #9aa79a 是另挑的，实测见 index.css 的注释）。
+ *
+ * 🔴 **顺序是这件事的全部技术要点**：同一 tag 上**先注册者优先** ——
+ *    本扩展必须排在 `syntaxHighlighting(defaultHighlightStyle)` **之前**。
+ *    原因（CodeMirror 内部）：两条高亮规则生成的是两个同特异度的单类选择器，
+ *    谁在样式表里靠后谁赢；而 @codemirror/view 挂样式表时是
+ *    `StyleModule.mount(root, styleModules.concat(baseTheme).reverse())` —— 反转之后
+ *    **facet 里排在前面**的模块反而**最后**插入，于是拿到最高优先级。所以写成
+ *    「自定义在前、default 在后」才生效；顺序写反**不会报错、不会有任何提示**，
+ *    只是静默失效。TESTS：tests/notesMarkColor.test.ts 钉着这个顺序。
+ */
+const markHighlight = HighlightStyle.define([
+    { tag: t.meta, color: "var(--notes-mark)" },
+]);
 
 /**
  * 没传 `completionSources` 时的兜底：补全扩展照样装（钩子和 keymap 都在），
@@ -484,6 +515,10 @@ export default function NoteEditor({
                     // 而即时渲染是随手会切的，不能因为这个就重建编辑器。
                     gutterCompartment.of(showLineNumbers ? [lineNumbers()] : []),
                     highlightActiveLine(),
+                    // 语法高亮：**自定义 marks 必须排在 defaultHighlightStyle 之前** ——
+                    // 同一 tag「先注册者优先」，排在后面等于没生效（不报错、无提示）。
+                    // 完整原因见文件上方 markHighlight 的注释，顺序由 tests/notesMarkColor.test.ts 守着。
+                    syntaxHighlighting(markHighlight),
                     syntaxHighlighting(defaultHighlightStyle), EditorView.lineWrapping, theme, searchPanelTheme, completionTheme,
                     // 输入补全（utils/noteCompletion.ts）：`[[` 双链 / `#` 标签 / 围栏语言。
                     // 三个 source 内部都用 fuzzyMatch 自己排好序了，所以设 `filter: false`

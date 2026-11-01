@@ -32,7 +32,6 @@ type Calls = {
     glassEffects: boolean[];
     offlineFull: boolean[];
     iconPrivacy: boolean[];
-    closes: number;
     saves: number;
     linkChecks: number;
 };
@@ -62,7 +61,7 @@ type Opts = {
     radius?: RadiusStyle;
     fontScale?: FontScale;
     configs?: Record<string, string>;
-    /** B1 摊平模式：传了就只渲染对应段（无 Tabs、无 Dialog 外壳） */
+    /** 渲染哪一段（默认 appearance）；两种取值都无 Tabs、无 Dialog 外壳 */
     section?: "appearance" | "data";
 };
 
@@ -81,7 +80,6 @@ function emptyCalls(): Calls {
         glassEffects: [],
         offlineFull: [],
         iconPrivacy: [],
-        closes: 0,
         saves: 0,
         linkChecks: 0,
     };
@@ -101,14 +99,11 @@ function Harness(o: Opts) {
     const [, setMaskOpacity] = useState(0.3);
     const [glassBlur, setGlassBlur] = useState(8);
     configs = state;
-    // withDialog：独立弹窗模式（不传 section）自带 Dialog 外壳；摊平模式只输出内容体。
-    // 两者都是业务本体 ConfigPanelBody，行为与原默认导出一致。
+    // 业务本体只做中心内嵌面板：section 必填（默认 appearance），没有 Dialog 外壳、
+    // 也没有页签栏 —— 分段导航在中心左栏。
     return (
         <ConfigPanelBody
-            open={!o.section}
-            withDialog={!o.section}
-            section={o.section}
-            onClose={() => calls.closes++}
+            section={o.section ?? "appearance"}
             onSave={() => calls.saves++}
             tempConfigs={state}
             setTempConfigs={setState}
@@ -188,12 +183,6 @@ const inputById = (id: string) => document.querySelector<HTMLInputElement>(`#${i
 const alerts = () =>
     [...document.querySelectorAll(".MuiAlert-root")].map(el => (el.textContent ?? "").trim());
 
-/** MUI Tabs 的页签（div[role=tab]）；2026-10-25 起设置分「外观与搜索 / 数据 / 高级」三页 */
-const tabButton = (text: string) =>
-    [...document.querySelectorAll('[role="tab"]')].find(el =>
-        (el.textContent || "").includes(text)
-    );
-
 function click(el: Element) {
     act(() => {
         el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -224,19 +213,20 @@ const sliders = () => [...document.querySelectorAll(".MuiSlider-root")];
 test.afterEach(cleanup);
 
 test("设置：站点所有者看不到「外观按账号保存」提示；数据保留已迁「数据安全」", () => {
+    // 所有者（外观段）：不该看到「按账号保存」的说明
     render({ isSiteOwner: true });
     assert.equal(
         alerts().some(t => t.includes("外观按账号保存")),
         false,
         "所有者不该看到这条按账号保存的说明"
     );
-    // A+B（2026-10-31）：数据保留三项迁进中心「数据安全」面板（规则跟着被管的
-    // 回收站/审计走），不再留在设置弹窗里 —— 别处改、这里也改，两处真源会打架
-    click(tabButton("数据")!);
+    // 数据段：数据保留三项已迁「数据安全」面板，这里不该再有它们
+    cleanup();
+    render({ section: "data" });
     assert.equal(
         inputById("retention-days"),
         null,
-        "数据保留不许留在设置弹窗 —— 真源在中心「数据安全」"
+        "数据保留不许留在设置面板 —— 真源在中心「数据安全」"
     );
 });
 
@@ -339,17 +329,14 @@ test("设置：保存中按钮禁用且文案变「保存中…」，防连点�
     assert.equal(btn.disabled, true, "保存中必须禁用，否则能连点出多次提交");
 });
 
-test("设置：取消按钮走 onClose；不传 onRunLinkCheck 就不显示失效检测按钮", () => {
-    render();
-    // 失效检测在「数据」页签的「维护」区
-    click(tabButton("数据")!);
+test("设置：数据段——不传 onRunLinkCheck 就不显示失效检测按钮", () => {
+    // 失效检测在「数据与维护」段的「维护」区。独立弹窗已退场，不再有「取消」按钮
+    //（关闭由中心统一提供），所以这条只盯这个按钮的显隐。
+    render({ section: "data" });
     assert.equal(button("检测失效链接"), undefined, "没传回调时不该出现这个按钮");
-    click(button("取消")!);
-    assert.equal(calls.closes, 1);
 
     cleanup();
-    render({ onRunLinkCheck: () => {} });
-    click(tabButton("数据")!);
+    render({ section: "data", onRunLinkCheck: () => {} });
     const check = button("检测失效链接")!;
     assert.ok(check, "传了回调就该显示");
     click(check);

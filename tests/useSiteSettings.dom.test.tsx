@@ -22,10 +22,8 @@ type Log = {
     notify: Array<{ text: string; level?: string }>;
     errors: string[];
     logout: number;
-    menuClose: number;
     setConfigsCalls: Array<Record<string, string>>;
     updateAuthCalls: Array<{ username: string; password: string; currentPassword: string }>;
-    openConfig: boolean;
     authUsername: string;
     authCurrentPassword: string;
     authNewPassword: string;
@@ -55,7 +53,6 @@ function Harness({
     const [authCurrentPassword, setAuthCurrentPassword] = useState(auth.currentPassword);
     const [authNewPassword, setAuthNewPassword] = useState(auth.newPassword);
     const [savingAuth, setSavingAuth] = useState(false);
-    const [openConfig, setOpenConfig] = useState(false);
     const [accentPreview, setAccentPreview] = useState<string | null>("#ff0000");
     const [, setSavingConfig] = useState(false);
     const [, setOpenAccount] = useState(false);
@@ -64,14 +61,12 @@ function Harness({
         api,
         notify: (text, level) => void log.notify.push({ text, level }),
         onError: msg => void log.errors.push(msg),
-        onMenuClose: () => void log.menuClose++,
         onLogout: () => void log.logout++,
         configs,
         setConfigs,
         tempConfigs,
         setTempConfigs,
         setAccentPreview,
-        setOpenConfig,
         authUsername,
         authCurrentPassword,
         authNewPassword,
@@ -84,15 +79,12 @@ function Harness({
         setSavingConfig,
     });
 
-    log.openConfig = openConfig;
     log.authUsername = authUsername;
     log.authCurrentPassword = authCurrentPassword;
     log.authNewPassword = authNewPassword;
 
     return (
         <div>
-            <button data-testid="open" onClick={s.handleOpenConfig}>open</button>
-            <button data-testid="close" onClick={s.handleCloseConfig}>close</button>
             <button data-testid="save" onClick={() => void s.handleSaveConfig()}>save</button>
             <button data-testid="saveAuth" onClick={() => void s.handleSaveAuthCredentials()}>
                 saveAuth
@@ -138,10 +130,8 @@ function makeApi(overrides: Partial<SettingsApi> = {}) {
         notify: [],
         errors: [],
         logout: 0,
-            menuClose: 0,
         setConfigsCalls: [],
         updateAuthCalls: [],
-        openConfig: false,
         authUsername: "",
         authCurrentPassword: "",
         authNewPassword: "",
@@ -159,29 +149,6 @@ function makeApi(overrides: Partial<SettingsApi> = {}) {
     };
     return { api, log };
 }
-
-test("打开设置：先收起「设置」，把当前配置快照进临时区，清空上次的凭据输入", async t => {
-    t.after(cleanup);
-    const { api, log } = makeApi();
-    mount({
-        api,
-        log,
-        configs: { "site.title": "导航站", "site.glassBlur": "14" },
-        tempConfigs: { 残留: "上一次没保存的" },
-        auth: { username: "admin", currentPassword: "x", newPassword: "y" },
-    });
-
-    await click("open");
-    assert.equal(log.menuClose, 1, "不先收菜单的话菜单会失去锚点跑到左上角");
-    assert.equal(log.openConfig, true);
-    assert.deepEqual(
-        JSON.parse(text("temp")),
-        { "site.title": "导航站", "site.glassBlur": "14" },
-        "应快照当前配置，把上次没保存的残留盖掉"
-    );
-    assert.equal(log.authUsername, "");
-    assert.equal(log.authNewPassword, "", "凭据每次打开都要重填，避免误存上一次的输入");
-});
 
 test("保存配置：只提交有变化的项，且一次请求写完", async t => {
     t.after(cleanup);
@@ -322,12 +289,11 @@ test("保存凭据被服务端拒绝（当前密码不对）：报错、不踢�
     clearRememberedLogin();
 });
 
-test("关闭设置：撤掉主色预览（没保存就回滚，不能让预览色一直挂着）", async t => {
+test("保存成功：撤掉主色预览，改由已保存的配置驱动主题", async t => {
     t.after(cleanup);
     const { api, log } = makeApi();
     mount({ api, log, configs: {}, tempConfigs: {} });
-    assert.equal(text("preview"), "#ff0000");
-    await click("close");
-    assert.equal(log.openConfig, false);
-    assert.equal(text("preview"), "null", "关掉要把预览色撤掉，改由已保存的配置驱动主题");
+    assert.equal(text("preview"), "#ff0000", "选色预览一开始是有的");
+    await click("save");
+    assert.equal(text("preview"), "null", "保存后要把预览色撤掉，改由已保存的配置驱动主题");
 });

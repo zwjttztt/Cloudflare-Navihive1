@@ -103,7 +103,6 @@ import HeaderGroupsButton from "./components/HeaderGroupsButton";
 const AddSiteDialog = lazy(() => import("./components/AddSiteDialog"));
 const GroupShareDialog = lazy(() => import("./components/GroupShareDialog"));
 const EditGroupDialog = lazy(() => import("./components/EditGroupDialog"));
-const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
 // 账号管理（改账号密码 / 恢复密钥 / 邀请码 / 登录设备 / 注销）：从「设置」进入，懒加载
 const AccountDialog = lazy(() => import("./components/AccountDialog"));
 // 注销确认弹窗只有点「注销当前账号」才会用到，懒加载省首屏体积。
@@ -451,8 +450,6 @@ function App() {
         setConfigs,
         tempConfigs,
         setTempConfigs,
-        openConfig,
-        setOpenConfig,
         openAccount,
         setOpenAccount,
         savingAuth,
@@ -1120,12 +1117,10 @@ function App() {
         closeAddSite: handleCloseAddSite,
     });
 
-    // 「网站设置」与管理员凭据的写逻辑：整段搬到 hooks/useSiteSettings.ts
-    // （打开弹窗的初始化、临时配置编辑、凭据提交、整批保存）
+    // 「网站设置 / 管理员凭据」的写逻辑：整段搬到 hooks/useSiteSettings.ts
+    // （临时配置编辑、凭据提交、整批保存）。独立弹窗已退场，open / close 那套不再有。
     const {
-        handleOpenConfig,
         handleSaveAuthCredentials,
-        handleCloseConfig,
         pickAccent,
         handleConfigInputChange,
         handleConfigSliderChange,
@@ -1136,14 +1131,12 @@ function App() {
         api,
         notify,
         onError: handleError,
-        onMenuClose: handleMenuClose,
         onLogout: handleLogout,
         configs,
         setConfigs,
         tempConfigs,
         setTempConfigs,
         setAccentPreview,
-        setOpenConfig,
         authUsername,
         authCurrentPassword,
         authNewPassword,
@@ -1411,7 +1404,6 @@ function App() {
         setOpenShortcuts,
         handleOpenAddGroup,
         startGroupSort,
-        handleOpenConfig,
         setOpenAccount,
         fetchSessions,
         fetchAccountList,
@@ -2045,14 +2037,15 @@ function App() {
                             retentionDays: Number(configs[RETENTION_DAYS_KEY]) || undefined,
                         }}
                         config={{
-                            open: true,
-                            onClose: () => {},
                             onSave: handleSaveConfig,
                             tempConfigs,
                             setTempConfigs,
                             onConfigInputChange: handleConfigInputChange,
                             onMaskOpacityChange: handleConfigSliderChange,
                             onPickAccent: pickAccent,
+                            // 关中心就撤掉试色预览（试色是即时生效的，不撤会泄漏到全站）；
+                            // 只撤预览，`tempConfigs` 草稿留着，下次开面板还在
+                            onCancelAccentPreview: () => setAccentPreview(null),
                             radius,
                             onRadiusChange: setRadius,
                             fontScale,
@@ -2130,46 +2123,6 @@ function App() {
                             onInstallApp: () => void handleInstallApp(),
                         }}
                         onLogout={handleLogout}
-                    />
-                    </ChunkBoundary>
-
-                    {/* 网站配置对话框 */}
-                    {/* 全站设置：这一块原来内联在 App 里，抽成 SettingsDialog 单独维护 */}
-                    <ChunkBoundary when={openConfig}>
-                    <SettingsDialog
-                        open={openConfig}
-                        onClose={handleCloseConfig}
-                        onSave={handleSaveConfig}
-                        tempConfigs={tempConfigs}
-                        setTempConfigs={setTempConfigs}
-                        onConfigInputChange={handleConfigInputChange}
-                        onMaskOpacityChange={handleConfigSliderChange}
-                        onPickAccent={pickAccent}
-                        radius={radius}
-                        onRadiusChange={setRadius}
-                        fontScale={fontScale}
-                        onFontScaleChange={setFontScale}
-                        glassBlur={tempGlassBlur}
-                        onGlassBlurChange={handleGlassBlurChange}
-                        glassEffects={glassEffects}
-                        onGlassEffectsChange={setGlassEffects}
-                        offlineFull={offlineFull}
-                        onOfflineFullChange={setOfflineFull}
-                        iconPrivacy={iconPrivacy}
-                        onIconPrivacyChange={setIconPrivacy}
-                        liteMode={liteMode}
-                        onLiteModeChange={setLiteMode}
-                        saving={savingConfig}
-                        pinyinSearch={pinyinSearch}
-                        onPinyinSearchChange={setPinyinSearch}
-                        syncHealth={configs[LINK_HEALTH_SYNC_CONFIG] === "true"}
-                        onSyncHealthChange={handleToggleLinkHealthSync}
-                        syncPrefs={prefSync}
-                        onSyncPrefsChange={handleTogglePrefSync}
-                        // 检测失效链接：从「设置」挪进「数据同步」这一节，挨着失效检测结果开关
-                        onRunLinkCheck={() => void runLinkCheck()}
-                        // 全站外观是所有人共用的，只有站点所有者能改（服务端同规则）
-                        isSiteOwner={!currentUser || currentUser.role === "owner"}
                     />
                     </ChunkBoundary>
 

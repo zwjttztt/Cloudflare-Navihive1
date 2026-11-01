@@ -12,9 +12,10 @@
 //   4. **关闭只有一个出口**：× 与 Esc 走同一个回调。
 //      （底栏那颗「完成」2026-10-31 撤掉了 —— 它不是保存，是第二个关闭按钮，
 //      却占掉一整条 44px + 一条描边；关闭出口仍有 × / Esc / 点遮罩三个。）
+//     2026-11-01 起这个出口还要顺手撤掉「试色预览」：预览即时生效，不撤会泄漏到全站。
 //   5. **面板必须内联**：「全站设置」「账号与安全」在中心右栏直接渲染业务体，
-//      不许再套一层 Dialog。转发层要是拿了默认导出（`withDialog` 被硬写成 true），
-//      页面上就会叠出第二个 role=dialog —— 手点才看得出来，单测必须钉住。
+//      不许再套一层 Dialog。SettingsDialog 的独立弹窗外壳已整块删除（2026-11-01），
+//      转发层只要有人再塞回一层 Dialog，页面就会叠出第二个 role=dialog —— 单测必须钉住。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { act } from "react";
@@ -77,14 +78,16 @@ function makeProps(
                 retentionDays: undefined,
             },
             config: {
-                open: true,
-                onClose: () => {},
                 onSave: () => {},
                 tempConfigs: {},
                 setTempConfigs: () => {},
                 onConfigInputChange: () => {},
                 onMaskOpacityChange: () => {},
-                onPickAccent: () => {},
+                // 试色通道：App 就是把这个回调塞进 config 的（`onPickAccent: pickAccent`），
+                // 这里换成记录器，用例才能断言「点配色真的走了预览这条路」
+                onPickAccent: rec("onPickAccent"),
+                // 退出协议：中心在唯一关闭出口里调它（App 侧接线 = setAccentPreview(null)）
+                onCancelAccentPreview: rec("onCancelAccentPreview"),
                 radius: "md" as never,
                 onRadiusChange: () => {},
                 fontScale: 1 as never,
@@ -257,7 +260,11 @@ test("退出登录：点一下只弹确认，不直接退出", async t => {
         b => (b.textContent || "").trim() === "退出登录"
     );
     await click(confirmBtn ?? null);
-    assert.deepEqual(log, ["onClose", "onLogout"], "确认后才退出，且先收起中心");
+    assert.deepEqual(
+        log,
+        ["onCancelAccentPreview", "onClose", "onLogout"],
+        "确认后才退出：先撤试色预览、再收起中心、最后才退"
+    );
 });
 
 test("关闭只有一个出口：× 与 Esc 都走 onClose", async t => {
@@ -266,11 +273,19 @@ test("关闭只有一个出口：× 与 Esc 都走 onClose", async t => {
     await mount(props);
 
     await click(document.querySelector<HTMLElement>("[data-dialog-close='1']"));
-    assert.deepEqual(log, ["onClose"], "右上角 × 走 onClose");
+    assert.deepEqual(
+        log,
+        ["onCancelAccentPreview", "onClose"],
+        "右上角 × 走同一个关闭出口（先撤试色预览，再关）"
+    );
 
     log.length = 0;
     await pressEscape();
-    assert.deepEqual(log, ["onClose"], "Esc 走同一个 onClose");
+    assert.deepEqual(
+        log,
+        ["onCancelAccentPreview", "onClose"],
+        "Esc 走同一个关闭出口（先撤试色预览，再关）"
+    );
 
     // 反证：底栏那颗「完成」已经不在了 —— 它要是在，上面的「只有一个出口」
     // 就是假的（多一个实质相同的出口，还白占 44px）
@@ -278,6 +293,37 @@ test("关闭只有一个出口：× 与 Esc 都走 onClose", async t => {
         document.querySelector("[data-nav-center-done='1']"),
         null,
         "底栏「完成」按钮已撤掉，不该再出现"
+    );
+});
+
+test("试了色不保存直接关中心 → 预览色被撤销", async t => {
+    t.after(cleanup);
+    // 直达「外观与搜索」：全程只渲染这一个面板，不切面板
+    // （多叠几次 MUI 卸载路径会把测试进程的内存顶爆）
+    const { props, log } = makeProps({ initialPanel: "config-appearance" });
+    await mount(props);
+    // 面板是第二层 lazy，给它几拍把块 resolve 掉
+    for (let i = 0; i < 3; i++) {
+        await act(async () => {
+            await new Promise(r => setTimeout(r, 0));
+        });
+    }
+
+    // 1. 试色：第一颗配色按钮 → config.onPickAccent（App 侧就是 `pickAccent`，
+    //    它写的是 accentPreview，全站立刻换色，属于「即时生效」而不是草稿）
+    const swatch = document.querySelector<HTMLElement>('button[aria-label^="使用配色"]');
+    await click(swatch);
+    assert.deepEqual(log, ["onPickAccent"], "点配色必须经 config.onPickAccent 走实时预览");
+
+    // 2. 不点「保存设置」，直接 ×（× / Esc / 遮罩 / 退出登录确认是同一条出口）
+    await click(document.querySelector<HTMLElement>("[data-dialog-close='1']"));
+
+    // 3. 预览必须被撤掉，而且撤在「关」之前 —— 关的动作会把面板卸载，
+    //    撤销要赶在卸载前落下。撤掉的正是 setAccentPreview(null) 这条线。
+    assert.deepEqual(
+        log,
+        ["onPickAccent", "onCancelAccentPreview", "onClose"],
+        "试了色没保存就关：必须先撤预览（setAccentPreview(null)），否则预览色会泄漏到全站"
     );
 });
 
@@ -388,10 +434,11 @@ test("数据安全段：保留策略 + 备份与恢复 + 回收站，三节同�
     // A+B：「备份与恢复」+「回收站」合成一个讲完整故事的面板，
     // 数据保留策略住在最上面（先定策略、再看现状）。
     //
-    // ⚠️ 这里**不**断言「无 role=tab」：BackupPanel 自带「备份 / 恢复」两个页签，
-    //    那是面板内的功能分区（同一块数据、两种操作），不是 B1 要消灭的那种
-    //    「目录藏进 Tab」。B1 那条「中心内不许有二级 Tab」只适用于 config 两段
-    //    （它们原来才是把目录藏起来的三张 Tab），由上面两条用例钉住。
+    // 2026-11（第二波）：本面板原来叠着两条整宽下划线 Tab 栏（备份 / 恢复 / 导入、
+    // 站点 / 分组），现在都换成了紧凑分段控件 SegmentedSwitch（role=group +
+    // aria-pressed 的按钮组）。原实现根本没兑现 ARIA Tab 契约（没有 role=tabpanel、
+    // 没有 aria-controls/id 配对、没有 roving tabindex），所以这里是「把假页签拆掉」
+    // 而不是「多了一层合法页签」——中心内现在真的**一个** [role=tab] 都没有了。
     const { props } = makeProps({ initialPanel: "backup" });
     await mount(props);
     for (let i = 0; i < 4; i++) {
@@ -403,4 +450,9 @@ test("数据安全段：保留策略 + 备份与恢复 + 回收站，三节同�
     for (const marker of ["审计与回收站保留", "备份与恢复", "回收站"]) {
         assert.ok(text.includes(marker), `数据安全段应看到「${marker}」`);
     }
+    assert.equal(
+        document.querySelector('[role="tab"]'),
+        null,
+        "备份视图 / 回收站类型已改成分段控件，数据安全段里不许再有 [role=tab]"
+    );
 });

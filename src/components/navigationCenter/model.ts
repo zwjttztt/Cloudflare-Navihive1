@@ -58,6 +58,13 @@ export interface NavCenterItem {
     label: string;
     /** 右栏标题下那句一行说明 */
     description: string;
+    /**
+     * 过滤用的别名（可搜索词）。左栏过滤框同时匹配 label / keywords / description ——
+     * description 已经覆盖了大部分同义词（「主色」「圆角」「CSS」都在外观与搜索的
+     * 说明里），这里只补说明里**没有**、但人一定会拿来找它的词。
+     * 不写 = 只按「名称 + 一行说明」搜。
+     */
+    keywords?: string[];
     icon: NavCenterIcon;
     audience: NavCenterAudience;
 }
@@ -78,6 +85,8 @@ export const NAV_CENTER_GROUPS: NavCenterGroup[] = [
                 id: "stats",
                 label: "统计",
                 description: "访问统计与运营看板：哪些网站常被点开、什么时候最活跃。",
+                // 「访问 / 看板 / 活跃」说明里都有了，这里只补说明里没有的几种叫法
+                keywords: ["排行", "趋势", "热度"],
                 icon: InsightsIcon,
                 audience: "always",
             },
@@ -85,6 +94,8 @@ export const NAV_CENTER_GROUPS: NavCenterGroup[] = [
                 id: "config-data",
                 label: "数据与维护",
                 description: "离线缓存、跨设备同步、失效链接检测与版本升级。",
+                // 缓存 / 同步 / 升级 / 离线 说明里已有；补「死链」（失效链接的俗称）等
+                keywords: ["死链", "更新", "存储"],
                 icon: StorageIcon,
                 audience: "always",
             },
@@ -95,6 +106,8 @@ export const NAV_CENTER_GROUPS: NavCenterGroup[] = [
                 id: "backup",
                 label: "数据安全",
                 description: "数据保留策略、备份与恢复、回收站：怎么不丢、怎么找回、留多久。",
+                // 「备份 / 恢复 / 回收站 / 保留」说明里已有，补导出导入这些动作词
+                keywords: ["还原", "导入", "导出", "WebDAV", "快照"],
                 icon: SettingsBackupRestoreIcon,
                 audience: "always",
             },
@@ -102,6 +115,7 @@ export const NAV_CENTER_GROUPS: NavCenterGroup[] = [
                 id: "audit",
                 label: "审计日志",
                 description: "谁在什么时候改了什么。仅站点所有者可见。",
+                keywords: ["记录", "历史", "操作"],
                 icon: HistoryIcon,
                 audience: "owner",
             },
@@ -119,6 +133,8 @@ export const NAV_CENTER_GROUPS: NavCenterGroup[] = [
                 id: "config-appearance",
                 label: "外观与搜索",
                 description: "站点名称、主色、圆角字号、背景壁纸、自定义 CSS、图标与拼音搜索。",
+                // 「主色 / 字号 / 壁纸 / CSS / 图标」说明里已有；补主题向的词
+                keywords: ["主题", "深色", "暗色", "颜色", "字体"],
                 icon: PaletteIcon,
                 audience: "always",
             },
@@ -126,6 +142,8 @@ export const NAV_CENTER_GROUPS: NavCenterGroup[] = [
                 id: "vault",
                 label: "密码保险库",
                 description: "端到端加密保存站点密码，主密码独立、可用恢复码找回。",
+                // 加密 / 主密码 / 恢复码 说明里已有，补「密码本」这类日常叫法
+                keywords: ["密码本", "钥匙", "自动填充"],
                 icon: LockIcon,
                 audience: "always",
             },
@@ -133,6 +151,7 @@ export const NAV_CENTER_GROUPS: NavCenterGroup[] = [
                 id: "ai",
                 label: "AI 设置",
                 description: "模型服务与凭据配置，配好才能用智能补全与语义搜索。",
+                keywords: ["密钥", "API", "Key"],
                 icon: AutoAwesomeIcon,
                 audience: "always",
             },
@@ -146,6 +165,8 @@ export const NAV_CENTER_GROUPS: NavCenterGroup[] = [
                 id: "account",
                 label: "账号与安全",
                 description: "账号密码、恢复密钥、登录设备与注销账号。",
+                // 「登录 / 设备 / 注销」说明里已有；补会话与改密码
+                keywords: ["会话", "修改密码"],
                 icon: ManageAccountsIcon,
                 audience: "authed",
             },
@@ -153,6 +174,7 @@ export const NAV_CENTER_GROUPS: NavCenterGroup[] = [
                 id: "shortcuts",
                 label: "快捷键与操作帮助",
                 description: "键盘快捷键一览，以及把本页安装到桌面。",
+                keywords: ["热键", "PWA"],
                 icon: KeyboardIcon,
                 audience: "always",
             },

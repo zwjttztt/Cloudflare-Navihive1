@@ -8,6 +8,7 @@ import { MockNavigationClient } from "../API/mock";
 import { decryptBackup, isEncryptedBackup } from "../API/crypto";
 import BackupTab from "./BackupTab";
 import RestoreTab from "./RestoreTab";
+import SegmentedSwitch from "./SegmentedSwitch";
 import {
     Dialog,
     DialogTitle,
@@ -18,8 +19,6 @@ import {
     Box,
     Stack,
     Divider,
-    Tabs,
-    Tab,
     Alert,
     Chip,
     LinearProgress,
@@ -547,17 +546,20 @@ export function BackupPanel({
                 </Alert>
             ) : null}
 
-            <Tabs
+            {/* 视图切换（原 MUI Tabs 改成紧凑分段控件）：两条整宽下划线页签
+                叠在「回收站」的页签上会像「页签里套页签」，而且这两页共享
+                同一份 config / remoteFiles / selectedRemote / overwrite ——
+                其实是筛同一个集合，不是平级视图。详见 SegmentedSwitch 头注释。
+                `tab` / `setTab` 状态机一行没动（命令面板直达恢复页靠它）。 */}
+            <SegmentedSwitch
                 value={tab}
-                onChange={(_, value: number) => setTab(value)}
-                sx={{ flexShrink: 0 }}
-                variant='fullWidth'
-            >
-                <Tab label='备份' />
-                <Tab label='恢复 / 导入' />
-            </Tabs>
+                options={[{ value: 0, label: "备份" }, { value: 1, label: "恢复 / 导入" }]}
+                onChange={setTab}
+                ariaLabel='备份视图'
+                dataAttr='backup-view'
+            />
 
-            {/* 正文自己滚：标签页与导入进度钉在上下两端，中间这块装满剩余高度 */}
+            {/* 正文自己滚：视图切换与导入进度钉在上下两端，中间这块装满剩余高度 */}
             <Box
                 ref={scrollRef}
                 sx={{

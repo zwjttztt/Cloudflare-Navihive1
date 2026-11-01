@@ -69,6 +69,23 @@ const VaultPanel = lazy(() => import("./navigationCenter/panels/VaultPanel"));
 const AccountPanel = lazy(() => import("./navigationCenter/panels/AccountPanel"));
 const ShortcutsPanel = lazy(() => import("./navigationCenter/panels/ShortcutsPanel"));
 
+/**
+ * 中心侧「全站设置」的输入 = 面板那 30 来项 + 一条**退出协议**。
+ *
+ * `onCancelAccentPreview` 为什么长在 config 里、而不是中心自己的 props 上：
+ * 它和 `onPickAccent` 是同一件事的两端（试色 / 撤销试色），谁开的口子谁收拾。
+ * 挂在 config 上还有个副作用是对的 —— 类型是必填，App 忘了接线 tsc 直接红。
+ *
+ * 为什么必须撤：试色是**即时生效**的（`pickAccent` 直接把 `accentPreview` 写进主题，
+ * 全站立刻换色）。中心一关，没有任何界面还在提示「这只是预览」，
+ * 不撤就会把这个没保存的颜色泄漏到全站，一直到刷新或成功保存一次为止。
+ * 注意只撤预览，**不动 `tempConfigs`** —— 那是保存草稿，跨开关要留着。
+ */
+export type NavigationCenterConfigProps = ConfigCenterPanelProps & {
+    /** 退出中心前撤销「试色预览」（由中心在唯一关闭出口里调用） */
+    onCancelAccentPreview: () => void;
+};
+
 export interface NavigationCenterDialogProps {
     open: boolean;
     /** 关闭中心（× / Esc / 遮罩都走这一条） */
@@ -89,7 +106,7 @@ export interface NavigationCenterDialogProps {
     /** 「审计日志」面板的输入（只有 owner 选得到这一屏） */
     audit: AuditCenterPanelProps;
     /** 「全站设置」面板的输入（App 组装；中心不认识那 30 个配置项） */
-    config: ConfigCenterPanelProps;
+    config: NavigationCenterConfigProps;
     /** 「AI 设置」面板的输入（App 组装；中心不认识 ai / api） */
     ai: AiCenterPanelProps;
     /** 「密码保险库」面板的输入（App 组装；中心不认识 api / client） */
@@ -172,6 +189,12 @@ export default function NavigationCenterDialog({
                     (item): WorkspaceNavItem => ({
                         id: item.id,
                         label: item.label,
+                        // 左栏过滤框的搜索面：名称 + 别名 + 一行说明。
+                        // 在中心拼、而不是让左栏认识 NavCenterItem —— 左栏是纯展示件
+                        //（它只做 includes，见 WorkspaceNavItem.searchText 的注释）。
+                        searchText: [item.label, ...(item.keywords ?? []), item.description].join(
+                            " "
+                        ),
                         icon: <item.icon fontSize='small' />,
                     })
                 ),
@@ -195,6 +218,18 @@ export default function NavigationCenterDialog({
     useEffect(() => {
         if (open && active === "account") onAccountActivate?.();
     }, [open, active, onAccountActivate]);
+
+    /**
+     * 中心的**唯一关闭出口**：× / Esc / 点遮罩 / 退出登录确认之后都从这里走。
+     *
+     * 关之前先撤「试色预览」—— 那个颜色是即时生效的，中心一关就再没有界面
+     * 提示它只是预览，不撤就会泄漏到全站（只撤预览，草稿 `tempConfigs` 不动）。
+     * 顺序是「先撤预览、再关」：关的动作会卸载面板，撤的动作得赶在卸载前落下。
+     */
+    const handleClose = () => {
+        config.onCancelAccentPreview();
+        onClose();
+    };
 
     /** 右栏正文：九屏全部是真实面板（T01~T04 迁完，不再有占位） */
     const renderPanel = (): ReactNode => {
@@ -220,7 +255,7 @@ export default function NavigationCenterDialog({
         <>
             <SettingsWorkspaceDialog
                 open={open}
-                onClose={onClose}
+                onClose={handleClose}
                 title='设置'
                 nav={
                     <SettingsWorkspaceNav
@@ -265,7 +300,8 @@ export default function NavigationCenterDialog({
                 danger
                 onConfirm={() => {
                     setLogoutConfirm(false);
-                    onClose();
+                    // 走同一条关闭出口：退出登录也等于离开中心，试色预览一样要撤
+                    handleClose();
                     onLogout();
                 }}
                 onClose={() => setLogoutConfirm(false)}

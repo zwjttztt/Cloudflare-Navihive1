@@ -19,7 +19,8 @@ export const dialogChunks = {
     // key 名跟着按钮走（那颗按钮现在叫「设置」），模块换成中心弹窗。
     navigationCenter: () => import("../components/NavigationCenterDialog"),
     siteCardContextMenu: () => import("../components/SiteCardContextMenu"),
-    // 「设置」菜单项的目标弹窗
+    // 设置中心「全站设置」两段的业务本体（独立设置弹窗已退场，现由中心内联）；
+    // key 仍叫 settings —— 中心挂载时按这个 key 预取该模块。
     settings: () => import("../components/SettingsDialog"),
     stats: () => import("../components/StatsHubDialog"),
     backup: () => import("../components/BackupDialog"),

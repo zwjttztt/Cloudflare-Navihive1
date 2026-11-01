@@ -18,7 +18,6 @@ export function useConfigController() {
     const [configs, setConfigs] = useState<Record<string, string>>(DEFAULT_CONFIGS);
     // 设置弹窗里的临时副本：关掉即丢，点保存才写回 configs
     const [tempConfigs, setTempConfigs] = useState<Record<string, string>>(DEFAULT_CONFIGS);
-    const [openConfig, setOpenConfig] = useState(false);
     // 账号管理弹窗（账号密码 / 恢复密钥 / 邀请码 / 注销）
     const [openAccount, setOpenAccount] = useState(false);
     const [savingAuth, setSavingAuth] = useState(false);
@@ -59,8 +58,6 @@ export function useConfigController() {
         setConfigs,
         tempConfigs,
         setTempConfigs,
-        openConfig,
-        setOpenConfig,
         openAccount,
         setOpenAccount,
         savingAuth,

@@ -44,7 +44,6 @@ function fakeInput(calls: Calls, over: Partial<AppCommandsInput> = {}): AppComma
         setOpenShortcuts: () => {},
         handleOpenAddGroup: () => {},
         startGroupSort: () => {},
-        handleOpenConfig: () => {},
         setOpenAccount: () => {},
         fetchSessions: () => {},
         fetchAccountList: () => {},
@@ -137,6 +136,20 @@ test("按下去跑的是传进来的那个动作（视图 / 清除访问记录�
     byId("cmd-clear-visits")?.run();
     assert.equal(calls.visits.length, 1, "「清除访问记录」要真的清");
 
+    unmount();
+});
+
+test("「打开网站设置」走统一中心并落在外观与搜索段（不再开独立弹窗）", () => {
+    const calls: Calls = { viewMode: [], density: [], visits: [], undoRuns: 0 };
+    const opened: string[] = [];
+    render(fakeInput(calls, { openNavCenter: panel => void opened.push(panel) }));
+
+    byId("cmd-config")?.run();
+    assert.deepEqual(
+        opened,
+        ["config-appearance"],
+        "独立设置弹窗已退场，命令应直达中心「外观与搜索」"
+    );
     unmount();
 });
 

@@ -15,13 +15,12 @@ import {
     List,
     IconButton,
     CircularProgress,
-    Tab,
-    Tabs,
     Tooltip,
     useTheme,
 } from "@mui/material";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
 import DialogCloseButton from "./DialogCloseButton";
+import SegmentedSwitch from "./SegmentedSwitch";
 import { DialogEmptyState, DialogListRow } from "./DialogListRow";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
@@ -158,6 +157,9 @@ export function RecyclePanel({
     const siteItems = items.filter(i => i.kind === "site");
     const groupItems = items.filter(i => i.kind === "group");
     const shown = tab === 0 ? siteItems : groupItems;
+    // 类型切换只在「有内容」时才有意义：加载中 / 读失败 / 真为空都不显示。
+    // 条件与拆分前那三个分支一一对应 —— 切换条原来只出现在「有内容」那一支里。
+    const showKindSwitch = !loadError && items.length > 0;
 
     return (
         <Box sx={{ display: "flex", flexDirection: "column", minHeight: 0, height: "100%" }}>
@@ -167,6 +169,22 @@ export function RecyclePanel({
                     仅保留 {retentionDays ?? DEFAULT_RETENTION_DAYS} 天，超期自动清除
                 </Typography>
             </Box>
+            {/* 类型切换钉在滚动区**外面**：合成「数据安全」长页后本面板的 flex 会塌成
+                auto、整块交给外层页面滚，切换条留在列表里就会跟着一起滚走 ——
+                想换类型得先滚回回收站顶部。与原 MUI Tabs 的文案一字不差（全角括号 + 计数）。 */}
+            {showKindSwitch ? (
+                <SegmentedSwitch
+                    value={tab}
+                    options={[
+                        { value: 0, label: `站点（${siteItems.length}）` },
+                        { value: 1, label: `分组（${groupItems.length}）` },
+                    ]}
+                    onChange={setTab}
+                    ariaLabel='回收站类型'
+                    dataAttr='recycle-kind'
+                    sx={{ mb: 1.5 }}
+                />
+            ) : null}
             <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
                 {loading && items.length === 0 ? (
                     <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
@@ -186,33 +204,22 @@ export function RecyclePanel({
                         title='回收站是空的'
                         hint='删掉的分组 / 卡片会先到这里，保留期内随时可以还原'
                     />
+                ) : shown.length === 0 ? (
+                    <DialogEmptyState
+                        title={tab === 0 ? "没有已删除的站点" : "没有已删除的分组"}
+                        hint={
+                            tab === 0
+                                ? "删掉的网站卡片会出现在这个页签里"
+                                : "删掉的分组会出现在这个页签里"
+                        }
+                    />
                 ) : (
-                    <>
-                        <Tabs
-                            value={tab}
-                            onChange={(_, value: number) => setTab(value)}
-                            variant='fullWidth'
-                            sx={{ borderBottom: 1, borderColor: "divider" }}
-                        >
-                            <Tab label={`站点（${siteItems.length}）`} />
-                            <Tab label={`分组（${groupItems.length}）`} />
-                        </Tabs>
-                        {shown.length === 0 ? (
-                            <DialogEmptyState
-                                title={tab === 0 ? "没有已删除的站点" : "没有已删除的分组"}
-                                hint={
-                                    tab === 0
-                                        ? "删掉的网站卡片会出现在这个页签里"
-                                        : "删掉的分组会出现在这个页签里"
-                                }
-                            />
-                        ) : (
-                            <List dense sx={{ py: 0 }}>
-                                {shown.map(item => (
-                                    <DialogListRow
-                                        key={item.id}
-                                        primary={<b>{item.name}</b>}
-                                        secondary={`删除于 ${item.deletedAt ? fmtDateTime(item.deletedAt * 1000) : "—"}`}
+                    <List dense sx={{ py: 0 }}>
+                        {shown.map(item => (
+                            <DialogListRow
+                                key={item.id}
+                                primary={<b>{item.name}</b>}
+                                secondary={`删除于 ${item.deletedAt ? fmtDateTime(item.deletedAt * 1000) : "—"}`}
                                 // 还原 + 彻底删除两个按钮约 160px；不留位的话长条目名
                                 // 会被压在按钮下面（MUI 的 secondaryAction 不占流）
                                 actionsWidth={160}
@@ -246,9 +253,7 @@ export function RecyclePanel({
                                 }
                             />
                         ))}
-                            </List>
-                        )}
-                    </>
+                    </List>
                 )}
             </Box>
 

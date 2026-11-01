@@ -71,7 +71,6 @@ test("初始：配置取默认值，弹窗全关，凭据为空", t => {
     t.after(cleanup);
     mount();
     assert.equal(text("title"), DEFAULT_CONFIGS["site.title"]);
-    assert.equal(api!.openConfig, false);
     assert.equal(api!.openAccount, false);
     assert.equal(text("auth"), "||");
     assert.equal(text("saving"), "false|false");
@@ -163,12 +162,9 @@ test("撤掉预览值后回到已保存的主色（关掉弹窗即回滚）", as
 
 // ---------------- 弹窗与守卫 ----------------
 
-test("设置弹窗的开关与「保存中」守卫各自独立", async t => {
+test("「保存中」守卫：保存配置的不许把保存凭据的按钮也禁用", async t => {
     t.after(cleanup);
     mount();
-    await run(() => api!.setOpenConfig(true));
-    assert.equal(api!.openConfig, true);
-    assert.equal(api!.openAccount, false, "开设置不该顺手开账号弹窗");
     await run(() => api!.setSavingConfig(true));
     assert.equal(text("saving"), "true|false", "保存配置的守卫不许把保存凭据的按钮也禁用");
 });

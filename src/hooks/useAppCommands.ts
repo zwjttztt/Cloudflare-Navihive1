@@ -28,7 +28,6 @@ export interface AppCommandActions {
     setOpenShortcuts: (open: boolean) => void;
     handleOpenAddGroup: () => void;
     startGroupSort: () => void;
-    handleOpenConfig: () => void;
     setOpenAccount: (open: boolean) => void;
     fetchSessions: () => Promise<void> | void;
     fetchAccountList: () => Promise<void> | void;
@@ -89,7 +88,6 @@ export function useAppCommands(input: AppCommandsInput): CommandItem[] {
         setOpenShortcuts,
         handleOpenAddGroup,
         startGroupSort,
-        handleOpenConfig,
         setOpenAccount,
         fetchSessions,
         fetchAccountList,
@@ -199,7 +197,9 @@ export function useAppCommands(input: AppCommandsInput): CommandItem[] {
                 id: "cmd-config",
                 label: "打开网站设置",
                 section: "操作",
-                run: () => handleOpenConfig(),
+                // 2026-11-01：独立网站设置弹窗已退场，改走统一中心 ——
+                // 直达「外观与搜索」段（config-appearance），与统计 / 备份两条命令同一套入口。
+                run: () => openNavCenter("config-appearance"),
             },
             {
                 id: "cmd-account",
@@ -297,7 +297,6 @@ export function useAppCommands(input: AppCommandsInput): CommandItem[] {
         setOpenShortcuts,
         handleOpenAddGroup,
         startGroupSort,
-        handleOpenConfig,
         setOpenAccount,
         fetchSessions,
         fetchAccountList,

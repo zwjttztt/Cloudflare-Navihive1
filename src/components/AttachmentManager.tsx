@@ -24,6 +24,7 @@ import DescriptionIcon from "@mui/icons-material/Description";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import type { SxProps, Theme } from "@mui/material/styles";
 import ConfirmDialog from "./ConfirmDialog";
+import SegmentedSwitch from "./SegmentedSwitch";
 import { fmtBytes } from "../utils/format";
 
 export interface AttachmentManagerFile {
@@ -125,51 +126,6 @@ function AttachmentThumb({ id, filename }: { id: string; filename: string }) {
             >
                 {failed ? "无法加载" : filename}
             </Typography>
-        </Box>
-    );
-}
-
-/** 分段筛选（inkstone 的 Segmented 同款观感：小号圆角胶囊，选中描边） */
-function Segmented({
-    value,
-    onChange,
-    disabled,
-}: {
-    value: FilterKind;
-    onChange: (next: FilterKind) => void;
-    disabled: boolean;
-}) {
-    return (
-        <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }} data-att-filter='1'>
-            {FILTERS.map(opt => {
-                const active = opt.value === value;
-                return (
-                    <Box
-                        key={opt.value}
-                        component='button'
-                        type='button'
-                        data-att-filter-option={opt.value}
-                        disabled={disabled}
-                        onClick={() => onChange(opt.value)}
-                        sx={{
-                            px: 1.25,
-                            py: 0.4,
-                            fontSize: 12,
-                            borderRadius: 1.5,
-                            cursor: "pointer",
-                            appearance: "none",
-                            font: "inherit",
-                            border: active
-                                ? "1px solid var(--accent)"
-                                : "1px solid var(--neutral-border)",
-                            bgcolor: active ? "var(--accent-wash)" : "transparent",
-                            color: active ? "var(--accent)" : "text.secondary",
-                        }}
-                    >
-                        {opt.label}
-                    </Box>
-                );
-            })}
         </Box>
     );
 }
@@ -347,7 +303,21 @@ export default function AttachmentManager({
                 {/* 顶部：标题 + 四档筛选 */}
                 <Box sx={{ flexShrink: 0, px: 1.5, pt: 1.5, pb: 1, borderBottom: "1px solid var(--neutral-hover)" }}>
                     <Typography sx={{ fontWeight: 600, mb: 1 }}>管理附件</Typography>
-                    <Segmented value={filter} onChange={setFilter} disabled={busy} />
+                    {/* 四档筛选走共用分段控件（原来是本文件里的私有 Segmented，
+                        选中文字用 var(--accent) 压在 --accent-wash 上只有 4.04:1 ——
+                        附件抽屉还没进对比度审计范围，是个假绿；换共用件顺手修掉）。
+                        外层这颗 Box 只为保住既有选择器 data-att-filter='1'
+                        （tests/notes.dom.test.tsx 用的是它下面的 -option，根节点留给 e2e）。 */}
+                    <Box data-att-filter='1'>
+                        <SegmentedSwitch
+                            value={filter}
+                            options={FILTERS}
+                            onChange={setFilter}
+                            disabled={busy}
+                            ariaLabel='附件筛选'
+                            dataAttr='att-filter'
+                        />
+                    </Box>
                 </Box>
 
                 {/* 卡片网格（两列，inkstone 同款） */}

@@ -91,6 +91,8 @@ const CENTER_MODULES = [
     "NavigationCenterDialog",
     "SettingsWorkspaceDialog",
     "SettingsWorkspaceNav",
+    // 左栏的搜索过滤行：被 SettingsWorkspaceNav 静态引用，必须跟它一起留在懒加载块里
+    "SettingsWorkspaceNavFilter",
     "SettingsWorkspacePanel",
 ];
 

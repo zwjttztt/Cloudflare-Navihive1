@@ -127,11 +127,16 @@ const buttonByText = (text: string): HTMLButtonElement | undefined =>
         b => (b.textContent || "").trim() === text
     );
 
-/** MUI Tabs 的页签（div[role=tab]）；2026-10-25 起列表按类型分页 */
-const tabByLabel = (text: string): HTMLElement | undefined =>
-    [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find(t =>
-        (t.textContent || "").includes(text)
-    );
+/**
+ * 类型切换的某一档。2026-11 起「站点 / 分组」由 MUI Tabs（div[role=tab]）换成紧凑分段控件
+ * SegmentedSwitch（<button aria-pressed>，没有 role=tab —— 它本来就是「从同一集合里筛一个值」，
+ * 不是平级视图）。
+ *
+ * data-recycle-kind-option 的值就是该档的 `value`，即 tab 状态值：0 = 站点、1 = 分组。
+ * 按属性定位而不是按文案：文案带计数（「分组（1）」）会随数据变，属性不会。
+ */
+const kindOption = (value: 0 | 1): HTMLElement =>
+    document.querySelector<HTMLElement>(`[data-recycle-kind-option="${value}"]`)!;
 
 const purgeIcon = (name: string) =>
     document.querySelector<HTMLButtonElement>(`[aria-label="彻底删除 ${name}"]`);
@@ -152,13 +157,13 @@ test("读出来就列出来，分「站点 / 分组」两个页签、标清删�
     mount(client);
     await waitFor("列表出现", () => bodyText().includes("被删的站点"));
 
-    // 页签带计数；默认落在站点页
-    assert.ok(bodyText().includes("站点（1）"), "站点页签要带计数");
+    // 切换档带计数；默认落在站点档
+    assert.ok(bodyText().includes("站点（1）"), "站点档要带计数");
     assert.ok(bodyText().includes("被删的站点"));
     assert.ok(bodyText().includes("删除于"));
-    // 分组在另一个页签里，切过去能看到
-    assert.ok(tabByLabel("分组（1）"), "分组页签要带计数");
-    await clickAsync(tabByLabel("分组（1）")!);
+    // 分组在另一档里，切过去能看到
+    assert.ok(kindOption(1).textContent?.includes("分组（1）"), "分组档要带计数");
+    await clickAsync(kindOption(1));
     await waitFor("分组列表出现", () => bodyText().includes("被删的分组"));
     assert.ok(bodyText().includes("删除于"));
     cleanup();

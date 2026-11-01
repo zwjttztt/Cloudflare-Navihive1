@@ -1,32 +1,23 @@
 // src/components/SettingsDialog.tsx
-// 全站设置弹窗。2026-10-25 起分页签；2026-10-31（B1）起支持两种形态：
-// 独立弹窗保留页签（外观与搜索 / 数据与维护）；导航中心模式传 section 只渲染一段
-// （三张 Tab 已摊平进左栏，「高级」拆散：CSS→外观，版本升级→数据与维护）。
-// 所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰 API，只负责渲染和回调
-//（「保存设置」按钮在弹窗底部全局层，切页签不会丢草稿）。
-// 页签栏仿「数据备份与恢复」：放在 DialogContent 外面，内容滚动时页签不跟着走；
-// paper 层写死高度，切页签弹窗不跳。
+// 「全站设置」的**业务本体**，现在只做导航中心的内嵌面板（独立弹窗已退场）：
+// section 必填（appearance / data），分段导航交给中心左栏 —— 这里不再有页签栏、
+// 不再自带 Dialog 外壳。命令面板「打开网站设置」也改成直达中心 config-appearance，
+// 所以「独立弹窗」这条路径整条删掉了（openConfig / handleOpenConfig 一并清理）。
+// 所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰 API，只负责渲染和回调；
+// 保存按钮放在内容末尾，取消 / 完成由中心统一提供。
 import type { ChangeEvent } from "react";
-import { useState } from "react";
 import { Section, SwitchRow } from "./dialogSection";
-import DialogCloseButton from "./DialogCloseButton";
 import {
     Alert,
     Box,
     Button,
-    Dialog,
-    DialogActions,
     DialogContent,
     DialogContentText,
-    DialogTitle,
-    Divider,
     IconButton,
     Slider,
     FormControlLabel,
     Stack,
     Switch,
-    Tab,
-    Tabs,
     TextField,
     ToggleButton,
     ToggleButtonGroup,
@@ -37,7 +28,6 @@ import LinkOffIcon from "@mui/icons-material/LinkOff";
 import VersionUpgradeSection from "./VersionUpgradeSection";
 import { DEFAULT_ICON_API, DEFAULT_THUMB_API } from "../utils/iconApi";
 import type { FontScale, RadiusStyle } from "../context/uiPrefsStore";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 // 内置壁纸预设：既可以是渐变（直接作为 CSS background-image），也可以留空表示不用
 const WALLPAPER_PRESETS = [
@@ -62,8 +52,6 @@ const PRESET_ACCENTS = [
 ];
 
 interface SettingsDialogProps {
-    open: boolean;
-    onClose: () => void;
     onSave: () => void;
     /** 未保存的配置副本 */
     tempConfigs: Record<string, string>;
@@ -124,20 +112,17 @@ interface SettingsDialogProps {
     isSiteOwner?: boolean;
 }
 
-/** 两个摊平后的左栏面板各自管哪一段（B1，2026-10-31；A+B 后「高级」已拆散删除）。不传 = 独立弹窗模式，保留页签。 */
+/** 两个摊平后的左栏面板各自管哪一段（B1，2026-10-31；A+B 后「高级」已拆散删除）。 */
 export type ConfigSection = "appearance" | "data";
 
-/** 导航中心嵌入版配置面板 Props：在 SettingsDialogProps 基础上增加 withDialog 开关。 */
+/** 导航中心嵌入版配置面板 Props：在 SettingsDialogProps 基础上要求明确指定 section。 */
 export interface ConfigPanelProps extends SettingsDialogProps {
-    /** true 时自带 Dialog 外壳（标题栏 + 取消/保存），用于独立弹窗入口；
-     *  false / 省略时只输出内容体（Tabs + 表单 + 保存按钮），交给导航中心统一包壳。 */
-    withDialog?: boolean;
     /**
-     * 只渲染其中一段（B1：全站设置三张 Tab 摊平成左栏三条）。
-     * 传入后 Tabs 栏不再渲染，顶部说明只在第一段（appearance）出现 ——
-     * 三段共用同一份草稿（tempConfigs 在 App），切面板不丢改动。
+     * 渲染哪一段（必填）：中心左栏的 config-appearance / config-data 各传各的。
+     * 两段共用同一份草稿（tempConfigs 在 App），切面板不丢改动。
+     * 独立弹窗模式已删除 —— 不传 section 时「按页签推导」的兜底一并去掉。
      */
-    section?: ConfigSection;
+    section: ConfigSection;
 }
 
 // Section / SwitchRow 已搬到 ./dialogSection（AI 助手弹窗要用同一套排版，
@@ -160,10 +145,7 @@ function TwoCol({ children }: { children: React.ReactNode }) {
 }
 
 export function ConfigPanel({
-    open,
-    onClose,
     onSave,
-    withDialog = false,
     tempConfigs,
     setTempConfigs,
     onConfigInputChange,
@@ -194,29 +176,11 @@ export function ConfigPanel({
     isSiteOwner = true,
     section,
 }: ConfigPanelProps) {
-    // 页签：0 = 外观与搜索（基本信息/外观/背景/图标/搜索/自定义CSS）；
-    // 1 = 数据与维护（离线/同步/维护/版本升级）。数据保留已迁至中心「数据安全」面板。
-    const [tab, setTab] = useState(0);
-    // 独立弹窗模式（不传 section）保留页签；中心模式按 section 只渲染一段。
-    const showTabs = !section;
-    const active: ConfigSection = section ?? (tab === 0 ? "appearance" : "data");
-    // 页签 + 表单内容：两种模式（独立弹窗 / 导航中心嵌入）共用同一份 JSX。
-    // Tabs / DialogContent 作为独立 MUI 组件，不依赖 Dialog 父级也能正常渲染。
-    const tabsAndContent = (
+    // 表单内容：section 决定渲染哪一段。分段导航由中心左栏负责 ——
+    // 这里不再有页签栏，也不再有「不传 section 时按 tab 推导」的兜底。
+    // DialogContent 作为独立 MUI 组件，不依赖 Dialog 父级也能正常渲染。
+    const content = (
         <>
-            {/* 页签放 DialogContent 外面：内容滚动时页签不跟着走。
-                中心模式（section）不渲染页签栏 —— 分段导航交给左栏（B1）。 */}
-                {showTabs ? (
-                    <Tabs
-                        value={tab}
-                        onChange={(_, value: number) => setTab(value)}
-                        variant='fullWidth'
-                        sx={{ px: 2 }}
-                    >
-                        <Tab label='外观与搜索' />
-                        <Tab label='数据与维护' />
-                    </Tabs>
-                ) : null}
                 <DialogContent
                     sx={{
                         px: 3,
@@ -230,10 +194,9 @@ export function ConfigPanel({
                         "& .MuiSlider-root": { py: 0.75 },
                     }}
                 >
-                    {/* 顶部说明与身份提示：独立模式每张 Tab 都显示（原行为不变）；
-                        中心模式只在第一段（外观与搜索）出现 —— 摊平成三个面板后，
-                        这两段话跟着每段跑只会变成三份重复。 */}
-                    {(showTabs || active === "appearance") && (
+                    {/* 顶部说明与身份提示只在第一段（外观与搜索）出现 ——
+                        两段共用同一份说明，跟着每段跑只会变成重复。 */}
+                    {section === "appearance" && (
                         <>
                     {/* 作用域说明：改完发现不对的人，多半是进错门了 —— 一句话把
                         「这里管什么 / 单个网站去哪儿改」说清楚，比让用户试错便宜 */}
@@ -252,7 +215,7 @@ export function ConfigPanel({
                     ) : null}
                         </>
                     )}
-                    {active === "appearance" ? (
+                    {section === "appearance" ? (
                     <Stack spacing={2.5}>
                         {/* 1. 基本信息：最常改，放最上面 */}
                         <Section title='基本信息'>
@@ -748,61 +711,9 @@ export function ConfigPanel({
                     </Stack>
                     )}
                 </DialogContent>
-                {/* 嵌入（导航中心）模式：不渲染独立 DialogActions，
-                    改为在内容末尾放置一个右对齐的保存按钮（取消由中心统一提供） */}
-                {!withDialog ? (
-                    <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1, pt: 2 }}>
-                        <Button
-                            onClick={onSave}
-                            variant='contained'
-                            color='primary'
-                            disabled={saving}
-                        >
-                            {saving ? "保存中…" : "保存设置"}
-                        </Button>
-                    </Box>
-                ) : null}
-        </>
-    );
-
-    // 嵌入模式：由导航中心负责 Dialog 外壳（标题栏 / 取消 / 完成），
-    // 这里只输出内容体。open / onClose 不再被引用（由中心控制挂载）。
-    if (!withDialog) {
-        return tabsAndContent;
-    }
-
-    return (
-        <>
-            <Dialog
-                open={open}
-                onClose={onClose}
-                maxWidth='md'
-                fullWidth
-                slotProps={{
-                    paper: {
-                        sx: {
-                            m: { xs: 2, sm: "auto" },
-                            width: { xs: "calc(100% - 32px)", sm: "auto" },
-                            // 高度写在 paper 层：切页签时弹窗高度不跳（备份弹窗同款做法）。
-                            // 上限取 880：最高的「外观与搜索」页装得下，更矮的视口在区内滚动。
-                            height: { xs: "auto", sm: "min(880px, calc(100% - 48px))" },
-                            maxHeight: { sm: "calc(100% - 48px)" },
-                        },
-                    }
-                }}
-            >
-                {/* 标题改名为「全站设置」，与卡片齿轮入口区分（见 MoreMenu）。 */}
-                <DialogTitle sx={dialogTitleSx}>
-                    全站设置
-                    {/* 统一走外壳组件提供关闭按钮 */}
-                    <DialogCloseButton onClose={onClose} />
-                </DialogTitle>
-                <Divider />
-                {tabsAndContent}
-                <DialogActions sx={dialogActionsSx}>
-                    <Button onClick={onClose} variant='outlined'>
-                        取消
-                    </Button>
+                {/* 内容末尾放一个右对齐的保存按钮 —— 取消 / 完成由中心统一提供，
+                    这里不再渲染独立 DialogActions。 */}
+                <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1, pt: 2 }}>
                     <Button
                         onClick={onSave}
                         variant='contained'
@@ -811,12 +722,11 @@ export function ConfigPanel({
                     >
                         {saving ? "保存中…" : "保存设置"}
                     </Button>
-                </DialogActions>
-            </Dialog>
+                </Box>
         </>
     );
+
+    // 由导航中心负责 Dialog 外壳（标题栏 / 关闭），这里只输出内容体。
+    return content;
 }
 
-export default function SettingsDialog(props: SettingsDialogProps) {
-    return <ConfigPanel {...props} withDialog />;
-}
