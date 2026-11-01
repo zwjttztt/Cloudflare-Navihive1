@@ -6,6 +6,10 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-11-01 · 工程：cron e2e 失败时输出服务端日志（25.0.1）
+
+CI「构建 + 端到端」job 的 cron e2e 出现一次 `PUT configs/webdav.lastAutoBackupAt → 500`（连锁 3 条 FAIL），但 wrangler 的服务端 stack 只落在 runner 的 /tmp 日志里、stdout 看不到。给 `cron-e2e.mjs` 的拨时间步骤加常驻诊断：失败时打印响应体与 wrangler 日志尾部，后续排障不用再盲猜。
+
 ## 2026-11-01 · 安全：堵住登录限速的伪造 XFF 绕过 + 15 项 P1 加固（25.0.0）
 
 全维度重审（60 条发现，见 `.workbuddy/artifacts/audit-full-2026-11-01.md`）后的 P0+P1 批量修复。

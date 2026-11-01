@@ -196,10 +196,25 @@ const waitConfigValue = async (key, timeoutMs = 15_000) => {
 // 多次，后几次本来就该跳过。以前每次触发都能备份，靠的是 isNavBackupDue 里
 // `cronExpr !== HOURLY_CRON` 的放行 —— 那条旁路是给测试开的，也正是「错过窗口
 // 不补跑」这个线上 bug 一直看不见的原因。生产代码不再留测试后门，改成测试自己拨时间。
+// 服务端 5xx 的 stack 只在 wrangler 日志里（stdout 看不到），失败时拖出来看
+const dumpServerLog = why => {
+    try {
+        const lines = fs.readFileSync(wrangler.logFile, "utf8").split("\n");
+        console.error(`--- wrangler 日志尾部（${why}）---\n${lines.slice(-80).join("\n")}\n---`);
+    } catch (e) {
+        console.error(`读 wrangler 日志失败: ${e}`);
+    }
+};
+
 const backdate = async days => {
     const at = new Date(Date.now() - days * 86400_000).toISOString();
     const res = await call("configs/webdav.lastAutoBackupAt", "PUT", { value: at });
-    check(`把上次自动备份时间拨到 ${days} 天前`, res.status < 400, `status=${res.status}`);
+    if (res.status >= 400) dumpServerLog(`backdate(${days}) status=${res.status}`);
+    check(
+        `把上次自动备份时间拨到 ${days} 天前`,
+        res.status < 400,
+        `status=${res.status} ${JSON.stringify(res.json)}`
+    );
 };
 
 // 自动备份只留最新一份（跑完就把上一份删了），所以**不能**用「网盘上有几个
