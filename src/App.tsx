@@ -16,9 +16,7 @@ import { MockNavigationClient } from "./API/mock";
 import { UNAUTHORIZED_EVENT } from "./API/transport";
 import {
     BootstrapData,
-    BACKUP_CREDENTIALS_CONFIG,
 } from "./API/http";
-import { RETENTION_DAYS_KEY } from "./API/configKeys";
 import { GroupWithSites } from "./types";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
@@ -116,7 +114,10 @@ const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"
 // ⚠️ 统计 / 备份 / 回收站 / 审计这四个**不再有一级挂载点**（T02 已搬进中心的面板），
 //    所以这里也不再为它们声明 lazy —— 它们的块由中心内部的面板层按需引入，
 //    dialogChunks 里那几条预取入口指向的还是同一批模块。
-const NavigationCenterDialog = lazy(() => import("./components/NavigationCenterDialog"));
+// 中心的 prop 组装器（navCenterDialogProps.ts）与中心外壳（NavigationCenterDialog）
+// 都收进 NavCenterDialogBundle 一块懒加载（外壳的 lazy 声明随之搬进 Bundle）：
+// 组装器若从 App 静态引入，约 2.9 KB 会把首屏 gzip 余量压破 3% 棘轮（2026-11-01 实测）。
+const NavCenterDialogBundle = lazy(() => import("./components/NavCenterDialogBundle"));
 const VaultDialog = lazy(() => import("./components/VaultDialog"));
 // 记事本：独立页面（参考 inkstone 的工作区布局）。懒加载。
 /** 记事本整块（hook + 视图）懒加载：打开之前一行代码都不进首屏 */
@@ -142,7 +143,6 @@ import {
 import { clearAddSiteParam, readAddSitePrefill } from "./utils/addSiteDeepLink";
 import { setSiteIndex } from "./utils/siteIndex";
 import {
-    WEBDAV_CONFIG_PREFIX,
     LINK_HEALTH_CONFIG,
     LINK_HEALTH_SYNC_CONFIG,
     PREF_SYNC_CONFIG,
@@ -1996,144 +1996,88 @@ function App() {
                         「更多」都开它。九个业务面板在它内部再分一层 lazy，所以这里
                         只在 open 时挂载 —— 关着的时候连外壳那块都不下。 */}
                     <ChunkBoundary when={navCenterOpen}>
-                    <NavigationCenterDialog
-                        open={navCenterOpen}
-                        onClose={handleMenuClose}
-                        isAuthenticated={isAuthenticated}
-                        isSiteOwner={currentUser?.role === "owner"}
-                        initialPanel={navCenterPanel}
-                        stats={{
-                            client: api as unknown as NavigationClient,
-                            isSiteOwner: currentUser?.role === "owner",
-                            nameOf: (id: string) => {
-                                for (const group of groups) {
-                                    const hit = group.sites.find(s => String(s.id) === id);
-                                    if (hit) return hit.name || hit.url || `#${id}`;
-                                }
-                                return `已删除的网站 #${id}`;
-                            },
-                            exists: (id: string) => groups.some(g => g.sites.some(s => String(s.id) === id)),
-                            syncEnabled: configs[PREF_SYNC_CONFIG] === "true",
-                            onClear: () => { clearVisits(); },
-                        }}
-                        backup={{
-                            initialTab: backupTab,
-                            client: api,
-                            webdavConfig,
-                            onSaveWebdavConfig: handleSaveWebdavConfig,
-                            autoBackup: configs[`${WEBDAV_CONFIG_PREFIX}autoBackup`] !== "false",
-                            lastBackupAt: configs[`${WEBDAV_CONFIG_PREFIX}lastBackupAt`] || "",
-                            lastBackupInfo: configs[`${WEBDAV_CONFIG_PREFIX}lastBackupInfo`] || "",
-                            lastAutoBackupAt: configs[`${WEBDAV_CONFIG_PREFIX}lastAutoBackupAt`] || "",
-                            onToggleAutoBackup: handleToggleAutoBackup,
-                            onBuildExportData: buildExportData,
-                            onDownloadLocal: handleDownloadLocal,
-                            onImportData: handleImportBackup,
-                            onRequestImportPreview: requestImportPreview,
-                            onNotify: notify,
-                            includeCredentials: configs[BACKUP_CREDENTIALS_CONFIG] === "true",
-                            onIncludeCredentialsChange: handleToggleIncludeCredentials,
-                            onOpenBookmark: () => setBookmarkOpen(true),
-                            cronError,
-                        }}
-                        recycle={{
-                            client: api as unknown as NavigationClient,
-                            retentionDays: Number(configs[RETENTION_DAYS_KEY]) || undefined,
-                            onChanged: () => void fetchData({ silent: true }),
-                            onNotify: (msg: string, severity?: "success" | "error" | "info") => notify(msg, severity || "info"),
-                        }}
-                        audit={{
-                            client: api as unknown as NavigationClient,
-                            retentionDays: Number(configs[RETENTION_DAYS_KEY]) || undefined,
-                        }}
-                        config={{
-                            onSave: handleSaveConfig,
-                            tempConfigs,
-                            setTempConfigs,
-                            onConfigInputChange: handleConfigInputChange,
-                            onMaskOpacityChange: handleConfigSliderChange,
-                            onPickAccent: pickAccent,
-                            // 关中心就撤掉试色预览（试色是即时生效的，不撤会泄漏到全站）；
-                            // 只撤预览，`tempConfigs` 草稿留着，下次开面板还在
-                            onCancelAccentPreview: () => setAccentPreview(null),
-                            radius,
-                            onRadiusChange: setRadius,
-                            fontScale,
-                            onFontScaleChange: setFontScale,
-                            glassBlur: tempGlassBlur,
-                            onGlassBlurChange: handleGlassBlurChange,
-                            glassEffects,
-                            onGlassEffectsChange: setGlassEffects,
-                            offlineFull,
-                            onOfflineFullChange: setOfflineFull,
-                            iconPrivacy,
-                            onIconPrivacyChange: setIconPrivacy,
-                            liteMode,
-                            onLiteModeChange: setLiteMode,
-                            saving: savingConfig,
-                            pinyinSearch,
-                            onPinyinSearchChange: setPinyinSearch,
-                            syncHealth: configs[LINK_HEALTH_SYNC_CONFIG] === "true",
-                            onSyncHealthChange: handleToggleLinkHealthSync,
-                            syncPrefs: prefSync,
-                            onSyncPrefsChange: handleTogglePrefSync,
-                            onRunLinkCheck: () => void runLinkCheck(),
-                            isSiteOwner: !currentUser || currentUser.role === "owner",
-                        }}
-                        ai={{
-                            api: aiConfigClient,
-                            ai,
-                            onSaved: () => void ai.refresh(),
-                            statusText: aiStatusText,
-                        }}
-                        vault={{
-                            client: api as unknown as import("./utils/vaultSession").VaultTransport,
-                            onNotify: (m, s) => notify(m, s || "info"),
-                        }}
-                        account={{
-                            open: true,
-                            onClose: () => {},
-                            sites: allSitesWithCreds,
-                            auth: {
-                                username: authUsername,
-                                currentPassword: authCurrentPassword,
-                                newPassword: authNewPassword,
-                            },
-                            onAuthChange: (field, value) => {
-                                if (field === "username") setAuthUsername(value);
-                                else if (field === "currentPassword") setAuthCurrentPassword(value);
-                                else setAuthNewPassword(value);
-                            },
-                            onSaveAuth: () => void handleSaveAuthCredentials(),
-                            saving: savingAuth,
-                            currentUser,
-                            recoveryKeyConfigured: recoveryConfigured,
-                            onGenerateRecoveryKey: handleGenerateRecoveryKey,
-                            invite,
-                            onCreateInvite: handleCreateInvite,
-                            sessions,
-                            onRevokeSession: jti => void handleRevokeSession(jti),
-                            onRevokeOthers: () => void handleRevokeOthers(),
-                            onDeleteAccount:
-                                currentUser && currentUser.role !== "owner"
-                                    ? () => {
-                                          setNavCenterOpen(false);
-                                          setDeleteAccountOpen(true);
-                                      }
-                                    : undefined,
-                            accounts: accountList,
-                            onExemptUser: uid => void handleExemptUser(uid),
-                            inactivePolicy: inactivePolicy ?? undefined,
-                            onSaveInactivePolicy: handleSaveInactivePolicy,
-                            onSweepInactive: handleSweepInactive,
-                        }}
-                        onAccountActivate={handleAccountActivate}
-                        shortcuts={{
-                            canInstall,
-                            onInstallApp: () => void handleInstallApp(),
-                        }}
-                        onLogout={handleLogout}
-                    />
+                    <NavCenterDialogBundle args={{
+                        api,
+                        groups,
+                        configs,
+                        isAuthenticated,
+                        currentUser,
+                        navCenterPanel,
+                        open: navCenterOpen,
+                        onClose: handleMenuClose,
+                        setBookmarkOpen,
+                        clearVisits,
+                        fetchData,
+                        notify,
+                        runLinkCheck,
+                        handleSaveConfig,
+                        tempConfigs,
+                        setTempConfigs,
+                        handleConfigInputChange,
+                        handleConfigSliderChange,
+                        pickAccent,
+                        setAccentPreview,
+                        radius,
+                        setRadius,
+                        fontScale,
+                        setFontScale,
+                        tempGlassBlur,
+                        handleGlassBlurChange,
+                        glassEffects,
+                        setGlassEffects,
+                        offlineFull,
+                        setOfflineFull,
+                        iconPrivacy,
+                        setIconPrivacy,
+                        liteMode,
+                        setLiteMode,
+                        savingConfig,
+                        pinyinSearch,
+                        setPinyinSearch,
+                        prefSync,
+                        handleTogglePrefSync,
+                        handleToggleLinkHealthSync,
+                        backupTab,
+                        webdavConfig,
+                        handleSaveWebdavConfig,
+                        handleToggleAutoBackup,
+                        buildExportData,
+                        handleDownloadLocal,
+                        handleImportBackup,
+                        requestImportPreview,
+                        handleToggleIncludeCredentials,
+                        cronError,
+                        aiConfigClient,
+                        ai,
+                        aiStatusText,
+                        allSitesWithCreds,
+                        authUsername,
+                        authCurrentPassword,
+                        authNewPassword,
+                        setAuthUsername,
+                        setAuthCurrentPassword,
+                        setAuthNewPassword,
+                        handleSaveAuthCredentials,
+                        savingAuth,
+                        recoveryConfigured,
+                        handleGenerateRecoveryKey,
+                        invite,
+                        handleCreateInvite,
+                        sessions,
+                        handleRevokeSession,
+                        handleRevokeOthers,
+                        accountList,
+                        handleExemptUser,
+                        inactivePolicy,
+                        handleSaveInactivePolicy,
+                        handleSweepInactive,
+                        setNavCenterOpen,
+                        setDeleteAccountOpen,
+                        canInstall,
+                        handleInstallApp,
+                        handleLogout,
+                        handleAccountActivate,
+                    }} />
                     </ChunkBoundary>
 
                     {/* 账号管理：改账号密码 / 恢复密钥 / 邀请码 / 登录设备 / 注销。

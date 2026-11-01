@@ -6,7 +6,22 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
-## 2026-11-02 · 新增：附件管理器支持拖拽 / 选择上传（24.7.0）
+## 2026-11-01 · 重构：App.tsx 拆出「设置中心」prop 组装器与懒加载包装（24.8.0）
+
+审计报告 A1：`src/App.tsx` 单函数撑到 2400+ 行，其中「设置」统一中心（NavigationCenterDialog）的九面板 props 是约 140 行的内联对象/闭包，直接摊在 return 里。
+
+修法：
+- 九面板 props 组装抽成纯函数 `buildNavCenterDialogProps`（`src/components/navCenterDialogProps.ts`）；「账号与安全」面板里逐字重复两遍的 `onAuthChange` 三字段派发收成一份 `makeAuthChangeHandlers`；
+- 组装器与中心外壳一起收进懒加载的 `NavCenterDialogBundle`：App 只传一份 args，`ChunkBoundary when={navCenterOpen}` 关着时整块（外壳 + 组装器）都不下载。App.tsx 的中心挂载从约 140 行缩到约 82 行，全文件 2414 → 2358 行；
+- `navigationCenterLazyGuard` 的挂载形态断言同步放宽（直接挂外壳或挂 Bundle 都算条件挂载），产物段守卫继续兜住「Bundle 被静态引入」的传递引入情形。
+
+首屏反而变小：index chunk 251.5 → 250.7 KB（stats.nameOf 等闭包随组装器进了懒块），mui-core 与基线逐字节一致。
+
+踩坑记录（值得记）：
+- 🔴 对**懒块模块**的静态 `import type` 也会把该模块拖进入口模块图：面板用的 Tabs / Table / Slider / ToggleButton / 一批图标因此被抬进首屏共享块（mui-core +61 KB，首屏预算 4 项红）。类型检查与 ESLint 全都看不出来，最后靠 sourcemap 按模块归因定位。正解：跨懒块引用一律写内联 `import("./X").Type` 类型（App 对 `VaultTransport` 的既有写法同理）；静态 type import 只对「本来就在入口图里的模块」（各 hook、API client）安全。
+- 首屏 gzip 余量长期只剩约 3%（基线 289.7 KB / 预算 300 KB），任何净增都会压破棘轮——这次靠「组装器懒块化」反而挣回 0.8 KB。
+
+## 2026-11-01 · 新增：附件管理器支持拖拽 / 选择上传（24.7.0）
 
 审计报告 V3（`.workbuddy/artifacts/audit-report-2026-11-01.md` 的 V3）：附件抽屉此前只有列表 / 删除 / 清理，**没有上传入口**——上传能力（`NavigationClient.uploadAttachment`）后端早已就绪，前端却没接线。
 

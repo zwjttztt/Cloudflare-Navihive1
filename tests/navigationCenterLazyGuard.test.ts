@@ -165,8 +165,15 @@ test("中心弹窗对八个面板只用动态 import（面板是第二层懒加�
 test("App 只在中心打开时挂载它（不许无条件挂载 lazy 组件）", () => {
     // VaultDialog 那个坑（App.tsx 里声明了 lazy 却无条件挂载）会让首屏一上来
     // 就发请求；这里钉住中心是 `when={navCenterOpen}` 的条件挂载。
+    // 2026-11-01（A1 拆分）：中心外壳 + prop 组装器收进了懒加载的
+    // NavCenterDialogBundle，App 挂的是这个包装 —— 两种写法都算条件挂载。
+    // （Bundle 若被改回静态引入，上面第一条入口守卫抓不到传递引入，
+    // 但下面的产物段守卫会红：外壳标记会出现在 index chunk 里。）
     const code = stripComments(readFileSync(join(ROOT, "src", "App.tsx"), "utf8"));
-    const mount = /<ChunkBoundary when=\{navCenterOpen\}>\s*<NavigationCenterDialog/.exec(code);
+    const mount =
+        /<ChunkBoundary when=\{navCenterOpen\}>\s*<(?:NavigationCenterDialog|NavCenterDialogBundle)/.exec(
+            code
+        );
     assert.ok(mount, "中心必须挂在 <ChunkBoundary when={navCenterOpen}> 里");
 });
 
