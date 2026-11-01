@@ -126,12 +126,12 @@ const EXEMPT: Record<string, { reason: string; cap: number }> = {
         cap: 6,
     },
     "src/utils/markdownToReact.tsx": {
-        // 2026-10-25「笔记美化」：块底色/描边/quote/表头全部改成 index.css 的 --md-* 变量
-        // （亮暗各一套），这里的硬编码从 25 降到 16，cap 跟着降 ——
-        // 剩下的是 callout 的 6 类语义色（那是**语义**，不是可换肤的装饰）、
-        // 高亮 mark 的黄色、脚注/折叠的少量 alpha 分档。
-        reason: "Markdown 渲染器的局部样式常量（callout 语义色 / 高亮 / 脚注），alpha 是刻意分档的语义层级；块级底色与描边已改走 --md-* 变量",
-        cap: 16,
+        // 2026-11-01 UX-3：callout 四色（NOTE/TIP/IMPORTANT/WARNING）+ 中性/折叠 + 高亮
+        // 全部抽成 index.css 的 --callout-* / --md-highlight-* 语义 token，引用走
+        // `var(--x, 原值)`；守卫的 VAR_WITH_FALLBACK 会整体剔除带 fallback 的引用，
+        // 所以裸字面量从 16 降到 3 —— 剩的是图片加载失败占位框与脚注分隔线的 alpha 分档。
+        reason: "Markdown 渲染器残留的极少裸色（图片占位框 / 脚注分隔线 alpha 分档）；callout 与高亮已改走 --callout-* / --md-highlight-* 语义 token",
+        cap: 3,
     },
     "src/components/BackgroundLayers.tsx": {
         reason: "装饰性极光渐变：两组多段 radial-gradient 是一次性调出来的美术值，没有语义可抽",

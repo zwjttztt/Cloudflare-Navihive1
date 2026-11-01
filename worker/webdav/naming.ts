@@ -14,18 +14,24 @@ export function isAutoBackupFileName(filename: string): boolean {
 
 /**
  * 挑出要清理的自动备份：只动自动备份，手动备份一律保留。
- * - recorded：上次自动备份的文件名（库里有记录时优先用它，省一次列目录）；
+ * - recorded：上次自动备份的文件名（库里有记录时一并纳入候选，省一次列目录也能清到它）；
  * - files：列目录结果，用来兜底清理历史上遗留的自动备份（升级前的文件名带不带
  *   auto 前缀都可能在，没记录的也要清）；
- * - keepFilename：本次刚上传的那份，绝不能删。
+ * - keepFilename：本次刚上传的那份，绝不能删；
+ * - retentionCount：要保留的自动备份份数（含 keep 这一份）。只删超出份数的旧自动备份。
+ *
+ * 文件名自带 UTC 时间戳且零填充定宽，按文件名倒序即时间倒序：保留最新的
+ * retentionCount-1 份旧备份 + keep，其余（更老的）回删。retentionCount 缺省为 1，
+ * 退回「只留 keep、其余自动备份全删」的旧行为，已有的单测不受影响。
  */
 export function selectAutoBackupsToPrune(
     files: readonly { name: string }[],
     keepFilename: string,
-    recorded?: string
+    recorded?: string,
+    retentionCount = 1
 ): string[] {
     const targets = new Set<string>();
-    if (recorded && recorded !== keepFilename) {
+    if (recorded && recorded !== keepFilename && isAutoBackupFileName(recorded)) {
         targets.add(recorded);
     }
     for (const file of files) {
@@ -34,7 +40,13 @@ export function selectAutoBackupsToPrune(
             targets.add(name);
         }
     }
-    return [...targets];
+    // retentionCount <= 0：全保留，一个不删
+    if (!(retentionCount > 0)) return [...targets];
+    // 按文件名（=时间戳）倒序：最新在前。keep 已排除，保留前 retentionCount-1 份，
+    // 超出部分（更旧）回删。
+    return [...targets]
+        .sort((a, b) => (b < a ? -1 : b > a ? 1 : 0))
+        .slice(Math.max(retentionCount - 1, 0));
 }
 
 // 自动备份带 auto 前缀：清理时靠文件名就能区分来源，不会误删手动备份

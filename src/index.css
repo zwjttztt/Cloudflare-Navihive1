@@ -339,6 +339,28 @@
     /* 段/块之间的竖向节奏（--space-3）；紧凑密度下收到 8px，见文末密度段 */
     --md-para-gap: 12px;
 
+    /* ===== 内容块（callout）语义色（UX-3，2026-11-01）=====
+       值 = 渲染层 markdownToReact.tsx 里原本写死的 callout 配色，**纯提取不改观感**。
+       NOTE/TIP/IMPORTANT/WARNING 是「状态语义」而非可换肤的装饰，亮暗通用同一组值；
+       QUOTE/COPY/FOLD 共用中性灰（--callout-neutral-* / --callout-fold-*）。
+       渲染层引用时都带旧值兜底（var(--x, 原值)），导出 HTML / 分享页等没有这份
+       CSS 的上下文里外观退回改造前，不会变透明块。 */
+    --callout-note-border: #3b82f6;
+    --callout-note-bg: rgba(59, 130, 246, 0.10);
+    --callout-tip-border: #10b981;
+    --callout-tip-bg: rgba(16, 185, 129, 0.10);
+    --callout-important-border: #8b5cf6;
+    --callout-important-bg: rgba(139, 92, 246, 0.10);
+    --callout-warning-border: #f59e0b;
+    --callout-warning-bg: rgba(245, 158, 11, 0.12);
+    --callout-neutral-border: rgba(128, 128, 128, 0.6);
+    --callout-neutral-bg: rgba(128, 128, 128, 0.08);
+    --callout-fold-border: rgba(128, 128, 128, 0.6);
+    --callout-fold-bg: transparent;
+    /* 高亮黄：`==文本==` 与 `<mark>` 两处，alpha 分档是刻意保留的语义层级 */
+    --md-highlight-bg: rgba(250, 204, 21, 0.38);
+    --md-mark-bg: rgba(250, 204, 21, 0.35);
+
     /* ===== 标签自动配色（用户没给标签手设颜色时按名称取一档）=====
        ⚠️ 亮态取的是 900 档，不是「压白底够用」的 700 档 —— 2026-10-25 实测：
        标签会落在**灰底行**上（选中 / 勾选 / hover 后的行底约 rgb(200,199,196)），
@@ -514,6 +536,23 @@
     --md-table-head-bg: rgba(255, 255, 255, 0.07);
     --md-rule: rgba(255, 255, 255, 0.18);
     --md-quote-border: rgba(255, 255, 255, 0.3);
+
+    /* ===== 内容块（callout）语义色（UX-3，2026-11-01）：亮暗通用同一组值 =====
+       见 :root 段注释；callout 配色是状态语义，不随主题换值。 */
+    --callout-note-border: #3b82f6;
+    --callout-note-bg: rgba(59, 130, 246, 0.10);
+    --callout-tip-border: #10b981;
+    --callout-tip-bg: rgba(16, 185, 129, 0.10);
+    --callout-important-border: #8b5cf6;
+    --callout-important-bg: rgba(139, 92, 246, 0.10);
+    --callout-warning-border: #f59e0b;
+    --callout-warning-bg: rgba(245, 158, 11, 0.12);
+    --callout-neutral-border: rgba(128, 128, 128, 0.6);
+    --callout-neutral-bg: rgba(128, 128, 128, 0.08);
+    --callout-fold-border: rgba(128, 128, 128, 0.6);
+    --callout-fold-bg: transparent;
+    --md-highlight-bg: rgba(250, 204, 21, 0.38);
+    --md-mark-bg: rgba(250, 204, 21, 0.35);
 
     /* 标签自动配色（暗色档）：300 档，压深底 8:1 以上 */
     --tag-1-fg: #93c5fd;

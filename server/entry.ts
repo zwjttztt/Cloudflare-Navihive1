@@ -15,7 +15,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { request as httpRequest, type RequestOptions } from "node:http";
 import { Readable } from "node:stream";
 import { mkdir, readFile } from "node:fs/promises";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { timingSafeEqual, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import path from "node:path";
@@ -325,11 +325,40 @@ function scheduleCron(): void {
     // 对齐到下一个 UTC 整点（epoch 本身就是 UTC 基准，cron 表达式按 UTC 解释）
     const delay = Math.floor(Date.now() / 3_600_000) * 3_600_000 + 3_600_000 - Date.now();
     cronTimer = setTimeout(() => {
-        runScheduledTasks(serverEnv, undefined, CRON_EXPR).catch(error => {
+        runServerCron().catch(error => {
             console.error("定时任务异常:", error);
         });
         scheduleCron();
     }, delay);
+}
+
+/**
+ * audit_log 清理：删除早于 365 天的审计记录，避免该表无限制增长拖慢查询。
+ *
+ * 用参数化 DELETE；时间窗口是 SQL 函数（`datetime('now','-365 days')`），非用户输入，
+ * 无注入风险。fail-safe：清理失败只记日志、绝不抛出 —— 不能因为归档清理失败就把
+ * 整轮定时任务带崩（worker 的 cron 有各自的留痕机制，server 这边同样不让清理误伤主流程）。
+ *
+ * 为什么单独挂这一条：worker 侧的保留清理走 D1 的 cleanupExpiredRows，自托管（server）
+ * 用的是 SQLite，audit_log 在 server 端此前没有任何清理路径，纯增不减。
+ */
+async function cleanupAuditLog(): Promise<void> {
+    try {
+        await serverEnv.DB.prepare(
+            "DELETE FROM audit_log WHERE created_at < datetime('now','-365 days')"
+        ).run();
+        console.log("审计日志清理完成（保留 365 天内记录）");
+    } catch (error) {
+        console.error("审计日志清理失败（已跳过，不影响定时任务）:", error);
+    }
+}
+
+/** 自托管侧定时入口：复用 Worker 的定时任务，并补上 server 端特有的审计日志清理。 */
+async function runServerCron(): Promise<void> {
+    await runScheduledTasks(serverEnv, undefined, CRON_EXPR).catch(error => {
+        console.error("定时任务异常:", error);
+    });
+    await cleanupAuditLog();
 }
 
 // ============ HTTP 服务 ============
@@ -1020,7 +1049,7 @@ const server = createServer((req, res) => {
                     res.end(CRON_TOKEN ? "Unauthorized" : "Not Found");
                     return;
                 }
-                await runScheduledTasks(serverEnv, undefined, CRON_EXPR);
+                await runServerCron();
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" }).end('{"ok":true}');
                 return;
             }
@@ -1329,6 +1358,37 @@ server.listen(PORT, HOST, () => {
     // AUTH_SECRET 缺失已在启动前 assertAuthConfigOrExit() 挡掉（直接退出），这里不再重复
     if (serverEnv.AUTH_ENABLED !== "true") {
         console.warn("⚠️ AUTH_ENABLED 不是 true：站点当前无需登录即可读写，仅建议内网调试时这么用。");
+    }
+    // ---- 启动自检：本地快照是否太久没更新（DATA-10 配套，非阻塞）----
+    // 只在「已经有快照、但最新一份超过阈值」时才 warn，不阻断启动。
+    // 没有快照文件 = 静默（操作者可能还没到备份这一步，或压根不放本目录）。
+    // 扫描目录默认是数据库所在目录（scripts/backup-sqlite.mjs 默认也把快照放这儿），
+    // 可用 NAVIHIVE_BACKUP_DIR 指向你 crontab 实际写备份的目录；
+    // 阈值用 NAVIHIVE_BACKUP_WARN_DAYS（默认 30）。详情见 deploy/selfhost.md 第七节。
+    {
+        const warnDays = Number(process.env.NAVIHIVE_BACKUP_WARN_DAYS || "30");
+        const scanDir = process.env.NAVIHIVE_BACKUP_DIR || path.dirname(path.resolve(DB_FILE));
+        try {
+            const stem = path.basename(DB_FILE).replace(/\.[^.]+$/, "");
+            const re = new RegExp(
+                "^" + stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-.+\\.db$"
+            );
+            const files = readdirSync(scanDir).filter((f) => re.test(f));
+            if (files.length > 0) {
+                const newest = Math.max(
+                    ...files.map((f) => statSync(path.join(scanDir, f)).mtimeMs)
+                );
+                const days = Math.floor((Date.now() - newest) / 86_400_000);
+                if (days >= warnDays) {
+                    console.warn(
+                        `⚠️ 距上次本地快照已 ${days} 天（阈值 ${warnDays} 天）：建议运行 node scripts/backup-sqlite.mjs 备份，` +
+                            `或检查定时任务是否还在跑。`
+                    );
+                }
+            }
+        } catch {
+            // 目录不存在 / 无权限都静默跳过：自检失败绝不能阻断启动
+        }
     }
 });
 

@@ -66,7 +66,7 @@ on:
 # ⚠️ actions: read 不能省 —— workflow_dispatch 那条路要靠 `gh run view` 去查 ci_run_id
 # 的结论，没有这个 scope 查不到（deploy.yml 里同样的门禁也带着它）。
 permissions:
-  contents: read
+  contents: write
   actions: read
   packages: write
 
@@ -195,7 +195,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # 合并成一个 multi-arch manifest，打 latest / v版本号 / sha 三个 tag
+  # 合并成一个 multi-arch manifest，打 latest / 版本号(:${version}) / sha 三个 tag
   merge:
     needs: [gate, build]
     runs-on: ubuntu-24.04
@@ -206,8 +206,8 @@ jobs:
           ref: ${{ needs.gate.outputs.sha }}
 
       # 从 package.json 读语义版本（bump-version.mjs 每次推送都会维护它），
-      # 给镜像追加 :v${version} tag（如 v24.9.0），供「按版本号回滚」用。
-      # ⚠️ v tag 不保证唯一：同版本多次发布会被互相覆盖，定位唯一构建仍然只认 sha tag。
+      # 给镜像追加 :${version} tag（如 :25.1.0），供「按版本号回滚」用。
+      # ⚠️ 版本 tag 不保证唯一：同版本多次发布会被互相覆盖，定位唯一构建仍然只认 sha tag。
       - name: 读版本号
         id: version
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
@@ -233,12 +233,49 @@ jobs:
         run: |
           docker buildx imagetools create \
             --tag ghcr.io/zwjttztt/navihive:latest \
-            --tag ghcr.io/zwjttztt/navihive:v${{ steps.version.outputs.version }} \
+            --tag ghcr.io/zwjttztt/navihive:${{ steps.version.outputs.version }} \
             --tag ghcr.io/zwjttztt/navihive:${{ needs.gate.outputs.sha }} \
             $(printf 'ghcr.io/zwjttztt/navihive@%s ' $(cat *))
 
       - name: 核对结果（两个平台都在才算成功）
         run: docker buildx imagetools inspect ghcr.io/zwjttztt/navihive:latest
+
+      # 在同一次发布里再打一个 git tag v${version}，指向被发布的那个 commit
+      # （gate 吐出的 sha，也就是 CI 验过的 commit）。
+      # 用途：把镜像版本和源码 tag 对齐，方便按 tag 拉源码、定位某次发布的代码。
+      # 约束（见 OPS-5）：
+      #   1) 只在该 commit 属于 main 时打；不在 main 上（如同版本从分支手动触发）就跳过。
+      #   2) 幂等：tag 已存在（多半是上次同版本发布打的）则跳过，不让 job 变红。
+      #      这也顺带实现了「只有 version 相对上次有变化才打 tag」——版本没变时
+      #      v${version} 必然已存在，自然跳过。
+      - name: 打 git tag v${version}（仅 main + 幂等）
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+
+          # 1) 分支约束：当前 commit 必须属于 main，否则跳过（不在 main 上不打 tag）
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+            echo "::notice::当前 commit 不在 main 分支上，跳过 git tag $TAG"
+            exit 0
+          fi
+
+          # 2) 幂等：本地或远端已有该 tag（同版本重复发布）则跳过，不报错
+          git fetch --tags origin
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::notice::git tag $TAG 已存在，跳过创建（幂等）"
+            exit 0
+          fi
+
+          # 3) 打 tag 并推送（用 GITHUB_TOKEN 写入，需要 contents: write 权限）
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "::notice::已创建并推送 git tag $TAG（指向 $(git rev-parse --short HEAD)）"
 
   # 失败通知（2026-11-01）：gate / build / merge 任一红 → POST 到 ALERT_WEBHOOK。
   # 与 ci.yml 的 notify job 同一套约定（text 字段，没配 secret 就跳过，发送失败不改变结论）。

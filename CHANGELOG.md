@@ -6,6 +6,30 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-11-01 · 安全 + 工程：审计 P2 批次二·三（波次 1+2，25.2.0）
+
+审计 P2 的第二、三波次（9 项，其中 ARCH-7 核实无需改动）。
+
+**安全**
+- 明文存量密码比对改常数时间：`src/API/crypto.ts` 新增 `constantTimeEqualString`（TextEncoder → UTF-8 字节 → 复用 XOR 累加），`verifyPassword` 明文分支不再用 `===`。不用 `node:crypto.timingSafeEqual` 是刻意的：Worker 无 `nodejs_compat`，三端通用的 XOR 实现才是唯一解。
+
+**修复**
+- 附件上传孤儿对象可自愈：`worker/routes/data.ts` 的 `createAttachment` 元数据写入失败时不再只抛 500 —— 先把 `{storage, objectKey}` 入队现有附件 GC 任务（`auth.attachment.gc.<id>`），已传到存储层的对象会被定时清理回收，不留永久孤儿。
+
+**新增**
+- WebDAV 自动备份滚动保留 3 份：`worker/webdav` 的 `MAX_AUTO_BACKUPS=3`，`selectAutoBackupsToPrune` 加 `retentionCount` 参数（缺省 1，向后兼容），`pruneAutoBackups` 改为列目录后按时间倒序保留最新 3 份、其余自动备份回删；手动备份铁律不变（永不入列）；
+- 自托管 SQLite 备份脚本：新建零依赖 `scripts/backup-sqlite.mjs`（`VACUUM INTO` 在线快照 + `integrity_check` + 表数量比对 + SHA-256，`--check` 报距上次快照天数），补上 `deploy/selfhost.md` 第七节「仓库里没有 backup.sh」的缺口；
+- 自托管 audit_log 自动清理：`server/entry.ts` 新增 `cleanupAuditLog()`（删除 365 天前的审计记录，fail-safe），并入 `runServerCron()`，两处 cron 入口统一走它；文档补「审计日志保留预期」小节；
+- 自托管备份快照自检：服务启动时非阻塞检查本地快照距今天数（默认 30 天，`NAVIHIVE_BACKUP_WARN_DAYS` 可调），超期打警告——备份断了好几周这种事不能再靠人肉发现。
+
+**性能**
+- 语义搜索结果 LRU 缓存：`src/hooks/useSemanticSearch.ts` 加 20 条上限的 LRU（命中直接返回跳过模型调用，失败不写缓存保留重试），重复搜索不再反复打 AI。
+
+**工程 / 重构**
+- 镜像发布打源码 tag：`.github/workflows/docker-publish.yml` 的 `contents` 提权到 `write`，merge job 在发布成功后幂等打 `v<version>` git tag（仅 main、已存在跳过），镜像版本与源码 tag 对齐；
+- Markdown callout 与高亮抽成语义 token：`src/index.css` 新增 `--callout-note/tip/important/warning/neutral/fold-*`、`--md-highlight-bg`、`--md-mark-bg`（亮暗两态各一份），`src/utils/markdownToReact.tsx` 16 处裸色值改 `var(--token, 原值)`；硬编码色守卫对应 cap 16→3（棘轮只降不升）；
+- ARCH-7（App.tsx 的 Mock 导入污染生产包）核实为不成立：`import.meta.env.DEV` 被 Vite 常量折叠 + DCE，Mock 不进生产包，无需改动。
+
 ## 2026-11-01 · 安全 + 工程：审计 P2 批次一（25.1.0）
 
 全维度重审遗留 P2 项的第一批低风险加固（其余批次另述）。

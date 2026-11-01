@@ -39,6 +39,9 @@ import type {
  */
 const MAX_BACKUP_DOWNLOAD_BYTES = 32 * 1024 * 1024;
 
+/** 自动备份滚动保留份数：只保留最近 3 份，超出部分由 pruneAutoBackups 回删。手动备份（前缀不同）永不入列。 */
+const MAX_AUTO_BACKUPS = 3;
+
 /** 执行一次完整备份：导出 → 压缩上传 →（仅自动备份）清理上一次自动备份 → 记录文件名。 */
 export async function runWebDavBackup(
     api: NavigationAPI,
@@ -51,7 +54,7 @@ export async function runWebDavBackup(
         password?: string;
     }
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
-    const { mode, stored = {}, data } = options;
+    const { mode, data } = options;
     // 备份口令与 AUTH_SECRET 无关：没设口令只是「不加密」，照样能备份，不再拦着不让传
     const password = options.password ?? config.backupPassword ?? "";
 
@@ -67,10 +70,10 @@ export async function runWebDavBackup(
     const result = await webdavUpload(config, filename, payload, password);
     if (!result.success) return result;
 
-    // 自动备份只保留最新一份：删掉上一次的自动备份（删不掉也不算备份失败）。
+    // 自动备份只保留最近 MAX_AUTO_BACKUPS 份：超出份数的旧自动备份回删（删不掉也不算备份失败）。
     // 手动备份一个都不删 —— 用户自己点的备份是「存档」，被定时任务清掉是数据丢失。
     if (mode === "auto") {
-        await pruneAutoBackups(config, filename, stored["webdav.lastAutoBackup"]);
+        await pruneAutoBackups(config, filename);
     }
 
     try {
@@ -113,20 +116,17 @@ export async function runWebDavBackup(
     return result;
 }
 
-// 清理上一次的自动备份：有记录就只删那一份，没记录（老库升级）才列目录兜底
+// 清理超出的旧自动备份：保留最近 MAX_AUTO_BACKUPS 份，超出部分回删。
+// 必须列目录来看全部自动备份才能正确按时间排序保留 —— 保留份数 > 1 时，单凭
+// 「上次记录的那一份」无法确定还要不要删后续更旧的，所以这里统一走列目录 + 保留份数逻辑。
+// 手动备份（前缀不同）一律不在清理范围。
 async function pruneAutoBackups(
     config: WebDavConfig,
-    keepFilename: string,
-    recordedFilename?: string
+    keepFilename: string
 ): Promise<void> {
     try {
-        let targets: string[] = [];
-        if (recordedFilename && recordedFilename !== keepFilename) {
-            targets = [recordedFilename];
-        } else {
-            const list = await webdavList(config);
-            targets = selectAutoBackupsToPrune(list.data || [], keepFilename, recordedFilename);
-        }
+        const list = await webdavList(config);
+        const targets = selectAutoBackupsToPrune(list.data || [], keepFilename, undefined, MAX_AUTO_BACKUPS);
         for (const name of targets) {
             await webdavDelete(config, name);
         }

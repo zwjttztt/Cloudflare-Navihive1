@@ -19,6 +19,7 @@ import {
     decryptBytes,
     validatePasswordStrength,
     constantTimeEqual,
+    constantTimeEqualString,
 } from "../src/API/crypto";
 // 2026-10-25：令牌的 exp 现在是**必需**声明（缺 exp 一律判无效，
 // 否则等于签发永不过期的令牌）。这里给「应该验过」的用例补一个未来时间戳。
@@ -88,6 +89,14 @@ test("encryptSecret 空串返回空串；decryptSecret 对明文原样返回", a
 test("constantTimeEqual 长度不同直接 false", () => {
     assert.equal(constantTimeEqual(new Uint8Array([1, 2]), new Uint8Array([1])), false);
     assert.equal(constantTimeEqual(new Uint8Array([1, 2]), new Uint8Array([1, 2])), true);
+});
+
+test("constantTimeEqualString 长度不同直接 false、内容一致才 true（UTF-8 字节级）", () => {
+    assert.equal(constantTimeEqualString("hunter2", "hunter2"), true);
+    assert.equal(constantTimeEqualString("hunter2", "hunter3"), false);
+    assert.equal(constantTimeEqualString("", "x"), false);
+    assert.equal(constantTimeEqualString("明文密码", "明文密码"), true);
+    assert.equal(constantTimeEqualString("明文密码", "明文密马"), false);
 });
 
 test("encryptBytes/decryptBytes 往返，且无密钥解不出", async () => {

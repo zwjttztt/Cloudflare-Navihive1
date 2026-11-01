@@ -117,18 +117,31 @@ async function handleUploadAttachment(ctx: RouteCtx): Promise<Response> {
         throw ApiError.badGateway("图片写入存储失败，请稍后重试");
     }
 
-    await api.createAttachment({
-        id,
-        note_id: Number.isInteger(noteId) && (noteId as number) > 0 ? noteId : null,
-        filename,
-        mime,
-        size: bytes.byteLength,
-        storage: quota.storage,
-        object_key: key,
-    });
-    const dimensions = readImageSize(bytes, mime);
-    if (dimensions) await env.DB.prepare("UPDATE attachments SET width = ?, height = ? WHERE id = ?").bind(dimensions.width, dimensions.height, id).run();
-    await recordUpload(env, currentUserIdOf(ctx));
+    try {
+        await api.createAttachment({
+            id,
+            note_id: Number.isInteger(noteId) && (noteId as number) > 0 ? noteId : null,
+            filename,
+            mime,
+            size: bytes.byteLength,
+            storage: quota.storage,
+            object_key: key,
+        });
+        const dimensions = readImageSize(bytes, mime);
+        if (dimensions) await env.DB.prepare("UPDATE attachments SET width = ?, height = ? WHERE id = ?").bind(dimensions.width, dimensions.height, id).run();
+        await recordUpload(env, currentUserIdOf(ctx));
+    } catch (error) {
+        // 对象已落盘但 D1 元数据写入失败 → 永久孤儿对象。入队一个 GC 任务，
+        // 让现有的附件清理 cron（消费 auth.attachment.gc.% 前缀）把孤儿对象回收掉。
+        try {
+            await env.DB.prepare("INSERT OR REPLACE INTO configs (key, value) VALUES (?, ?)")
+                .bind(`auth.attachment.gc.${id}`, JSON.stringify({ storage: quota.storage, objectKey: key })).run();
+        } catch (gcError) {
+            console.error("附件孤儿对象 GC 任务入队失败:", gcError);
+        }
+        console.error("附件元数据写入失败（已入队对象 GC）:", error);
+        throw new ApiError(500, API_ERROR_CODES.internal, "附件记录写入失败，请稍后重试");
+    }
 
     // 回 URL 而不是字节：前端拿到 URL 就能插进正文。
     // ⚠️ 这个 URL 走鉴权，所以 <img> 不能直接用它 —— 前端要 fetch 成 blob 再 set src

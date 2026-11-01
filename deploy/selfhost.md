@@ -569,6 +569,50 @@ tar tzf files-2026-10-28.tgz | head -5
 
 ---
 
+### 7.4 备份脚本（DATA-10）：`scripts/backup-sqlite.mjs`
+
+7.1 层次二那句「`backup.sh` 仓库里没有，要你自己写一个 5 行的脚本」—— 现在仓库自带一个零依赖的实现：`scripts/backup-sqlite.mjs`。它把「备 + 验」一次做齐：
+
+- **备**：用 SQLite 在线备份 `VACUUM INTO` 把现役库打成一份完整单文件快照。WAL 模式下直接 `cp` 主文件会丢掉未 checkpoint 的数据（见 7.1 注释），`VACUUM INTO` 读的是已提交的一致快照，所以连 WAL 里还没落盘的那部分也一并带进快照。
+- **验**：打开快照跑 `PRAGMA integrity_check`（结构完整），并比对快照与现役库的**表数量**一致（防止备错了文件 / 备到某个空档期）。
+- **校验和**：打印快照的 SHA-256，方便异地拷贝后核对文件没被截断或损坏。
+
+用法：
+
+```bash
+# 默认备份 ./data/navihive.db，快照落同目录
+node scripts/backup-sqlite.mjs
+
+# 指定库与备份目录（推荐：备份与现役库分盘 / 异地）
+node scripts/backup-sqlite.mjs --db /srv/navihive/data/navihive.db --out /backup
+
+# 只报告「距上次本地快照 N 天」，不备份（适合塞进 cron 顺带自查）
+node scripts/backup-sqlite.mjs --check
+```
+
+路径解析优先级：`--db` > 环境变量 `DB_PATH` > 环境变量 `NAVIHIVE_DB` > 默认 `./data/navihive.db`（**与 `server/entry.ts` 的 `DB_FILE` 默认一致**）。所以默认库路径就是项目真实用的 `navihive.db`，不用改；若你改过 `NAVIHIVE_DB`，脚本也跟着认。
+
+备份文件名形如 `navihive-YYYY-MM-DD-HHMMSS.db`（时间戳精确到秒，不会覆盖上一份）。`VACUUM INTO` 要求目标文件不存在，脚本会先删掉同名目标再写。
+
+crontab 示例（每天 03:25，避开整点定时任务；日志留着，出问题要知道它跑没跑）：
+
+```cron
+# NaviHive 本地快照：每天 03:25，日志留着排查
+25 3 * * * cd /opt/navihive && /usr/bin/node scripts/backup-sqlite.mjs --out /backup >> /var/log/navihive-backup.log 2>&1
+```
+
+> ⚠️ **脚本只负责「产生快照」，不负责「保留策略」和「异地」**，这两件还要你自己加：
+> - 保留：每天一份会无限涨，`find /backup -name 'navihive-*.db' -mtime +30 -delete` 保留 30 天（按 7.1 的建议）。
+> - 异地：照 7.1 用 `rclone` / `rsync` 把 `/backup` 拷到另一台机器或对象存储 —— 本地快照只是兜底，盘坏了照样没。
+
+校验失败（integrity_check 非 `ok` / 表数量与现役不一致 / 现役库不存在）会以**非零退出码**结束，cron 里看日志或配 `MAILTO` 就能知道哪天备份坏了。
+
+**启动自检（DATA-10 配套）**：服务启动时（`server/entry.ts` 的启动回调，非阻塞，绝不拖慢启动）会顺手扫一眼备份目录，若「已有快照但最新一份超过阈值（默认 30 天，环境变量 `NAVIHIVE_BACKUP_WARN_DAYS` 可调）」就打一条 `⚠️ 距上次本地快照已 N 天` 的告警。没有快照文件 = 静默（操作者可能还没到备份这一步）。扫描目录默认是数据库所在目录（脚本默认也写这儿），可用 `NAVIHIVE_BACKUP_DIR` 指向你 `--out` 实际写备份的目录。
+
+依赖：`node:sqlite`（项目 `server/` 已经依赖，见 7.1 与 `server/sqlite-d1.ts`），Node 22.13+ 默认可用（更早的 22.5–22.12 需 `--experimental-sqlite`，也是 7.1 那句版本提示的原因）。Docker 容器内没有 `sqlite3` CLI，这个脚本正好补上。
+
+---
+
 ## 八、升级与回滚
 
 ### 8.1 升级：两条路
@@ -1169,3 +1213,18 @@ crontab -e
 
 > ⚠️ 别把 webhook 地址写进仓库：它是凭据（谁拿到谁就能往你的群里发消息）。
 > 跑在 crontab 里时直接写在那一行，或放进 `EnvironmentFile` 之类的地方。
+
+---
+
+## 十五、audit_log 保留预期（OPS-8）
+
+审计日志（`audit_log` 表，记录升级、登录越权尝试、关键配置变更等）在**服务端按 1 年窗口滚动清理**，由定时任务（与 `worker/cron.ts` 的 `runScheduledTasks` 同一条每小时调度，OPS-8 的服务端改动由另一 worker 负责）自动删除超过 1 年的行。
+
+给自托管运维的保留预期：
+
+- **审计记录不是无限留存**：任何早于约 1 年的审计行都会被服务端定期清掉。需要「出事往前查三年」的合规留存，这条形态满足不了 —— 得自己把 `audit_log` 另行导出归档（比如每月 `sqlite3` 导出一次落冷存储），别指望库里一直留着。
+- **清理是服务端行为，不可在环境变量里调阈值**：保留窗口是写死在服务端代码里的（1 年），不是像 `NAVIHIVE_CRON` 那样可配。要改长 / 改短属于代码改动，不是部署配置。
+- **对备份 / 恢复的影响**：清理发生在备份之前（是服务端定时任务，不是备份脚本）。所以**一份 1 年前的旧备份里也不会有 1 年前的审计行** —— 它们被清理时就已经不在库里了。恢复旧备份不会「复活」被清掉的审计历史，这部分数据是真的没了，属预期。
+- **库体积侧面含义**：有 1 年滚动清理兜底，自托管单库的 `audit_log` 不会无限膨胀；但**业务表**（`users` / `sites` / `notes` 等）没有自动清理，体积只增不减，备份文件随之增长 —— 这也是 7.4 那条「保留策略要自己加」的原因之一。
+
+> 想确认当前清理是否真在跑：看第七节的「启动自检」之外，最直接是查 `audit_log` 里最老的一行的 `created_at`（`SELECT MIN(created_at) FROM audit_log;`）。如果最老的行距离今天远小于 1 年，说明清理在正常工作；远超过 1 年则可能是那次 cron 没跑（回到 7.4 查定时任务）。

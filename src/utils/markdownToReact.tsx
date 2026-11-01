@@ -622,7 +622,7 @@ function renderLeaf(tok: Token, c: Cursor): ReactNode {
                 <mark
                     key={key}
                     style={{
-                        background: "rgba(250, 204, 21, 0.38)",
+                        background: "var(--md-highlight-bg, rgba(250, 204, 21, 0.38))",
                         color: "inherit",
                         borderRadius: 2,
                         padding: "0 2px",
@@ -1108,7 +1108,7 @@ const HEADING_BASE: React.CSSProperties = { fontWeight: 600, lineHeight: 1.35 };
 const P_STYLE: React.CSSProperties = { margin: `0 0 ${MD_GAP}` };
 
 const MARK_STYLE: React.CSSProperties = {
-    background: "rgba(250, 204, 21, 0.35)",
+    background: "var(--md-mark-bg, rgba(250, 204, 21, 0.35))",
     color: "inherit",
     padding: "0 2px",
 };
@@ -1146,23 +1146,23 @@ const LI_STYLE: React.CSSProperties = { margin: "2px 0" };
  * 同样的 rgba 就会顶破 16 那条线。
  */
 const NEUTRAL_CALLOUT = {
-    border: "rgba(128,128,128,0.6)",
-    bg: "rgba(128,128,128,0.08)",
+    border: "var(--callout-neutral-border, rgba(128,128,128,0.6))",
+    bg: "var(--callout-neutral-bg, rgba(128,128,128,0.08))",
     fg: "inherit",
     icon: "❝",
 };
 /** 内容块配色。深浅色都用半透明色，跟随主题走，不需要单独切 dark 模式。 */
 const CALLOUT_STYLE: Record<CalloutType, { border: string; bg: string; fg: string; icon: string }> = {
-    NOTE: { border: "#3b82f6", bg: "rgba(59,130,246,0.10)", fg: "inherit", icon: "ℹ" },
-    TIP: { border: "#10b981", bg: "rgba(16,185,129,0.10)", fg: "inherit", icon: "💡" },
-    IMPORTANT: { border: "#8b5cf6", bg: "rgba(139,92,246,0.10)", fg: "inherit", icon: "❗" },
-    WARNING: { border: "#f59e0b", bg: "rgba(245,158,11,0.12)", fg: "inherit", icon: "⚠" },
+    NOTE: { border: "var(--callout-note-border, #3b82f6)", bg: "var(--callout-note-bg, rgba(59,130,246,0.10))", fg: "inherit", icon: "ℹ" },
+    TIP: { border: "var(--callout-tip-border, #10b981)", bg: "var(--callout-tip-bg, rgba(16,185,129,0.10))", fg: "inherit", icon: "💡" },
+    IMPORTANT: { border: "var(--callout-important-border, #8b5cf6)", bg: "var(--callout-important-bg, rgba(139,92,246,0.10))", fg: "inherit", icon: "❗" },
+    WARNING: { border: "var(--callout-warning-border, #f59e0b)", bg: "var(--callout-warning-bg, rgba(245,158,11,0.12))", fg: "inherit", icon: "⚠" },
     QUOTE: NEUTRAL_CALLOUT,
     // COPY 不要左侧图标：右上角那颗按钮本身就是「这块能复制」的提示，
     // 再加个图标会和按钮抢注意力，也白占一列 10px 的 gap。
     COPY: { ...NEUTRAL_CALLOUT, icon: "" },
     // FOLD 走 <details> 分支，palette 不会被读到；放这里只为满足类型完整性
-    FOLD: { border: "rgba(128,128,128,0.6)", bg: "transparent", fg: "inherit", icon: "▸" },
+    FOLD: { border: "var(--callout-fold-border, rgba(128,128,128,0.6))", bg: "var(--callout-fold-bg, transparent)", fg: "inherit", icon: "▸" },
 };
 
 /** 块级标签：只有它们之间才补换行，`<strong>` 这类行内标签之间不能补 */

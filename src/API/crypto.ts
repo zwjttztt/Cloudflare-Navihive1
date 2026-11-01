@@ -43,6 +43,21 @@ export function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
     return diff === 0;
 }
 
+/**
+ * 常数时间**字符串**比较（UTF-8 字节级），用于存量明文密码的比对，防时序侧信道。
+ * 长度不同直接 false（长度不是秘密）；否则按 UTF-8 字节做常数时间比对。
+ * 与已哈希路径（constantTimeEqual 比派生字节）同一防御思路，只是这里比对的是
+ * 原始字符串的 UTF-8 编码。
+ *
+ * ⚠️ 这里**不能**用 node:crypto 的 timingSafeEqual：crypto.ts 会被打进 Worker 包，
+ * 而 Worker 运行时没有 nodejs_compat（wrangler.jsonc 只设了 compatibility_date），
+ * timingSafeEqual 在 Worker 里不可用；WebCrypto 也没有它。所以用现成的 XOR 累加
+ * constantTimeEqual 配 TextEncoder 实现，浏览器 / Worker / Node 三端通用、零依赖。
+ */
+export function constantTimeEqualString(a: string, b: string): boolean {
+    return constantTimeEqual(enc.encode(a), enc.encode(b));
+}
+
 // ---------------- JWT (HS256) ----------------
 const JWT_HEADER = { alg: "HS256", typ: "JWT" };
 
@@ -234,8 +249,8 @@ export async function hashPassword(password: string): Promise<string> {
 
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
     if (!stored || !isHashedPassword(stored)) {
-        // 升级前的存量明文：按明文比，命中后由登录流程顺手重哈希落库
-        return password === stored;
+        // 升级前的存量明文：按明文比（常数时间，防时序侧信道），命中后由登录流程顺手重哈希落库
+        return constantTimeEqualString(password, stored);
     }
     const parts = stored.slice(PWD_PREFIX.length).split("$");
     if (parts.length !== 3) return false;

@@ -10,7 +10,7 @@
 //
 // 只做编排：合并标签的纯计算在 utils/tagOps.ts 的 applyTagSuggestions（有单测）。
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AiAssistant } from "./useAiAssistant";
 import type { NotifySeverity } from "./useNotify";
 import type { NotifyAction } from "../context/NotifyContext";
@@ -34,6 +34,21 @@ export interface SemanticSearchDeps {
 
 /** 防抖时长：短了每个字都打一次模型，长了用户以为没反应 */
 export const SEMANTIC_DEBOUNCE_MS = 400;
+
+/** 语义搜索结果缓存上限：命中时移到末尾，超出则删最旧（LRU） */
+export const MAX_CACHE = 20;
+
+type SemanticCacheEntry = { hits: { id: number; score: number }[]; note: string };
+
+/** 把结果写进 LRU 缓存：命中优先（删了再 set 到末尾），超上限删最旧 */
+function lruSet(cache: Map<string, SemanticCacheEntry>, key: string, value: SemanticCacheEntry) {
+    if (cache.has(key)) cache.delete(key);
+    cache.set(key, value);
+    if (cache.size > MAX_CACHE) {
+        const oldest = cache.keys().next().value;
+        if (oldest !== undefined) cache.delete(oldest);
+    }
+}
 
 export function useSemanticSearch({
     ai,
@@ -70,6 +85,9 @@ export function useSemanticSearch({
     const [semanticNote, setSemanticNote] = useState("");
     const [semanticBusy, setSemanticBusy] = useState(false);
 
+    /** 语义搜索结果缓存（LRU，按 trim 后的查询词索引）；命中即跳过模型调用 */
+    const semanticCache = useRef(new Map<string, SemanticCacheEntry>());
+
     // 关掉开关就清空：不然会留着上一次的语义结果继续过滤列表，看着像搜索坏了
     useEffect(() => {
         if (!semanticSearch) {
@@ -83,6 +101,14 @@ export function useSemanticSearch({
         if (!semanticSearch || !ai.ready || !trimmedQuery) return;
         let cancelled = false;
         setSemanticBusy(true);
+        // 命中缓存直接返回，跳过模型调用（仍遵守上面的 gating）
+        const cached = semanticCache.current.get(trimmedQuery);
+        if (cached) {
+            setSemanticHits(cached.hits);
+            setSemanticNote(cached.note);
+            setSemanticBusy(false);
+            return;
+        }
         const timer = setTimeout(async () => {
             const res = await ai.search(trimmedQuery);
             if (cancelled) return;
@@ -92,8 +118,11 @@ export function useSemanticSearch({
                 setSemanticNote(res.message);
                 return;
             }
+            const note = res.data.length === 0 ? "语义上没找到很像的站点，下面是关键词结果" : "";
             setSemanticHits(res.data);
-            setSemanticNote(res.data.length === 0 ? "语义上没找到很像的站点，下面是关键词结果" : "");
+            setSemanticNote(note);
+            // 成功才写缓存：失败（!res.ok）不写，下次还会重试模型
+            lruSet(semanticCache.current, trimmedQuery, { hits: res.data, note });
         }, SEMANTIC_DEBOUNCE_MS);
         return () => {
             cancelled = true;

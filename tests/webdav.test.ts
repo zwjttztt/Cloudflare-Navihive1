@@ -219,6 +219,35 @@ test("目录里只有手动备份时，自动备份不删任何东西", () => {
     assert.deepEqual(selectAutoBackupsToPrune(files, "navihive-backup-auto-20260927-100000-000.json.gz"), []);
 });
 
+test("自动备份保留最近 3 份（MAX_AUTO_BACKUPS），超出份数的旧自动备份回删、手动备份不动", () => {
+    const keep = "navihive-backup-auto-20261001-100000-000.json.gz";
+    const files = [
+        { name: "navihive-backup-auto-20260920-100000-000.json.gz" }, // 最旧，应删
+        { name: "navihive-backup-auto-20260925-100000-000.json.gz" }, // 次旧，应删
+        { name: "navihive-backup-auto-20260928-100000-000.json.gz" }, // 保留（第 3 新）
+        { name: "navihive-backup-auto-20260930-100000-000.json.gz" }, // 保留（第 2 新）
+        { name: "navihive-backup-20260921-090000-000.json.gz" },      // 手动，保留
+        { name: "navihive-backup-20260922-090000-000.json.gz" },      // 手动，保留
+        { name: keep },                                              // 本次，保留（最新）
+    ];
+    // 第 4 个参数 3 = MAX_AUTO_BACKUPS：保留 keep + 2 份最新自动备份，其余自动备份删
+    const targets = selectAutoBackupsToPrune(files, keep, undefined, 3).sort();
+    assert.deepEqual(targets, [
+        "navihive-backup-auto-20260920-100000-000.json.gz",
+        "navihive-backup-auto-20260925-100000-000.json.gz",
+    ].sort());
+});
+
+test("retentionCount=3 时刚好 3 份自动备份则不删任何东西", () => {
+    const keep = "navihive-backup-auto-20260930-100000-000.json.gz";
+    const files = [
+        { name: "navihive-backup-auto-20260928-100000-000.json.gz" },
+        { name: "navihive-backup-auto-20260929-100000-000.json.gz" },
+        { name: keep },
+    ];
+    assert.deepEqual(selectAutoBackupsToPrune(files, keep, undefined, 3), []);
+});
+
 test("isAutoBackupFileName：只有 auto 前缀算自动备份", () => {
     assert.equal(isAutoBackupFileName("navihive-backup-auto-20260927-100000-000.json.gz"), true);
     assert.equal(isAutoBackupFileName("navihive-backup-20260927-100000-000.json.gz"), false);
