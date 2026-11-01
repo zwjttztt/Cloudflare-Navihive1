@@ -217,8 +217,9 @@ const backdate = async days => {
     );
 };
 
-// 自动备份只留最新一份（跑完就把上一份删了），所以**不能**用「网盘上有几个
-// auto 文件」判断跑没跑 —— 它永远是 1。数 PUT 次数才对。
+// 自动备份滚动保留最近 3 份（MAX_AUTO_BACKUPS，DATA-9），所以**不能**用
+// 「网盘上有几个 auto 文件」判断跑没跑 —— 它在到达保留线之前一直涨、之后又恒为 3。
+// 数 PUT 次数才对：每次真正跑过的备份必然产生一次新的 PUT。
 const autoPuts = () =>
     dav.requests.filter(r => r.startsWith("PUT") && r.includes("navihive-backup-auto-"));
 const autoFiles = () => [...dav.files.keys()].filter(n => n.startsWith("navihive-backup-auto-"));
@@ -242,7 +243,7 @@ check(
 
 const lastAuto = await call("configs/webdav.lastAutoBackup");
 check(
-    "库里记下了这次自动备份的文件名（下次清理靠它）",
+    "库里记下了这次自动备份的文件名（界面「上次备份」展示用）",
     lastAuto.json?.value === firstName || lastAuto.json?.data?.value === firstName,
     `实际 ${JSON.stringify(lastAuto.json)?.slice(0, 120)}`
 );
@@ -290,11 +291,13 @@ check(
     autoFiles().join(" | ")
 );
 
-const deletes = dav.requests.filter(r => r.startsWith("DELETE"));
+// DATA-9：自动备份滚动保留 3 份。现在只有 2 份，谁都不该被删 ——
+// 旧语义（只留最新一份）在这里就会删掉 firstName，新语义要等第 4 份才动它。
+const deletesAfterSecond = dav.requests.filter(r => r.startsWith("DELETE"));
 check(
-    "补备份后把上一份自动备份删掉了（自动备份只留最新一份）",
-    deletes.some(r => r.includes(firstName)),
-    `DELETE 记录：${deletes.join(" | ") || "（没有 DELETE）"}`
+    "只有 2 份自动备份（未到保留线 3）时谁都不删",
+    deletesAfterSecond.length === 0,
+    `DELETE 记录：${deletesAfterSecond.join(" | ") || "（没有 DELETE，符合预期）"}`
 );
 
 // ---------------- 关键：手动备份不能被定时任务清掉 ----------------
@@ -320,14 +323,19 @@ check(
     !dav.requests.some(r => r.startsWith("DELETE") && r.includes(manualName)),
     dav.requests.filter(r => r.startsWith("DELETE")).join(" | ")
 );
+const deletesAfterThird = dav.requests.filter(r => r.startsWith("DELETE"));
+check(
+    "刚好 3 份自动备份（到达保留线）也一个不删",
+    deletesAfterThird.length === 0,
+    `DELETE 记录：${deletesAfterThird.join(" | ") || "（没有 DELETE，符合预期）"}`
+);
 
-// ---------------- 兜底清理分支：按文件名判来源的那条路 ----------------
+// ---------------- 第四份备份：跨过保留线，滚动清理真的动手 ----------------
 //
-// pruneAutoBackups 有两条路：
-//   - 库里有 webdav.lastAutoBackup 记录 → 直接删那一份（快路径，**不做文件名判断**）；
-//   - 没记录（老库升级 / 记录被清过）→ 列目录，靠 isAutoBackupFileName 挑。
-// 上面几次真备份全走的快路径，也就是说「手动备份不会被删」这条规则真正生效的
-// 那段代码一次都没跑到 —— 把记录清掉再触发一次，才是这条规则的真覆盖。
+// pruneAutoBackups（DATA-9 起）统一走「列目录 → 按保留份数回删」：清理只认
+// 文件名前缀（isAutoBackupFileName），不依赖库里的 webdav.lastAutoBackup 记录。
+// 把记录清掉再触发一次，验证的正是「记录丢了清理照样工作」：删记录同时把
+// 手动备份铁律的生效条件也摆到最真实的状态下。
 // 用 DELETE 而不是 PUT 空串：PUT 会被 validateConfig 按「配置值不能为空」挡下（400），
 // 只有真删掉记录，stored["webdav.lastAutoBackup"] 才会是 undefined。
 const cleared = await call("configs/webdav.lastAutoBackup", "DELETE");
@@ -350,8 +358,19 @@ check(
     dav.requests.slice(lastPutAt).join(" | ") || "（上传后没有任何请求）"
 );
 
+// 现在 4 份自动备份超出保留线 3：最老的 firstName（第一份）该在这里被回删。
 check(
-    "兜底清理分支也不会删手动备份（按文件名判来源的那条路）",
+    "第 4 份上传后把超出保留线的最老一份删掉了（滚动保留 3 份）",
+    dav.requests.some(r => r.startsWith("DELETE") && r.includes(firstName)),
+    `DELETE 记录：${dav.requests.filter(r => r.startsWith("DELETE")).join(" | ") || "（没有 DELETE）"}`
+);
+check(
+    "清理后网盘上自动备份刚好剩 3 份",
+    autoFiles().length === 3,
+    `当前 auto 文件：${autoFiles().join(" | ")}`
+);
+check(
+    "清理分支也不会删手动备份（按文件名判来源的那条路）",
     dav.files.has(manualName),
     `网盘上现在有：${[...dav.files.keys()].join(" | ")}`
 );
