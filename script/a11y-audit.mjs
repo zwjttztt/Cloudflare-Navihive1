@@ -26,7 +26,7 @@
 //
 // 用法：npm run audit:a11y（需要先 npm run build；CHROME_PATH 可指定浏览器）
 
-import { DIST, ROOT, openBrowser, setAttachmentMode, startSiteServer, waitRendered } from "./auditEnv.mjs";
+import { CONTRAST_CORE, DIST, ROOT, openBrowser, setAttachmentMode, startSiteServer, waitRendered } from "./auditEnv.mjs";
 import fs from "node:fs";
 
 if (!fs.existsSync(DIST)) {
@@ -186,11 +186,37 @@ const SCAN_IMAGES = `(async () => {
 })()`;
 
 /** 量当前焦点元素有没有可见的焦点指示（输入框认聚焦边框，见下面的说明） */
-const SCAN_FOCUS = `(() => {
+const SCAN_FOCUS = `(() => {${CONTRAST_CORE}
   const el = document.activeElement;
   if (!el || el === document.body) return null;
   const s = getComputedStyle(el);
   const outlineVisible = s.outlineStyle !== 'none' && parseFloat(s.outlineWidth || '0') > 0;
+
+  /**
+   * 焦点环的**对比度**（2026-11-01 补的洞）。
+   *
+   * 以前这一节只判「有没有环」—— 有 2px 的环就算过。可 WCAG 1.4.11 要的是
+   * 非文本对比 ≥ 3:1：一圈几乎与底色同色的细环，在键盘用户眼里等于没有。
+   * 「有环」和「环看得见」是两件事，前者绿灯不代表后者。
+   *
+   * 量法：环的颜色按它自己的 alpha 混到**身后那层底**上，再与底色比比值。
+   * 半透明环（rgba 主色 40% 之类）必须混算，否则会当纯色算出虚高的比值。
+   */
+  const ringOf = raw => {
+    const bg = NH.bgBehind(el.parentElement || el);
+    const rgb = NH.parse(raw || '');
+    if (!rgb) return null;
+    const a = NH.alphaOf(raw);
+    const on = rgb.map((v, k) => v * a + bg[k] * (1 - a));
+    return {
+      color: raw,
+      alpha: +a.toFixed(2),
+      bg: 'rgb(' + bg.map(Math.round).join(',') + ')',
+      ratio: +NH.ratio(on, bg).toFixed(2),
+      need: 3,
+    };
+  };
+
   // 输入框是例外：项目刻意不给它补外圈 outline（会与 MUI 的聚焦边框叠成
   // 双红圈，见 useThemeController 的 MuiInputBase 注释），焦点指示是
   // 「边框 1px 灰 → 2px 主色」。所以这里认 .Mui-focused + fieldset 加粗，
@@ -208,6 +234,8 @@ const SCAN_FOCUS = `(() => {
       outlineWidth: s.outlineWidth, outlineStyle: s.outlineStyle,
       boxShadow: 'none',
       visible: true, via,
+      // 聚焦边框本身就是那圈指示，颜色取 fieldset 的边框色
+      ring: via === 'focus-border' && fs ? ringOf(getComputedStyle(fs).borderTopColor) : null,
     };
   }
   return {
@@ -216,6 +244,10 @@ const SCAN_FOCUS = `(() => {
     outlineWidth: s.outlineWidth, outlineStyle: s.outlineStyle,
     boxShadow: s.boxShadow === 'none' ? 'none' : 'has',
     visible: outlineVisible || s.boxShadow !== 'none', via,
+    ring: outlineVisible
+      ? ringOf(s.outlineColor)
+      // box-shadow 里的颜色：写明了就取那一个，没写明就是 currentColor
+      : (s.boxShadow !== 'none' ? ringOf((s.boxShadow.match(/rgba?\\([^)]*\\)|color\\([^)]*\\)/) || [s.color])[0]) : null),
   };
 })()`;
 
@@ -942,6 +974,22 @@ const noRing = focusVis.filter(f => !f.visible);
 if (noRing.length > 0) {
     failures.push(`焦点环不可见 ${noRing.length} 个：${noRing.slice(0, 3).map(f => `${f.tag}「${f.label}」`).join(" / ")}`);
 }
+/**
+ * 焦点环的**对比度**（2026-11-01）：有环 ≠ 环看得见。
+ *
+ * WCAG 1.4.11 要求非文本指示与相邻色 ≥ 3:1。以前只判「有没有环」，
+ * 一圈与底色几乎同色的细环一直是绿的 —— 对键盘用户等于没有。
+ * `ring: null` 的只有「由子元素承担指示」（child-indicator）那一类：
+ * 那种指示是尺寸/描边变化，取不到单一「环色」，量不了；它已经有
+ * `visible` 这条判据兜着，不算漏。
+ */
+const dimRing = focusVis.filter(f => f.ring && typeof f.ring.ratio === "number" && f.ring.ratio < f.ring.need);
+if (dimRing.length > 0) {
+    failures.push(
+        `焦点环对比不足 3:1 的 ${dimRing.length} 个：` +
+            dimRing.slice(0, 3).map(f => `${f.tag}「${f.label}」${f.ring.ratio}:1`).join(" / ")
+    );
+}
 
 // 弹窗（命令面板）：可访问名 / aria-modal / 内部控件 / 焦点陷阱 / 焦点归位
 if (!dialog.ariaModal) failures.push("弹窗：缺 aria-modal=\"true\"");
@@ -964,6 +1012,14 @@ const notesNoRing = notesFocus.filter(f => !f.visible);
 if (notesNoRing.length > 0) {
     failures.push(
         `记事本：焦点环不可见 ${notesNoRing.length} 个：${notesNoRing.slice(0, 3).map(f => `${f.tag}「${f.label}」`).join(" / ")}`
+    );
+}
+// 记事本：焦点环对比度，与首页同一把尺子（3:1，WCAG 1.4.11）
+const notesDimRing = notesFocus.filter(f => f.ring && typeof f.ring.ratio === "number" && f.ring.ratio < f.ring.need);
+if (notesDimRing.length > 0) {
+    failures.push(
+        `记事本：焦点环对比不足 3:1 的 ${notesDimRing.length} 个：` +
+            notesDimRing.slice(0, 3).map(f => `${f.tag}「${f.label}」${f.ring.ratio}:1`).join(" / ")
     );
 }
 

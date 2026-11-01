@@ -6,16 +6,19 @@
 // 背景色不是简单取父元素：玻璃拟态用了 rgba 半透明层，得把每一层按 alpha
 // 依次混上去，否则量出来的对比度是假的。
 //
-// 覆盖面（每段都亮 / 暗各扫一遍）：首页 → 记事本（**即时渲染 / 源码态各一遍**）
-// → **记事本·附件抽屉** → 设置中心。
+// 覆盖面（每段都亮 / 暗各扫一遍）：首页（**静态 + 悬停态**）→ 记事本
+// （**即时渲染 / 源码态各一遍**）→ **记事本·附件抽屉**（常态 / 空态 / 失败 / 无命中）
+// → 设置中心。
 //
-// 2026-11-01 补的两处盲区（同一个病根：缺陷没被审计发现，不是因为界面没问题，
+// 2026-11-01 补的三处盲区（同一个病根：缺陷没被审计发现，不是因为界面没问题，
 // 而是审计**没走到那个界面态**）：
 //   · 记事本原来只扫一遍，而编辑器**先以源码态挂载、useEffect 之后才装即时渲染**，
 //     存在一个源码窗口：快机器扫到预览态（绿）、CI 落进源码窗口（红，暗色下
 //     `#`/`-` 标记 1.55:1）。现在两态各自确定性切换 + 各自扫描，谁都不靠运气。
 //   · 附件抽屉（AttachmentManager）从来不在扫描面上，所以它顶栏分段控件
 //     「--accent 压 --accent-wash」的 4.04:1 绿了很久。现在它是独立一段。
+//   · **悬停态**：静态那一帧量不到 `:hover` 才生效的颜色，也量不到「悬停才浮现」
+//     的控件（它们平时 opacity:0，会被整组跳过）。现在用 CDP 真发鼠标移动补上。
 //
 // 设置中心是 2026-10-31 加的第 3 段：它的左栏是「选中态淡强调底 + 强调色字」，
 // 这一对在亮色下曾只到 4.04:1（AA 要 4.5），前两段一直没扫过它，那条不达标在
@@ -31,7 +34,7 @@
 
 import fs from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
-import { DIST, openBrowser, setAttachmentMode, startSiteServer, waitRendered } from "./auditEnv.mjs";
+import { CONTRAST_CORE, DIST, openBrowser, setAttachmentMode, startSiteServer, waitRendered } from "./auditEnv.mjs";
 
 if (!fs.existsSync(DIST)) {
     console.error(`找不到 ${DIST}，先跑 npm run build`);
@@ -43,7 +46,7 @@ const SITE_PORT = Number(process.env.AUDIT_SITE_PORT || 0);
 const CDP_PORT = Number(process.env.AUDIT_CDP_PORT || 9517);
 
 const site = await startSiteServer(SITE_PORT);
-const { evaluate, done, chromePath, getErrors } = await openBrowser({ cdpPort: CDP_PORT });
+const { evaluate, done, chromePath, getErrors, send } = await openBrowser({ cdpPort: CDP_PORT });
 
 // 同为线性脚本的兜底：中途抛错时不处理就会留下孤儿 Chrome（见 a11y-audit 同款注释）
 const bail = err => {
@@ -80,132 +83,15 @@ if (pageErrors.length) {
     done(1);
 }
 
-const SCAN = `(() => {
-  // ⚠️ color-mix() 的背景色（如 --accent-wash = color-mix(主色 10%, transparent)）会被
-  //    Chrome 序列化成 \`color(srgb 0.098 0.4627 0.8235 / 0.1)\` —— 分量是 **0~1 的浮点**。
-  //    照 rgb() 那样当 0~255 解析，等于把一层 10% 的淡蓝当成「接近纯黑」，
-  //    合成出来的底色会假性变暗、比值假性变低（实测同一条文字会从 4.04 报成 3.67）。
-  const parse = c => {
-    const m = c.match(/-?[\\d.]+/g);
-    if (!m) return null;
-    const nums = m.map(Number);
-    const rgb = nums.slice(0, 3);
-    const isColorFn = /^color\\(/.test(c.trim());
-    return isColorFn && rgb.every(v => v <= 1) ? rgb.map(v => Math.round(v * 255)) : rgb;
-  };
-  const alphaOf = c => { const m = c.match(/-?[\\d.]+/g); return m && m.length > 3 ? Number(m[3]) : 1; };
-  const lin = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
-  const lum = ([r, g, b]) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
-
-  // 往上找背景色，从 startEl（含）开始，遇到第一个「够不透明」的层就停，半透明层依次混进来
-  const bgBehind = startEl => {
-    let n = startEl, layers = [];
-    while (n && n !== document.documentElement) {
-      const c = getComputedStyle(n).backgroundColor;
-      const p = parse(c);
-      if (p && alphaOf(c) > 0) {
-        layers.push({ rgb: p, a: alphaOf(c) });
-        if (alphaOf(c) >= 0.999) break;
-      }
-      n = n.parentElement;
-    }
-    let base = [255, 255, 255];
-    for (let i = layers.length - 1; i >= 0; i--) {
-      const { rgb, a } = layers[i];
-      base = base.map((v, k) => rgb[k] * a + v * (1 - a));
-    }
-    return base;
-  };
-
-  // ⚠️ opacity 是**分组**属性：它把「整个元素（连同它的底色和子内容）」当作一张图，
-  //    一次性混到身后的底上。所以要看**祖先链的累乘**，不能只看自己那一个数 ——
-  //    外层 wrapper 设成 0.6 的话，里面 opacity:1 的文字一样只有 60% 可见。
-  //    每个元素都要查祖先链，逐个 getComputedStyle 会退化成 O(n·depth)：先扫一遍建表。
-  const opMap = new Map();
-  for (const n of document.querySelectorAll('body, body *')) {
-    const o = Number(getComputedStyle(n).opacity);
-    if (o < 0.999) opMap.set(n, o);
-  }
-  const groupAlpha = el => {
-    let a = 1, n = el;
-    while (n && n.nodeType === 1) {
-      const o = opMap.get(n);
-      if (o !== undefined) a *= o;
-      if (a <= 0.02) return a;
-      n = n.parentElement;
-    }
-    return a;
-  };
-
-  const ratio = (fg, bg) => {
-    const L1 = lum(fg), L2 = lum(bg);
-    return (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05);
-  };
-
+const SCAN = `(() => {${CONTRAST_CORE}
+  // 数学部分在 auditEnv.mjs 的 CONTRAST_CORE 里（悬停/焦点扫描共用同一份，
+  // 不复制 —— 两份数学迟早会漂开）。这里只负责「遍历 + 判定 + 去重」。
+  NH.refresh();
   const out = [];
   for (const el of document.querySelectorAll('body *')) {
-    // 只统计直接承载文字的元素
-    const text = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent.trim()).join('');
-    if (!text) continue;
-    const s = getComputedStyle(el);
-    if (s.visibility === 'hidden' || s.display === 'none' || Number(s.opacity) < 0.5) continue;
-    // 停用的控件豁免：WCAG 1.4.3 明确不要求「inactive UI component」的文字达标。
-    // 实测设置中心「清除访问记录」用的是 MUI 的 text.disabled（rgba(0,0,0,.26)），
-    // 压白 1.88:1 —— 这是**规范允许的**，不是缺陷。不豁免的话全站每颗禁用按钮
-    // 都会变成一条红，把真正的问题淹掉。
-    if (el.closest('[disabled], .Mui-disabled, [aria-disabled="true"]')) continue;
-    // 整组已经淡到看不见（悬停才出现的工具条，恒为 opacity 0；退出后仍留着的浮层）：
-    // 看不见的东西没有「对比度」可言，跳过。以前只判自己那一个 opacity，
-    // 这类元素的文字被当成完全不透明量过 —— 绿得没有意义。
-    const A = groupAlpha(el);
-    if (A <= 0.02) continue;
-    const r = el.getBoundingClientRect();
-    if (r.width < 2 || r.height < 2) continue;
-    const fgRaw = parse(s.color);
-    if (!fgRaw) continue;
-
-    // ---- 背景要分两层算：自己画出的那层、身后的那层 ----
-    // 元素带 opacity 时，「自己画的底」也被一起淡化。只算最终底色会把这个效果算丢
-    // （文字和底色一起变淡、彼此对比度反而掉下来，这条正是最容易被漏掉的那类）。
-    const ownC = s.backgroundColor;
-    const ownRgb = parse(ownC);
-    const ownA = ownRgb ? alphaOf(ownC) : 0;
-    const behind = bgBehind(el.parentElement);
-    const bgPainted =
-      !ownRgb || ownA <= 0 ? behind : ownRgb.map((v, k) => v * ownA + behind[k] * (1 - ownA));
-
-    // ⚠️ 前景色**自身也可能带 alpha**（text.disabled 就是 rgba(0,0,0,.38)）。
-    //    以前这里只取 RGB，等于把它当纯黑：实测 2.66:1 被报成 **19.89:1**，
-    //    于是「全站所有半透明文字只要不达 AA 就一律报绿」—— 比任何一处具体缺陷都更危险。
-    //    前景必须先按算好的 bg 混一遍 alpha，再拿去算比值。
-    const fgA = alphaOf(s.color);
-    const fgPainted =
-      fgA >= 0.999 ? fgRaw : fgRaw.map((v, k) => v * fgA + bgPainted[k] * (1 - fgA));
-
-    // 最后把「整组」按 opacity 混到身后的底上：文字和底色一起淡。
-    // A ≈ 1 时这一步是恒等变换，既有输出逐字节不变。
-    const mixDown = c => (A >= 0.999 ? c : c.map((v, k) => v * A + behind[k] * (1 - A)));
-    const fg = mixDown(fgPainted);
-    const bg = mixDown(bgPainted);
-
-    const size = parseFloat(s.fontSize);
-    const bold = Number(s.fontWeight) >= 700;
-    const large = size >= 24 || (size >= 18.66 && bold);
-    const need = large ? 3 : 4.5;
-    const cr = ratio(fg, bg);
-    if (cr < need) {
-      out.push({
-        cls: el.className.toString().slice(0, 46),
-        text: text.slice(0, 18),
-        color: s.color,
-        fontSize: size,
-        bg: 'rgb(' + bg.map(Math.round).join(',') + ')',
-        ratio: +cr.toFixed(2),
-        need,
-        // 只有真的被淡化时才打出这个字段：其余行的输出保持不变
-        ...(A < 0.999 ? { opacity: +A.toFixed(2) } : {}),
-      });
-    }
+    const rec = NH.measure(el);
+    // 判据用 rec.ratio（两位小数、已 toFixed）—— 与打印出去的是同一个数
+    if (rec && rec.ratio < rec.need) out.push(rec);
   }
   // 去重：同类问题只留一条样本
   const seen = new Set(), uniq = [];
@@ -562,6 +448,124 @@ async function closeAttachmentsAndWait() {
 }
 
 /**
+ * 悬停态扫描（2026-11-01 补的第三个盲区）。
+ *
+ * 病根和前面两个一样，只是更隐蔽：**`SCAN` 只量「静态那一帧」**。而首页上大量文字的
+ * 最终颜色是 `:hover` 才生效的 —— 卡片标题悬停转强调色、列表行悬停加深底色、
+ * 顶栏按钮悬停换前景色。这些颜色从来没被任何审计看过一眼，因为它们只在指针压上去
+ * 的那一刻存在。
+ *
+ * 更有甚者：`nav-group-tools` 这类「悬停才出现的工具条」平时恒为 `opacity: 0`，
+ * 加了 opacity 混算之后会被 `A <= 0.02` 直接跳过 —— 跳过是对的（看不见的东西没有
+ * 对比度可言），但也意味着**它们至今一次都没被量过**。悬停之后就看得见了，正好补上。
+ *
+ * ⚠️ 必须用 CDP 真发 `Input.dispatchMouseEvent`，不能拿 JS 派发合成事件：
+ *    `new MouseEvent('mouseover')` 不会让浏览器更新 `:hover`，`getComputedStyle`
+ *    拿到的还是未悬停的值 —— 量了等于没量，而且是「看起来很努力」的那种没量。
+ */
+const HOVER_TARGETS = `(() => {
+  const sel = 'a[href], button:not([disabled]), [role="button"], [role="menuitem"], [role="tab"], [tabindex="0"], .MuiChip-root';
+  const seen = new Set(), out = [];
+  for (const el of document.querySelectorAll(sel)) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) continue;
+    // 只取完整落在视口里的：出界的元素鼠标压不到，:hover 不会生效
+    if (r.top < 4 || r.left < 4 || r.bottom > innerHeight - 4 || r.right > innerWidth - 4) continue;
+    const s = getComputedStyle(el);
+    if (s.visibility === 'hidden' || s.display === 'none' || Number(s.opacity) < 0.3) continue;
+    const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+    // 同一个坐标只压一次（卡片里套按钮、按钮里套图标，中心点往往是重合的）
+    const k = x + ',' + y;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ x, y, label: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 14) });
+  }
+  return out;
+})()`;
+
+/**
+ * 量「鼠标当前压着的这块」。只量悬停链 + 最深那个元素的后代：
+ * 悬停链上是样式变化的元素，后代里是「悬停才浮现」的那些。
+ */
+const MEASURE_HOVER = `(() => {${CONTRAST_CORE}
+  NH.refresh();
+  const chain = [...document.querySelectorAll('body *')].filter(el => el.matches(':hover'));
+  if (!chain.length) return { total: -1, unique: [] };
+  // 最深的一个 = 鼠标真正压着的元素（其余都是它的祖先）
+  const deep = chain.find(el => !chain.some(o => o !== el && el.contains(o))) || chain[chain.length - 1];
+  const pool = new Set([...chain, ...deep.querySelectorAll('*')]);
+  const out = [];
+  for (const el of pool) {
+    const rec = NH.measure(el);
+    if (rec && rec.ratio < rec.need) out.push(rec);
+  }
+  const seen = new Set(), uniq = [];
+  for (const o of out) {
+    const k = o.cls + o.color + o.fontSize;
+    if (seen.has(k)) continue;
+    seen.add(k); uniq.push(o);
+  }
+  return { total: out.length, unique: uniq.slice(0, 14) };
+})()`;
+
+/** 把指针挪到不会碰到任何控件的地方，让 `:hover` 彻底失效 */
+const PARK_MOUSE = { x: 1, y: 1 };
+
+async function parkMouse() {
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: PARK_MOUSE.x, y: PARK_MOUSE.y, button: "none" });
+    await sleep(200);
+}
+
+/**
+ * 扫一遍悬停态。
+ *
+ * 每个目标：移过去 → **等过渡跑完** → 量。等待用固定的 320ms 而不是
+ * `waitAnimationsSettled()`：后者只认「会改 opacity」的动画，而悬停改的多半是
+ * color / background-color（那些过渡它一条都不会等）；同时 320ms 也盖住了
+ * 「悬停才浮现」的 opacity 过渡（项目里最长的是 220ms）。
+ * 量早了会把中间帧当成终值 —— 24.4.0 那轮就是被半截动画喂出 24 条假红。
+ */
+async function scanHover(label) {
+    const targets = await evaluate(HOVER_TARGETS);
+    if (!Array.isArray(targets) || targets.length === 0) {
+        throw new Error(`首页找不到任何可悬停目标（${targets?.length ?? targets}）—— 选择器漂了，悬停态没测到`);
+    }
+    let total = 0;
+    const seenKeys = new Set();
+    const samples = [];
+    for (const t of targets) {
+        await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: t.x, y: t.y, button: "none" });
+        await sleep(320);
+        const res = await evaluate(MEASURE_HOVER);
+        // -1 = 鼠标下面一个 `:hover` 都没有：坐标算错了，不能当成「0 处」
+        if (res.total < 0) {
+            throw new Error(
+                `移到「${t.label}」(${t.x},${t.y}) 之后没有任何元素处于 :hover —— ` +
+                    "坐标或视口不对，悬停态没测到"
+            );
+        }
+        total += res.total;
+        for (const u of res.unique) {
+            const k = u.cls + u.color + u.fontSize;
+            if (seenKeys.has(k)) continue;
+            seenKeys.add(k);
+            samples.push({ ...u, via: t.label });
+        }
+    }
+    await parkMouse();
+    console.log(
+        `=== ${label}·悬停态（${targets.length} 个目标）：不合格 ${total} 处（去重后前 ${Math.min(samples.length, 14)} 条）===`
+    );
+    for (const u of samples.slice(0, 14)) {
+        console.log(
+            `  ${String(u.ratio).padStart(5)} / 需 ${u.need}  ${String(u.fontSize).padStart(4)}px  ` +
+                `${u.color} on ${u.bg}  「${u.text}」  ${u.cls}  ← 悬停「${u.via}」`
+        );
+    }
+    return total;
+}
+
+/**
  * 附件抽屉对比度的预算：**0**，与 `NOTES_CONTRAST_BUDGET` 同一个口吻。
  *
  * 抽屉在 24.0.0 之前从没被这个脚本量过：顶栏分段控件「--accent 压 --accent-wash」
@@ -636,6 +640,7 @@ async function assertSameTheme(expected, where) {
 }
 
 let failed = 0;
+let hoverFailed = 0;
 let notesFailed = 0;
 let attachmentsFailed = 0;
 let centerFailed = 0;
@@ -668,6 +673,13 @@ for (const label of ["亮色", "暗色"]) {
     const res = await evaluate(SCAN);
     failed += res.total;
     report(label, res);
+
+    // ---------- 悬停态（2026-11-01 加）----------
+    //
+    // 上一步量的是「静态那一帧」。首页上大量文字的终色是 :hover 才生效的
+    // （卡片标题转强调色、行底色加深、按钮换前景色），这些颜色至今没被量过。
+    // 详情见 scanHover / HOVER_TARGETS 上的注释。
+    hoverFailed += await scanHover(label);
 
     // 本轮的主题背景色，后面每次重载/换界面都要拿它核对一遍（见下面的主题漂移断言）
     const roundBg = await evaluate(`getComputedStyle(document.body).backgroundColor`);
@@ -726,6 +738,38 @@ for (const label of ["亮色", "暗色"]) {
     attachmentsFailed += attError.total;
     report(`${label}·附件抽屉·拉取失败`, attError);
     await closeAttachmentsAndWait();
+
+    // 无命中态（「没有符合筛选的附件。」）：列表**非空**、但某一档筛不出东西。
+    // 它和空态是两个分支（`files.length === 0` 与 `filtered.length === 0`），
+    // 各自写了一遍 sx —— 前面两态改完才敢说「这两行都对了」，所以也要量。
+    await setAttachmentMode("images");
+    await openAttachmentsAndWait();
+    const picked = await evaluate(`(() => {
+        const b = document.querySelector('[data-att-filter-option="document"]');
+        if (!b) return 'no-option';
+        b.click();
+        return 'clicked';
+    })()`);
+    if (picked !== "clicked") {
+        throw new Error(`附件抽屉里找不到「文档」筛选档（${picked}）—— 无命中态没测到`);
+    }
+    {
+        const deadline = Date.now() + 10_000;
+        let hit = 0;
+        while (Date.now() < deadline) {
+            hit = await evaluate(`document.querySelectorAll('[data-att-state="none-match"]').length`);
+            if (hit > 0) break;
+            await sleep(150);
+        }
+        if (hit === 0) {
+            throw new Error("点了「文档」筛选但 10 秒内没出现无命中态 —— 这一态没测到");
+        }
+    }
+    await waitAnimationsSettled();
+    const attNone = await evaluate(SCAN);
+    attachmentsFailed += attNone.total;
+    report(`${label}·附件抽屉·无命中`, attNone);
+    await closeAttachmentsAndWait();
     // 复原：后面的段落（设置中心）不该被这个桩态影响
     await setAttachmentMode("rows");
 
@@ -757,6 +801,15 @@ if (failed > 0) {
     site.close();
     done(1);
 }
+// 悬停态：没有预算。只在指针压上去那一刻才存在的颜色，此前一处都没量过。
+if (hoverFailed > 0) {
+    console.error(
+        `对比度审计失败：首页悬停态（亮/暗两态）共 ${hoverFailed} 处不达 WCAG AA —— ` +
+            "这些颜色只在鼠标压上去的那一帧存在，静态扫描永远看不到"
+    );
+    site.close();
+    done(1);
+}
 // 记事本：存量预算内放行，但明细已经打印在上面（见 NOTES_CONTRAST_BUDGET 的说明）
 if (notesFailed > NOTES_CONTRAST_BUDGET) {
     console.error(
@@ -783,8 +836,8 @@ if (centerFailed > 0) {
     done(1);
 }
 console.log(
-    "\n对比度审计通过（首页 / 记事本·即时渲染 / 记事本·源码态 / 记事本·附件抽屉（常态·空态·拉取失败）/ " +
-        "设置中心，亮暗两态各 0 处不合格）"
+    "\n对比度审计通过（首页（含悬停态）/ 记事本·即时渲染 / 记事本·源码态 / " +
+        "记事本·附件抽屉（常态·空态·失败·无命中）/ 设置中心，亮暗两态各 0 处不合格）"
 );
 site.close();
 done(0);

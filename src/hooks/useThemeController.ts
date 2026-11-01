@@ -176,6 +176,23 @@ export function useThemeController(accent: string) {
                                     paddingInline: 12,
                                 },
                             },
+                            // 悬停态的文字色（2026-11-01）。
+                            //
+                            // MUI 给 text / outlined 按钮的悬停态压一层 4% 强调色淡底，
+                            // 而 `--accent`(#1976d2) 压纯白本来就只有 **4.61:1** ——
+                            // 只比小字线 4.5 高 0.11，这层淡底直接把它压到 **4.37:1**，
+                            // 低于 AA。这不是某一颗按钮写错了，是这套配色的固有属性：
+                            // 顶栏「记事本」「菜单」两颗 outlined 按钮全中。
+                            //
+                            // 修法：悬停时把文字按当前色再压暗一点（88% + 黑 → 约 5.4:1）。
+                            // ⚠️ 用 currentColor 派生，**不能**写死 `--accent-on-wash`：
+                            //    `--accent` 会被记事本根节点换成用户自选强调色（NotesPageShell
+                            //    注入 `--accent: var(--notes-accent)`），写死令牌等于把按钮
+                            //    悬停色钉在蓝色上，换主题就花。currentColor 自动跟着走。
+                            // ⚠️ 只挂 text / outlined，**不要挂 root**：contained 是「实强调底 +
+                            //    白字」，把白字压暗 12% 后压在 --accent 上只有 3.5:1，反而制造缺陷。
+                            text: { "&:hover": { color: "color-mix(in srgb, currentColor 88%, black)" } },
+                            outlined: { "&:hover": { color: "color-mix(in srgb, currentColor 88%, black)" } },
                         },
                     },
                     MuiIconButton: {

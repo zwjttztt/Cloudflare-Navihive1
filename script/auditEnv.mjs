@@ -232,7 +232,7 @@ const ATTACHMENT_ROWS = [
  */
 let attachmentMode = "rows";
 export function setAttachmentMode(mode) {
-    if (!["rows", "empty", "error"].includes(mode)) {
+    if (!["rows", "empty", "error", "images"].includes(mode)) {
         throw new Error(`未知的附件桩态：${mode}`);
     }
     attachmentMode = mode;
@@ -338,7 +338,11 @@ export async function startSiteServer(port = 0) {
                     res.end(JSON.stringify({ success: false, message: "附件列表读取失败（审计桩）" }));
                     return;
                 }
-                res.end(JSON.stringify(attachmentMode === "empty" ? [] : ATTACHMENT_ROWS));
+                // `images`：只给图片那一条 —— 用来制造抽屉的 `none-match` 态
+                // （files 非空、filtered 为空），那条分支靠「点文档筛选」才走得到。
+                const rows =
+                    attachmentMode === "empty" ? [] : attachmentMode === "images" ? ATTACHMENT_ROWS.slice(0, 1) : ATTACHMENT_ROWS;
+                res.end(JSON.stringify(rows));
                 return;
             }
             if (pathname === "/api/notes") {
@@ -592,3 +596,167 @@ export async function waitRendered(evaluate, { minButtons = 25, timeoutMs = 30_0
     }
     throw new Error(`页面在 ${timeoutMs}ms 内没渲染出 ${minButtons} 个按钮（骨架态？）`);
 }
+
+/**
+ * 对比度测量的**核心**（页面内执行的一段代码，注入到扫描脚本里）。
+ *
+ * 为什么下沉到这里（2026-11-01）：原来这段数学内联在 `contrast-audit.mjs` 的 `SCAN`
+ * 里，只能整页扫一遍。要量**单个元素**（悬停态、焦点态）就必须能单独调 —— 复制一份
+ * 等于给自己埋「两套数学慢慢漂开」的坑，所以抽成共享字符串，由调用方包进自己的 IIFE：
+ *
+ *     const SCAN = `(() => { ${CONTRAST_CORE} ... NH.measure(el) ... })()`;
+ *
+ * 注入后页面里得到一个 `NH` 对象：
+ *   - `NH.refresh()`    重扫一遍 opacity / filter 表（**改过样式之后必须调**）
+ *   - `NH.measure(el)`  量一个元素；不该参与测量时返回 null
+ *   - `NH.ratio(a,b)` / `NH.parse(c)` / `NH.bgBehind(el)` 供特殊场景复用
+ *
+ * ⚠️ 这段是**模板字符串**：里面绝不能出现裸反引号（注释里也不行），会截断字符串。
+ *    守卫在 `tests/scriptSyntax.test.ts`（`node --check` 全量扫 script/*.mjs）。
+ */
+export const CONTRAST_CORE = `
+  const NH = (() => {
+    // ⚠️ color-mix() 的背景色（如 --accent-wash = color-mix(主色 10%, transparent)）会被
+    //    Chrome 序列化成 color(srgb 0.098 0.4627 0.8235 / 0.1) —— 分量是 **0~1 的浮点**。
+    //    照 rgb() 那样当 0~255 解析，等于把一层 10% 的淡蓝当成「接近纯黑」，
+    //    合成出来的底色会假性变暗、比值假性变低（实测同一条文字会从 4.04 报成 3.67）。
+    const parse = c => {
+      const m = c.match(/-?[\\d.]+/g);
+      if (!m) return null;
+      const nums = m.map(Number);
+      const rgb = nums.slice(0, 3);
+      const isColorFn = /^color\\(/.test(c.trim());
+      return isColorFn && rgb.every(v => v <= 1) ? rgb.map(v => Math.round(v * 255)) : rgb;
+    };
+    const alphaOf = c => { const m = c.match(/-?[\\d.]+/g); return m && m.length > 3 ? Number(m[3]) : 1; };
+    const lin = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    const lum = ([r, g, b]) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    const ratio = (fg, bg) => {
+      const L1 = lum(fg), L2 = lum(bg);
+      return (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05);
+    };
+
+    // 往上找背景色，从 startEl（含）开始，遇到第一个「够不透明」的层就停，半透明层依次混进来
+    const bgBehind = startEl => {
+      let n = startEl, layers = [];
+      while (n && n !== document.documentElement) {
+        const c = getComputedStyle(n).backgroundColor;
+        const p = parse(c);
+        if (p && alphaOf(c) > 0) {
+          layers.push({ rgb: p, a: alphaOf(c) });
+          if (alphaOf(c) >= 0.999) break;
+        }
+        n = n.parentElement;
+      }
+      let base = [255, 255, 255];
+      for (let i = layers.length - 1; i >= 0; i--) {
+        const { rgb, a } = layers[i];
+        base = base.map((v, k) => rgb[k] * a + v * (1 - a));
+      }
+      return base;
+    };
+
+    // filter: opacity(x) 与 opacity 等效（同样整组淡化、同样建层叠上下文），而且相乘。
+    // filter: blur() 不影响 alpha，不在这里管。
+    const filterOpacity = f => {
+      if (!f || f === 'none') return 1;
+      let a = 1;
+      for (const m of f.matchAll(/opacity\\(([\\d.]+)(%?)\\)/g)) {
+        a *= m[2] ? Number(m[1]) / 100 : Number(m[1]);
+      }
+      return a;
+    };
+
+    // opacity 是**分组**属性：整个元素（含底色与子内容）当一张图混到身后的底上，
+    // 所以要沿祖先链累乘。每个元素都查一次 getComputedStyle 会退化成 O(n·depth)：
+    // 先扫一遍建表，measure 里只查表。
+    let opMap = new Map();
+    const refresh = () => {
+      opMap = new Map();
+      for (const n of document.querySelectorAll('body, body *')) {
+        const cs = getComputedStyle(n);
+        const o = Number(cs.opacity) * filterOpacity(cs.filter);
+        if (o < 0.999) opMap.set(n, o);
+      }
+    };
+    const groupAlpha = el => {
+      let a = 1, n = el;
+      while (n && n.nodeType === 1) {
+        const o = opMap.get(n);
+        if (o !== undefined) a *= o;
+        if (a <= 0.02) return a;
+        n = n.parentElement;
+      }
+      return a;
+    };
+
+    /**
+     * 量一个元素。不该参与测量时返回 null。
+     * 返回值里的 ratio 已经 toFixed(2) —— **判据和打印用的是同一个数**，
+     * 不会出现「打印 4.50、却判不合格」这种没法复现的结论。
+     */
+    const measure = el => {
+      // 只统计直接承载文字的元素
+      const text = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent.trim()).join('');
+      if (!text) return null;
+      const s = getComputedStyle(el);
+      // ⚠️ 这里**不再**判 Number(s.opacity) < 0.5（2026-11-01 删）：
+      //   opacity 与 filter: opacity() 是等效的同一件事，可老写法只对前者提前放弃、
+      //   对后者照算 —— 同样「淡化到 30%」的文字，走 opacity 直接不量、走 filter 量出 1.5:1。
+      //   两条路给两个结论，等于判据不同源。现在一律交给下面的 groupAlpha + A<=0.02
+      //   （真正看不见才跳过），两种写法结果一致。
+      if (s.visibility === 'hidden' || s.display === 'none') return null;
+      // 停用的控件豁免：WCAG 1.4.3 明确不要求「inactive UI component」的文字达标。
+      // 实测设置中心「清除访问记录」用 MUI 的 text.disabled（rgba(0,0,0,.26)），
+      // 压白 1.88:1 —— 规范允许，不是缺陷。不豁免的话全站每颗禁用按钮都是一条红。
+      if (el.closest('[disabled], .Mui-disabled, [aria-disabled="true"]')) return null;
+      // 整组已经淡到看不见（悬停才出现的工具条恒为 opacity 0、退出后仍留着的浮层）：
+      // 看不见的东西没有「对比度」可言。以前只判自己那一个 opacity，这类元素被当成
+      // 完全不透明量过 —— 绿得没有意义。
+      const A = groupAlpha(el);
+      if (A <= 0.02) return null;
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return null;
+      const fgRaw = parse(s.color);
+      if (!fgRaw) return null;
+
+      // ---- 背景分两层：自己画出的那层、身后的那层 ----
+      // 元素带 opacity 时「自己画的底」也被一起淡化；只算最终底色会把这个效果算丢
+      // （文字和底色一起变淡、彼此对比度反而掉下来，正是最容易漏的那类）。
+      const ownC = s.backgroundColor;
+      const ownRgb = parse(ownC);
+      const ownA = ownRgb ? alphaOf(ownC) : 0;
+      const behind = bgBehind(el.parentElement);
+      const bgPainted =
+        !ownRgb || ownA <= 0 ? behind : ownRgb.map((v, k) => v * ownA + behind[k] * (1 - ownA));
+
+      // 前景色自身也可能带 alpha（text.disabled 就是 rgba(0,0,0,.38)）：
+      // 只取 RGB 等于当纯黑，实测 2.66:1 会被报成 19.89:1。
+      const fgA = alphaOf(s.color);
+      const fgPainted =
+        fgA >= 0.999 ? fgRaw : fgRaw.map((v, k) => v * fgA + bgPainted[k] * (1 - fgA));
+
+      // 最后把「整组」按 opacity 混到身后的底上：文字和底色一起淡。A≈1 是恒等变换。
+      const mixDown = c => (A >= 0.999 ? c : c.map((v, k) => v * A + behind[k] * (1 - A)));
+      const fg = mixDown(fgPainted);
+      const bg = mixDown(bgPainted);
+
+      const size = parseFloat(s.fontSize);
+      const bold = Number(s.fontWeight) >= 700;
+      const large = size >= 24 || (size >= 18.66 && bold);
+      return {
+        cls: el.className.toString().slice(0, 46),
+        text: text.slice(0, 18),
+        color: s.color,
+        fontSize: size,
+        bg: 'rgb(' + bg.map(Math.round).join(',') + ')',
+        ratio: +ratio(fg, bg).toFixed(2),
+        need: large ? 3 : 4.5,
+        // 只有真的被淡化时才打出这个字段：其余行的输出保持不变
+        ...(A < 0.999 ? { opacity: +A.toFixed(2) } : {}),
+      };
+    };
+
+    return { refresh, measure, ratio, parse, alphaOf, bgBehind };
+  })();
+`;
