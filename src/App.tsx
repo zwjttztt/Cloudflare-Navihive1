@@ -715,7 +715,17 @@ function App() {
             // 离线队列已接住的操作：温和不报错，告诉用户会在联网后自动同步即可
             const isOfflineQueued = errorMessage.includes("离线保存") || errorMessage.includes("OfflineQueued");
             notify(errorMessage, isOfflineQueued ? "info" : "error");
-            if (!isOfflineQueued) reportError(errorMessage, { source: "save-error" });
+            if (isOfflineQueued) return;
+            // 认证失败（预期内 401：访客/爬虫、或会话过期）由 onAuthFail 独立回登录页处理，
+            // 不再当作前端错误上报 —— 否则审计流水被刷屏，且上报体 name 会退化成 "NonError"。
+            const isAuthError =
+                errorMessage.includes("认证失败") ||
+                errorMessage.includes("请先登录") ||
+                errorMessage.includes("认证已过期");
+            if (isAuthError) return;
+            // 加载失败与保存失败分开归类，审计视图才能给出正确的中文来源
+            const source = errorMessage.startsWith("加载数据失败") ? "load-error" : "save-error";
+            reportError(errorMessage, { source });
         },
         [notify]
     );

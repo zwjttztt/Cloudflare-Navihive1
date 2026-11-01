@@ -29,6 +29,7 @@ const IRREGULAR_SOURCES: Record<string, string> = {
     rail: "侧栏加载",
     render: "页面渲染",
     "save-error": "保存数据",
+    "load-error": "加载数据",
     "config-save": "保存配置",
     "window.error": "未捕获异常",
     unhandledrejection: "未处理的 Promise 拒绝",

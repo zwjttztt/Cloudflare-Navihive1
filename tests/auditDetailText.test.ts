@@ -33,6 +33,7 @@ test("截图里那五个来源代号都要翻成中文，不能把代号甩给�
 
 test("几个典型组合的译法（词表拼出来的结果要读得懂）", () => {
     assert.equal(errorSourceLabel("save-error"), "保存数据");
+    assert.equal(errorSourceLabel("load-error"), "加载数据");
     assert.equal(errorSourceLabel("note-full"), "笔记 正文");
     assert.equal(errorSourceLabel("notes-sync-poll"), "笔记 同步 轮询");
     assert.equal(errorSourceLabel("notes-tags-list"), "笔记 标签 列表");
