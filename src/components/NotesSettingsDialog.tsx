@@ -88,6 +88,11 @@ export interface NotesDataTab {
     /** 删除单个附件（附件管理器里用）。可选：老部署没有就整个管理器不出现 */
     onDeleteAttachment?: (id: string) => Promise<void>;
     /**
+     * 上传附件（附件管理器里的拖拽 / 选择上传用）。可选：老部署没有 uploadAttachment 时
+     * 整个上传入口隐藏。接收单个文件，批量由管理器内部顺序调用。
+     */
+    onUploadAttachment?: (file: File) => Promise<void>;
+    /**
      * 附件预览 / 编辑 / 重命名（2026-10-19）。
      *
      * 这一组**只在设置页的管理器里用**：不传时那里点文件名退回纯文本（不预览），

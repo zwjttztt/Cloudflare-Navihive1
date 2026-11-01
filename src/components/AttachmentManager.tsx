@@ -13,15 +13,17 @@
 //     在部分部署下 401 —— 与预览里的 NoteImage 同一套三态语义）；
 //   - 分页在**前端切片**（listAttachments 一次回元数据全量，行很小；「加载更多 /
 //     已显示 N 个」的交互与 inkstone 的游标分页完全一致）。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Drawer from "@mui/material/Drawer";
 import IconButton from "@mui/material/IconButton";
+import LinearProgress from "@mui/material/LinearProgress";
 import Typography from "@mui/material/Typography";
 import DeleteIcon from "@mui/icons-material/DeleteOutlined";
 import DescriptionIcon from "@mui/icons-material/Description";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
+import FileUploadIcon from "@mui/icons-material/FileUpload";
 import type { SxProps, Theme } from "@mui/material/styles";
 import ConfirmDialog from "./ConfirmDialog";
 import SegmentedSwitch from "./SegmentedSwitch";
@@ -46,6 +48,11 @@ export interface AttachmentManagerApi {
     remove(id: string): Promise<void>;
     /** 可选：老部署没有 pruneAttachments 时「清理」按钮不出现 */
     prune?(): Promise<{ removed: number; freedBytes: number }>;
+    /**
+     * 可选：有上传能力时显示拖拽 / 选择上传（老部署没有 uploadAttachment 时整个上传入口隐藏）。
+     * 接收单个文件；批量由管理器内部顺序调用，便于逐个上报进度与失败。
+     */
+    upload?(file: File): Promise<void>;
 }
 type FilterKind = "all" | "image" | "document" | "other";
 
@@ -178,6 +185,9 @@ export default function AttachmentManager({
     const [visible, setVisible] = useState(PAGE_SIZE);
     const [deleteTarget, setDeleteTarget] = useState<AttachmentManagerFile | null>(null);
     const [confirmPrune, setConfirmPrune] = useState(false);
+    const [dragActive, setDragActive] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     /**
      * 这张附件被多少条笔记引用。
@@ -283,11 +293,61 @@ export default function AttachmentManager({
         }
     };
 
+    /**
+     * 批量上传：逐个顺序调用 mgr.upload（便于逐个上报进度与失败），全部跑完再统一
+     * 重拉列表（刚传上去的条目要出现在网格里）。部分失败不影响其余，最后汇总提示。
+     */
+    const doUpload = async (files: File[]) => {
+        if (!mgr.upload || files.length === 0) return;
+        setUploadProgress({ done: 0, total: files.length });
+        let ok = 0;
+        const errors: string[] = [];
+        for (let i = 0; i < files.length; i++) {
+            try {
+                await mgr.upload(files[i]);
+                ok++;
+            } catch (err) {
+                errors.push(`${files[i].name}：${err instanceof Error ? err.message : "未知错误"}`);
+            }
+            setUploadProgress({ done: i + 1, total: files.length });
+        }
+        try {
+            const list = await mgr.list();
+            setFiles(list);
+            setVisible(PAGE_SIZE);
+            onChanged?.();
+        } catch {
+            /* 列表重拉失败不致命：错误态会覆盖，下面仍给上传结果提示 */
+        }
+        setUploadProgress(null);
+        if (ok > 0) onNotify?.(`已上传 ${ok} 个附件`, "success");
+        if (errors.length > 0) onNotify?.(`${errors.length} 个上传失败：${errors[0]}`, "error");
+    };
+
+    /**
+     * 拖拽放置区：整个抽屉可接收文件。dragleave 只在真正离开容器（不是进入子元素）时
+     * 才取消高亮，否则在卡片 / 筛选间移动会疯狂闪烁。
+     */
+    const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        if (!dragActive) setDragActive(true);
+    };
+    const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragActive(false);
+    };
+    const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        setDragActive(false);
+        const files = Array.from(e.dataTransfer.files ?? []);
+        void doUpload(files);
+    };
+
     return (
         <Drawer
             open={open}
             anchor='right'
-            onClose={busy ? undefined : onClose}
+            onClose={busy || uploadProgress !== null ? undefined : onClose}
             slotProps={{
                 paper: {
                     sx: {
@@ -302,10 +362,31 @@ export default function AttachmentManager({
             sx={{ zIndex: (theme: Theme) => theme.zIndex.modal }}
             data-attachment-manager='1'
         >
-            <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
-                {/* 顶部：标题 + 四档筛选 */}
+        <Box
+            data-attachment-root='1'
+            sx={{ display: "flex", flexDirection: "column", height: "100%", position: "relative" }}
+            onDragOver={mgr.upload ? handleDragOver : undefined}
+            onDragLeave={mgr.upload ? handleDragLeave : undefined}
+            onDrop={mgr.upload ? handleDrop : undefined}
+        >
+            {/* 顶部：标题 + 四档筛选 */}
                 <Box sx={{ flexShrink: 0, px: 1.5, pt: 1.5, pb: 1, borderBottom: "1px solid var(--neutral-hover)" }}>
-                    <Typography sx={{ fontWeight: 600, mb: 1 }}>管理附件</Typography>
+                    <Box sx={{ display: "flex", alignItems: "center", mb: 1 }}>
+                        <Typography sx={{ fontWeight: 600 }}>管理附件</Typography>
+                        {mgr.upload && (
+                            <Button
+                                size='small'
+                                variant='outlined'
+                                startIcon={<FileUploadIcon sx={{ fontSize: 16 }} />}
+                                disabled={busy || uploadProgress !== null}
+                                data-attachment-action='upload'
+                                onClick={() => fileInputRef.current?.click()}
+                                sx={{ ml: "auto" }}
+                            >
+                                上传
+                            </Button>
+                        )}
+                    </Box>
                     {/* 四档筛选走共用分段控件（原来是本文件里的私有 Segmented，
                         选中文字用 var(--accent) 压在 --accent-wash 上只有 4.04:1 ——
                         附件抽屉还没进对比度审计范围，是个假绿；换共用件顺手修掉）。
@@ -322,6 +403,61 @@ export default function AttachmentManager({
                         />
                     </Box>
                 </Box>
+
+                {/* 上传进度（拖拽 / 选择上传时显示） */}
+                {uploadProgress && (
+                    <Box sx={{ flexShrink: 0, px: 1.5, py: 0.5, display: "flex", alignItems: "center", gap: 1 }}>
+                        <LinearProgress
+                            variant='determinate'
+                            value={Math.round((uploadProgress.done / uploadProgress.total) * 100)}
+                            sx={{ flex: 1, borderRadius: 1 }}
+                        />
+                        <Typography sx={{ fontSize: 11, color: "text.secondary", whiteSpace: "nowrap" }}>
+                            {uploadProgress.done}/{uploadProgress.total}
+                        </Typography>
+                    </Box>
+                )}
+
+                {/* 隐藏的文件选择框：点「上传」按钮触发 */}
+                <input
+                    ref={fileInputRef}
+                    type='file'
+                    multiple
+                    hidden
+                    data-attachment-action='file-input'
+                    onChange={e => {
+                        const files = Array.from(e.target.files ?? []);
+                        // 清空以便「选同一个文件」能再次触发 change（真实浏览器有效；
+                        // jsdom 下 value 只读，set 会抛 —— 包一层 try 不影响上传逻辑）
+                        try {
+                            e.target.value = "";
+                        } catch {
+                            /* 只读环境，忽略 */
+                        }
+                        void doUpload(files);
+                    }}
+                />
+
+                {/* 拖拽放置高亮（整个抽屉可接收） */}
+                {dragActive && mgr.upload && (
+                    <Box
+                        sx={{
+                            position: "absolute",
+                            inset: 0,
+                            zIndex: 2,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            bgcolor: "rgba(25,118,210,0.10)",
+                            border: "2px dashed var(--accent)",
+                            borderRadius: 2,
+                            pointerEvents: "none",
+                        }}
+                        data-att-state='drag-over'
+                    >
+                        <Typography sx={{ fontWeight: 600, color: "var(--accent)" }}>松开即可上传附件</Typography>
+                    </Box>
+                )}
 
                 {/* 卡片网格（两列，inkstone 同款） */}
                 <Box sx={{ minHeight: 0, flex: 1, overflowY: "auto", p: 1 }}>
@@ -417,7 +553,7 @@ export default function AttachmentManager({
                                                     size='small'
                                                     aria-label={`删除 ${file.filename}`}
                                                     data-attachment-action='delete'
-                                                    disabled={busy}
+                                                    disabled={busy || uploadProgress !== null}
                                                     onClick={event => {
                                                         // 卡片整块可点了，删除按钮必须掐断冒泡，
                                                         // 否则「点删除」会先弹出预览窗再弹确认框
@@ -554,7 +690,7 @@ export default function AttachmentManager({
                         {hasMore && (
                             <Button
                                 size='small'
-                                disabled={busy}
+                                disabled={busy || uploadProgress !== null}
                                 data-attachment-action='load-more'
                                 onClick={() => setVisible(v => v + PAGE_SIZE)}
                             >
@@ -566,7 +702,7 @@ export default function AttachmentManager({
                                 size='small'
                                 variant='outlined'
                                 startIcon={<AutoAwesomeIcon sx={{ fontSize: 15 }} />}
-                                disabled={busy || files === null}
+                                disabled={busy || files === null || uploadProgress !== null}
                                 data-attachment-action='prune'
                                 onClick={() => setConfirmPrune(true)}
                             >

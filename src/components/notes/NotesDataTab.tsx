@@ -413,6 +413,9 @@ export default function NotesDataTab({ data, shareApi = null, onNotify }: NotesD
                             prune: data.onPruneAttachments
                                 ? () => data.onPruneAttachments!()
                                 : undefined,
+                            upload: data.onUploadAttachment
+                                ? (file: File) => data.onUploadAttachment!(file)
+                                : undefined,
                         }}
                         countRefs={data.countAttachmentRefs}
                         onNotify={onNotify}

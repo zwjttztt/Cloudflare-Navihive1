@@ -71,6 +71,11 @@ export default function NotesOverlayLayer(props: Pick<NotesPageCtx, "active" | "
                     onDeleteAttachment: uploadApi?.deleteAttachment
                         ? (id: string) => uploadApi.deleteAttachment!(id).then(() => undefined)
                         : undefined,
+                    // 上传（2026-11-02）：附件管理器的拖拽 / 选择上传走这里；
+                    // 老部署没有 uploadAttachment 时整个上传入口自动隐藏（管理器内部门控）。
+                    onUploadAttachment: uploadApi?.uploadAttachment
+                        ? (file: File) => uploadApi.uploadAttachment!(file).then(() => undefined)
+                        : undefined,
                     // 预览 / 编辑 / 重命名（2026-10-19）：设置页那条入口与左下角
                     // 那个管理器共用同一套能力，不给的话设置页里点文件名只会是死文本。
                     onSaveAttachmentContent: uploadApi?.updateAttachmentContent

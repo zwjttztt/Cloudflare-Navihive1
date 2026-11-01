@@ -831,6 +831,9 @@ export default function NotesPageShell({
                             prune: uploadApi.pruneAttachments
                                 ? () => uploadApi.pruneAttachments!()
                                 : undefined,
+                            upload: uploadApi.uploadAttachment
+                                ? (file: File) => uploadApi.uploadAttachment!(file).then(() => undefined)
+                                : undefined,
                         }}
                         countRefs={id => attachmentRefCounts.get(id) ?? 0}
                         onNotify={onNotify}

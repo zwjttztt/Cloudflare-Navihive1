@@ -6,6 +6,20 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-11-02 · 新增：附件管理器支持拖拽 / 选择上传（24.7.0）
+
+审计报告 V3（`.workbuddy/artifacts/audit-report-2026-11-01.md` 的 V3）：附件抽屉此前只有列表 / 删除 / 清理，**没有上传入口**——上传能力（`NavigationClient.uploadAttachment`）后端早已就绪，前端却没接线。
+
+根因：照抄 inkstone 的 `AttachmentManager` 方案时只抄了「管理」那一半；`mgr` 接口没有 `upload` 字段，抽屉里也没有放置区与文件选择框。两处挂载点（`NotesPageShell` 左下角、`NotesDataTab` 设置·数据页）都已有 `uploadApi`，却没把上传方法透传进管理器。
+
+修法：
+- `AttachmentManagerApi` 加可选 `upload(file)`；抽屉在有 `upload` 时出现「上传」按钮 + 隐藏文件框，并整抽屉可接收拖放（`dragover/drop` + 拖拽高亮遮罩）；
+- 批量上传在管理器内顺序调用 `mgr.upload`，逐个上报进度（`LinearProgress`），全部跑完再统一重拉列表；部分失败不影响其余，最后汇总提示；
+- 两处挂载点把 `uploadApi.uploadAttachment` 透传进去（设置页经 `NotesOverlayLayer` 的 `onUploadAttachment` → `NotesDataTab` 的 `data`）；
+- 门控不变：老部署没有 `uploadAttachment` 时整个上传入口（按钮 + 文件框 + 拖放）自动隐藏，管理器其余能力照常。
+
+影响：用户终于能直接从附件管理器上传文件，不用绕回编辑器粘贴；拖放 / 选择两条路径复用同一个后端。守卫：`tests/attachmentUpload.dom.test.tsx`（门控 + 拖放 + 文件选择三条）。
+
 ## 2026-11-01 · 修复：审计日志把预期内 401 误报为「保存失败」（24.6.1）
 
 独立审计（见 `.workbuddy/artifacts/audit-report-2026-11-01.md` 的 L2）抓到的真缺陷：访客/爬虫打开首页、未带会话，会触发 `bootstrap()` 401，前端把它当「前端错误」刷进审计流水，且 `name` 退化成 `NonError`。
