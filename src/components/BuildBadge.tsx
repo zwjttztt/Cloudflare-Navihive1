@@ -23,7 +23,10 @@ const badgeStyle: CSSProperties = {
     fontSize: 11,
     lineHeight: 1.4,
     color: "var(--text-muted)",
-    opacity: 0.75,
+    // 原来还有一层 `opacity: .75`。它和 --text-muted 的 0.48 叠起来，真实 alpha 只有 0.36，
+    // 亮色压白底约 2.4:1 —— 而对比度扫描器**不混算元素 opacity**，量出来是 3.21:1，
+    // 又是一处「审计自己看不见」的假绿。现在把「淡」全部交给 --text-muted 一个旋钮表达，
+    // 元素不再叠第二层透明度：要么读得见，要么就该把字调大，不该靠透明度糊过去。
     pointerEvents: "none",
     userSelect: "none",
     whiteSpace: "nowrap",

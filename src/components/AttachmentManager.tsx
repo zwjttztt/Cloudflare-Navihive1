@@ -527,7 +527,7 @@ export default function AttachmentManager({
                         py: 1,
                     }}
                 >
-                    <Typography sx={{ fontSize: 11, color: "text.disabled" }}>
+                    <Typography sx={{ fontSize: 11, color: "text.secondary" }}>
                         {files !== null ? (hasMore ? `已显示 ${shown.length} 个` : `共 ${filtered.length} 个`) : ""}
                     </Typography>
                     <Box sx={{ ml: "auto", display: "flex", alignItems: "center", gap: 1 }}>

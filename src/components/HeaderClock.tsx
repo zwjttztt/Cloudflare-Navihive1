@@ -49,10 +49,14 @@ export default function HeaderClock({ compact = false }: HeaderClockProps) {
             </Typography>
             {!compact && (
                 <>
+                    {/* 分隔点：原来是 text.disabled（rgba(0,0,0,.38)）。对比度审计开始
+                        混算前景 alpha 之后，这个 16px 的点实测只有 **2.68:1** —— 小字线 4.5。
+                        换 text.secondary（亮色约 5.4:1）：它虽然是装饰性字符，但看不见就
+                        等于日期跟时间黏在一起，分隔的作用正好没了。 */}
                     <Typography
                         className='nav-clock-meta'
                         aria-hidden='true'
-                        sx={{ color: "text.disabled", mx: 0.75 }}
+                        sx={{ color: "text.secondary", mx: 0.75 }}
                     >
                         ·
                     </Typography>

@@ -131,9 +131,17 @@ const SCAN = `(() => {
     if (s.visibility === 'hidden' || s.display === 'none' || Number(s.opacity) < 0.5) continue;
     const r = el.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) continue;
-    const fg = parse(s.color);
-    if (!fg) continue;
+    const fgRaw = parse(s.color);
+    if (!fgRaw) continue;
     const bg = bgOf(el);
+    // ⚠️ 前景色**自身也可能带 alpha**（text.disabled 就是 rgba(0,0,0,.38)）。
+    //    以前这里只取 RGB，等于把它当纯黑：实测 2.66:1 被报成 **19.89:1**，
+    //    于是「全站所有半透明文字只要不达 AA 就一律报绿」—— 比任何一处具体缺陷都更危险。
+    //    前景必须先按算好的 bg 混一遍 alpha，再拿去算比值。
+    //    （仍未覆盖：元素自身的 opacity。scanner 只跳过 opacity<0.5 的，0.5~1 这段
+    //     不混算 —— 见 BuildBadge 那里的注释，靠「不叠第二层透明度」的写法规避。）
+    const fgA = alphaOf(s.color);
+    const fg = fgA >= 0.999 ? fgRaw : fgRaw.map((v, k) => v * fgA + bg[k] * (1 - fgA));
     const size = parseFloat(s.fontSize);
     const bold = Number(s.fontWeight) >= 700;
     const large = size >= 24 || (size >= 18.66 && bold);
