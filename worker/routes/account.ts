@@ -103,11 +103,18 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
             return errorResponse(ApiError.forbidden("只有站点所有者可以生成邀请码"));
         }
         const result = await api.createInvite(uid);
+        // 审计 detail 只保留邀请码前 4 位、其余打码 —— 邀请码属敏感凭证，
+        // 即便审计记录仅 owner 可见，也不应留明文（SEC-4）。业务返回值
+        // Response.json(result) 仍带完整 code，供 owner 正常使用，不受影响。
+        const maskedCode =
+            result.success && typeof result.code === "string"
+                ? `${result.code.slice(0, 4)}****`
+                : "";
         await api.writeAudit(
             result.success ? "auth.invite" : "auth.invite.failed",
             "",
             ip,
-            result.success ? `邀请码 ${result.code}` : result.message
+            result.success ? `邀请码 ${maskedCode}` : result.message
         );
         return Response.json(result, { status: result.success ? 200 : 400 });
     }

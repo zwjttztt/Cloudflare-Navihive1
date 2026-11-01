@@ -11,7 +11,9 @@
 # 手册：  deploy/selfhost.md 第四节 B
 
 # ---------- 构建阶段 ----------
-FROM node:24-slim AS builder
+# ⚠️ node 版本与 .nvmrc / ci.yml 保持一致（均为 22），改一处需同步三处，
+# 否则 node:sqlite 等行为差异会在 CI 验不到、本地与镜像跑出不同结果。
+FROM node:22-slim AS builder
 
 WORKDIR /app
 
@@ -30,7 +32,7 @@ ENV NODE_OPTIONS=--max-old-space-size=3072
 RUN npm run build && npm run build:server
 
 # ---------- 运行阶段 ----------
-FROM node:24-slim AS runtime
+FROM node:22-slim AS runtime
 
 ENV NODE_ENV=production \
     NAVIHIVE_HOST=0.0.0.0 \

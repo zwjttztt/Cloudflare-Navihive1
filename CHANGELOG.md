@@ -6,6 +6,27 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-11-01 · 安全 + 工程：审计 P2 批次一（25.1.0）
+
+全维度重审遗留 P2 项的第一批低风险加固（其余批次另述）。
+
+**安全**
+- 邀请码审计脱敏：`worker/routes/account.ts` 的 `auth.invite` 审计 detail 只留邀请码前 4 位 + `****`，敏感凭证不再全文落审计；业务返回值仍透传完整码；
+- 迁移表名校验：`src/API/methods/migration.ts` 的 `hasColumn`/`migrateOwnerColumns` 入口加 `/^[a-z_][a-z0-9_]*$/` 断言，非法表名直接抛错（防注入）；
+- 服务端错误审计 ctx 透传 `trustXFF`：`worker/index.ts` 的 `recordServerError` 增加参数，审计带入真实客户端 IP。
+
+**性能**
+- 拖拽误触阈值：`src/App.tsx` 的 `PointerSensor` 激活距离 `1`→`5`px（避免点按被当成拖拽）；
+- `SiteListBody` 用 `memo` 包裹，避免父级状态抖动导致的整列重渲染；
+- `App.tsx` 抽出 `clearSearchQuery` 的 `useCallback`，消除每次渲染新建闭包。
+
+**工程 / 重构**
+- Dockerfile 两阶段基础镜像 `node:24-slim`→`node:22-slim`，与 `.nvmrc`/`ci.yml` 对齐（node:sqlite 行为一致，避免本地与镜像跑出不同结果）；
+- `src/index.css` 滚动条占位 `scrollbar-gutter: stable` 补 Safari 18.2+ 版本边界注释；
+- `src/utils/markdownToReact.tsx` 补「经批准的循环 import 豁免」注释（被引用方不反向 import，无有害循环）；
+- 新建 `docs/codes.md`：内部代号索引（B1/B3/B4/A1~A3/Q-3/V1/V3 等，标注重名冲突），避免代号歧义；
+- CI 视觉回归 step 补注释并明确摘帽期限 2026-12-31（保持 `continue-on-error` 现状，规避 CI 字体差异假红）。
+
 ## 2026-11-01 · 工程：cron e2e 失败时输出服务端日志（25.0.1）
 
 CI「构建 + 端到端」job 的 cron e2e 出现一次 `PUT configs/webdav.lastAutoBackupAt → 500`（连锁 3 条 FAIL），但 wrangler 的服务端 stack 只落在 runner 的 /tmp 日志里、stdout 看不到。给 `cron-e2e.mjs` 的拨时间步骤加常驻诊断：失败时打印响应体与 wrangler 日志尾部，后续排障不用再盲猜。

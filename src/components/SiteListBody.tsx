@@ -1,6 +1,7 @@
 // 站点列表主体：三种排序模式各有一套渲染，外加「什么都没匹配到」的空状态。
 // 原来内联在 App 的 <Container> 里，抽出来单独维护 —— 组件只渲染，
 // 状态与回调全部由 App 通过 props 下发，行为与抽取前逐行一致。
+import { memo } from "react";
 import { Box, Stack } from "@mui/material";
 import {
     DndContext,
@@ -76,7 +77,7 @@ export interface SiteListBodyProps {
     onClearFilters: () => void;
 }
 
-export default function SiteListBody({
+export default memo(function SiteListBody({
     sortMode,
     sensors,
     onGroupDragEnd,
@@ -257,4 +258,4 @@ export default function SiteListBody({
             )}
         </Box>
     );
-}
+});

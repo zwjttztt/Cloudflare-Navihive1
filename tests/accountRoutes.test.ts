@@ -183,9 +183,12 @@ test("auth/invite：owner 生成成功后要审计（谁能拉人进来必须可
     const { res, log } = await call("auth/invite", "POST");
     assert.equal(res?.status, 200);
     assert.ok(log.audits.some(a => a.action === "auth.invite"));
+    // SEC-4：邀请码属敏感凭证，审计只留前 4 位 + 打码，不得出现完整码
+    const inviteAudit = log.audits.find(a => a.action === "auth.invite");
+    assert.ok(inviteAudit, "应留一条 auth.invite 审计，实际 " + JSON.stringify(log.audits));
     assert.ok(
-        log.audits.some(a => (a.detail || "").includes("ABCD1234")),
-        "审计里要带上邀请码，实际 " + JSON.stringify(log.audits)
+        /^邀请码 ABCD\*{4}$/.test(inviteAudit!.detail),
+        "审计应只留邀请码前 4 位并打码，实际 " + inviteAudit!.detail
     );
 });
 

@@ -618,6 +618,9 @@ body {
        断点，顶栏字号档位跟着跳：标题「导航站」一开菜单就从一行挤成两行。
        声明 stable 后这块空间从头到尾都留着，开合弹层不再引起任何重排。
        旧 Safari 不认识这条，忽略后行为同从前（跳动仍在，但不算破坏）。 */
+    /* scrollbar-gutter 需 Safari 18.2+ 才生效；项目 browserslist 支持 safari>=16.4，
+       故 Safari 16.4–18.1 上此声明无效，仅表现为约 10px 的滚动条宽度抖动，
+       属可接受降级（无布局破坏）。非 @supports 兜底，仅作版本边界说明。 */
     scrollbar-gutter: stable;
 }
 

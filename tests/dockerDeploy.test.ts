@@ -44,14 +44,14 @@ function runtimeStage(dockerfile: string): string {
 
 // ============ Dockerfile ============
 
-test("Dockerfile 存在且两个 Stage 都用 node:24", () => {
+test("Dockerfile 存在且两个 Stage 都用 node:22", () => {
     assert.ok(existsSync(path.join(ROOT, "Dockerfile")), "仓库根没有 Dockerfile");
     const df = read("Dockerfile");
     const froms = df.match(/^FROM .+$/gm) ?? [];
     assert.equal(froms.length, 2, `预期恰好两个 Stage（builder + runtime），实际：${froms.join(" | ")}`);
     for (const line of froms) {
-        // node:24 LTS：node:sqlite 免实验 flag 的最低主线版本，与 deploy/selfhost.md 的建议一致
-        assert.match(line, /node:24-slim/, `Stage 基础镜像不是 node:24-slim：${line}`);
+        // 与 .nvmrc / ci.yml 保持一致（均为 22），改一处需同步三处
+        assert.match(line, /node:22-slim/, `Stage 基础镜像不是 node:22-slim：${line}`);
     }
 });
 

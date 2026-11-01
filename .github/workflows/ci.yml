@@ -372,6 +372,9 @@ jobs:
       # （或把容差与采样收稳）之后再摘掉 continue-on-error 变真门禁。
       - name: 视觉回归（观察期，暂不卡门）
         run: npm run audit:visual
+        # 摘帽计划：观察期截止 2026-12-31。届时若基线已在统一容器（或 CI 同机）重录、
+        # 容差与采样已收稳、且连续若干次运行无意外差异，则移除 continue-on-error 升级为真门禁；
+        # 若仍未达标，需在主理人处记录决策（延期或永久保留观察期）后再动本步。
         continue-on-error: true
 
       - name: 失败时留一份截图/日志

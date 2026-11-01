@@ -43,6 +43,24 @@ import {
 import { blockIdOf, registerNoteBlocks } from "./markdownNoteBlocks";
 import { parseEmbedTarget } from "./noteBlocks";
 import { splitFrontMatter, type FrontMatterEntry } from "./noteFrontMatter";
+
+// ── 审计报告 ARCH-6（低/P2）经批准的豁免 ─────────────────────────────────────
+// 这里**直接** import 了 components 层的两个渲染组件（NoteEmbedNode / NoteTabsNode），
+// 这在「utils 不依赖 components」的常规模块分层里属于反向引用。但本次判定为**良性**：
+//
+// 1. 不构成有害循环依赖：`NoteEmbedNode` / `NoteTabsNode` 仅 import react 与
+//    `utils/noteBlocks`，**不**反向 import 本文件（见 NoteEmbedNode.tsx:38 注释：
+//    「由 markdownToReact 传进来的闭包，避免循环 import」）。依赖图为单向
+//    markdownToReact → 组件，无环，无运行时 init 顺序问题。
+// 2. 无法简单反转依赖：这两个组件是 `![[嵌入笔记]]` 与 `:::tabs` 的**专用渲染体**，
+//    它们内部要再异步跑一遍 Markdown 渲染。渲染入口必须落在 markdownToReact 这一侧，
+//    组件只通过 `render` 闭包 prop 接收渲染能力——若改成组件 import 本文件，
+//    反而会造出真正的循环依赖。当前方向正是为避开循环而刻意选定的。
+// 3. 这是渲染层「token → React 元素」映射的一部分（类同本文件 import 的
+//    MathNode / MermaidNode / AttachmentLink），属同一类「utils 内的渲染装配」，
+//    并非把业务/UI 状态注入 utils。
+// 故保留现状，不重构。如需彻底消除分层反向引用，应走 RenderContext 注入 slot 的方案
+// （由主理人评估），不在本次范围内。 — 2026-11-01
 import { NoteEmbedNode, type NoteEmbedTarget } from "../components/NoteEmbedNode";
 import { NoteTabsNode } from "../components/NoteTabsNode";
 

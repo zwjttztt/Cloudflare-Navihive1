@@ -481,7 +481,7 @@ function App() {
     const sensors = useSensors(
         useSensor(PointerSensor, {
             activationConstraint: {
-                distance: 1, // 降低激活阈值，使拖拽更敏感
+                distance: 5, // 提高激活阈值，避免点击链接/按钮时误触发拖拽
                 delay: 0, // 移除延迟
             },
         }),
@@ -524,6 +524,10 @@ function App() {
     } = useNotify();
     // 搜索关键词：普通浏览模式下即时筛选卡片
     const [searchQuery, setSearchQuery] = useState("");
+
+    // 传给 SiteListBody 的「清空搜索」回调：用 useCallback 固定引用，
+    // 否则每次渲染都新建闭包会让 SiteListBody 的 React.memo 失效。
+    const clearSearchQuery = useCallback(() => setSearchQuery(""), [setSearchQuery]);
     const searchInputRef = useRef<HTMLInputElement>(null);
     // 搜索结果下拉面板：是否聚焦 + 当前高亮项
     const [searchFocused, setSearchFocused] = useState(false);
@@ -1960,7 +1964,7 @@ function App() {
                                 activeTags={activeTags}
                                 starFilter={starFilter}
                                 deadOnly={deadOnly}
-                                onClearSearch={() => setSearchQuery("")}
+                                onClearSearch={clearSearchQuery}
                                 onClearFilters={clearAllFilters}
                             />
                         </RenderBoundary>

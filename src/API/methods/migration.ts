@@ -1115,6 +1115,7 @@ export const migrationImpl: MigrationApi = {
 
     migrateOwnerColumns: async function (this: NavigationAPI ): Promise<void> {
         for (const table of ["groups", "sites"]) {
+            if (!/^[a-z_][a-z0-9_]*$/.test(table)) throw new Error("非法表名: " + table);
             if (await this.hasColumn(table, "user_id")) continue;
             try {
                 await this.db.exec(`ALTER TABLE ${table} ADD COLUMN user_id INTEGER`);
@@ -1238,7 +1239,9 @@ export const migrationImpl: MigrationApi = {
         // 于是 hasColumn 恒为 false，补列逻辑等于「每次都盲发 ALTER」，
         // 失败还被静默吞掉，列就永远补不上（folder_id 缺失就是这么来的）。
         // 所以先做白名单校验（表名只可能来自代码里的字面量）再插值。
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) return false;
+        // 表名直接插进 SQL（非绑定参数）。先做格式断言，非法表名（SQL 注入风险）直接抛错，
+        // 而不是静默 return false——catch 只兜底「表还不存在」这类正常情况。
+        if (!/^[a-z_][a-z0-9_]*$/.test(table)) throw new Error("非法表名: " + table);
         try {
             const result = await this.db
                 .prepare(`SELECT name FROM pragma_table_info('${table}')`)

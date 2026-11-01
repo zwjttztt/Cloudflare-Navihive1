@@ -111,7 +111,8 @@ async function recordServerError(
     rid: string,
     request: Request,
     pathname: string,
-    error: unknown
+    error: unknown,
+    trustXFF: boolean
 ): Promise<void> {
     if (!serverErrorLimiter.allow(pathname)) return;
     try {
@@ -124,7 +125,8 @@ async function recordServerError(
         });
         const api = new NavigationAPI(env);
         // actor 用 "system"：这不是某个用户做的动作，是服务端自己出错（与 cron 事件同一条链）
-        await api.writeAudit("server-error", "system", clientIp(request), detail);
+        // trustXFF 透传：与登录限速桶的取 IP 逻辑保持一致，NAVIHIVE_TRUST_XFF=1 时读 X-Real-IP / XFF 首段
+        await api.writeAudit("server-error", "system", clientIp(request, trustXFF), detail);
     } catch (logError) {
         console.warn("[api] server-error 落库失败", rid, logError);
     }
@@ -316,7 +318,7 @@ async function handleRequest(request: Request, env: Env, rid: string): Promise<R
         // 并且按 rid 落一条审计，能和客户端上报里的 requestId 对上同一次请求。
         if (!(error instanceof ApiError)) {
             console.error("[api]", rid, request.method, url.pathname, error);
-            await recordServerError(env, rid, request, url.pathname, error);
+            await recordServerError(env, rid, request, url.pathname, error, trustXFF);
         }
         // logged: true —— 上面已经带上下文打过了，别再让统一出口重复打一行没有上下文的
         return errorResponse(error, { logged: true });
