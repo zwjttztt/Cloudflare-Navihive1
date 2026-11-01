@@ -50,12 +50,58 @@ test("对比度扫描器：alpha 混算必须发生在算比值之前", () => {
 });
 
 test("对比度扫描器：混算时用的是「背景」而不是写死的白/黑", () => {
-    // 混 alpha 的表达式必须引用 bg（bgOf(el) 算出来的那层叠色），
-    // 否则在深色底上会把前景往白色方向混，比值方向整个反了
+    // 混 alpha 的表达式必须往**算出来的**背景上混（bgPainted / behind，2026-11-01
+    // 起把「自己画的底」和「身后的底」拆开了，所以不再只有 bg 一个名字）；
+    // 往写死的白/黑上混会让深色底上的比值方向整个反掉。
     const seg = src.slice(src.indexOf("alphaOf(s.color)"), src.indexOf("const cr = ratio("));
     assert.match(
         seg,
-        /bg\[/,
-        "混算表达式里没有引用 bg：前景 alpha 必须往真实背景上混，不能往固定色上混"
+        /(bgPainted|behind|bg)\[/,
+        "混算表达式里没有引用任何算出来的背景：前景 alpha 必须往真实背景上混"
+    );
+});
+
+// ---------------- 元素 opacity（2026-11-01）----------------
+//
+// opacity 是**分组**属性：它把整个元素（连同底色和子内容）当一张图混到身后的底上。
+// 所以 ① 要看祖先链累乘 ② 文字和底色要**一起**淡化。任何一边算漏，结果都偏乐观：
+// 实测笔记编辑器行号 `opacity:.55` + `rgba(0,0,0,.87)` 真实 3.69:1，漏算时报 16:1。
+
+test("对比度扫描器：元素 opacity 要沿祖先链累乘（不是只看自己那一个数）", () => {
+    assert.match(src, /const groupAlpha = el =>/, "groupAlpha 被删了：元素 opacity 又回到单层判断");
+    const body = src.slice(src.indexOf("const groupAlpha = el =>"), src.indexOf("const ratio = (fg, bg)"));
+    assert.match(body, /parentElement/, "groupAlpha 没往上走：外层 wrapper 的 opacity 会被漏掉");
+    assert.match(body, /a \*= o|\*= o/, "groupAlpha 没做累乘");
+});
+
+test("对比度扫描器：文字和底色要一起按 opacity 淡化（只淡化文字会算得太乐观）", () => {
+    // mixDown 必须同时作用在 fg 与 bg 上
+    assert.match(src, /const fg = mixDown\(fgPainted\)/, "前景没走 mixDown");
+    assert.match(src, /const bg = mixDown\(bgPainted\)/, "背景没走 mixDown —— 底色不会跟着淡，比值虚高");
+    // 自己画的那层底要单独算出来，否则「元素自带底色 + opacity」这个组合算不对
+    assert.match(src, /const bgPainted =/, "bgPainted 没了：元素自带底色与身后底色混在一起了");
+});
+
+test("对比度扫描器：整组近乎不可见时跳过（悬停才出现的工具条不该参与）", () => {
+    assert.match(
+        src,
+        /if \(A <= 0\.02\) continue;/,
+        "少了「整组不可见就跳过」：恒为 opacity:0 的悬停工具条会被当成 1:1 全红（实测蹦出 24 条假红）"
+    );
+});
+
+test("对比度扫描器：停用的控件豁免（WCAG 1.4.3 不对 inactive UI 提要求）", () => {
+    assert.match(
+        src,
+        /closest\('\[disabled\], \.Mui-disabled, \[aria-disabled="true"\]'\)/,
+        "停用豁免被删了：MUI 的 text.disabled 会让每颗禁用按钮都变成一条红（实测 1.88:1）"
+    );
+});
+
+test("对比度扫描器：opacity 字段只在真的被淡化时才输出（其余行输出保持不变）", () => {
+    assert.match(
+        src,
+        /\.\.\.\(A < 0\.999 \? \{ opacity: \+A\.toFixed\(2\) \} : \{\}\)/,
+        "opacity 字段变成无条件输出了：所有既有报错行的输出都会变，历史对比失效"
     );
 });

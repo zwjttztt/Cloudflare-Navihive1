@@ -26,7 +26,7 @@
 //
 // 用法：npm run audit:a11y（需要先 npm run build；CHROME_PATH 可指定浏览器）
 
-import { DIST, ROOT, openBrowser, startSiteServer, waitRendered } from "./auditEnv.mjs";
+import { DIST, ROOT, openBrowser, setAttachmentMode, startSiteServer, waitRendered } from "./auditEnv.mjs";
 import fs from "node:fs";
 
 if (!fs.existsSync(DIST)) {
@@ -819,6 +819,117 @@ await evaluate(`(() => {
 }
 console.log(`=== 记事本·附件抽屉：Esc 关闭 ok（筛选 ${ATT_MIN_OPTIONS} 档已归零）===`);
 
+// ---------- 抽屉的空态 / 拉取失败态（2026-11-01 加）----------
+//
+// 上面那一段量的是「有 3 条附件」的常态。抽屉还有两条**独立渲染分支**，
+// 各自的文字与配色都不一样，而且从来没进过任何审计面：
+//   - 空态：`data-att-state="empty"`「还没有上传过任何附件。」
+//   - 失败：`data-att-state="error"`（error 文案走 `error.main`）
+// 空态/失败态的说明文字是最没人核的地方 —— 加这一段当场就抓出亮色 2.68:1
+// （`text.disabled` 压在抽屉底上）。桩态切换见 `auditEnv.mjs` 的 setAttachmentMode。
+//
+// ⚠️ 不要在「常态」那一段里就地改成循环：既有输出必须逐字节可对比，
+//    所以这两态是**追加**的独立循环，不改上面任何一行。
+const OPEN_DRAWER = `(() => {
+  const vis = el => {
+    const s = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+  };
+  const btn = document.querySelector('[data-nav-attachments]')
+      || [...document.querySelectorAll('button,[role="button"]')]
+          .filter(vis)
+          .find(b => (b.textContent || '').trim() === '附件');
+  if (!btn) return 'no-entry';
+  btn.click();
+  return 'clicked';
+})()`;
+
+const drawerStates = [];
+for (const [mode, title] of [
+    ["empty", "空态"],
+    ["error", "拉取失败"],
+]) {
+    setAttachmentMode(mode);
+    const opened = await evaluate(OPEN_DRAWER);
+    if (opened !== "clicked") {
+        console.error(`抽屉·${title}：入口找不到（${opened}）—— 这一态没测到，审计结果不可信`);
+        site.close();
+        done(1);
+    }
+    // 就绪判据按**期望的那一态**等：空态永远等不到卡片，失败态也等不到。
+    {
+        const deadline = Date.now() + 20_000;
+        let st = null;
+        let ok = false;
+        while (Date.now() < deadline) {
+            st = await evaluate(`(() => ({
+                options: document.querySelectorAll('[data-att-filter-option]').length,
+                loading: document.querySelectorAll('[data-att-state="loading"]').length,
+                hit: document.querySelectorAll('[data-att-state="${mode}"]').length,
+            }))()`);
+            if (st && st.options >= ATT_MIN_OPTIONS && st.loading === 0 && st.hit > 0) {
+                ok = true;
+                break;
+            }
+            await new Promise(r => setTimeout(r, 200));
+        }
+        if (!ok) {
+            console.error(
+                `抽屉·${title}：20 秒内没画成该状态（筛选 ${st?.options ?? 0} 档 / ` +
+                    `加载中 ${st?.loading ?? "?"} 个 / 标记 ${st?.hit ?? 0} 个）—— 这一态没测到`
+            );
+            site.close();
+            done(1);
+        }
+    }
+
+    const a = await evaluate(scanA11y(".MuiDrawer-paper"));
+    const t = await evaluate(scanTouch(".MuiDrawer-paper"));
+    if (a.missing || t.missing) {
+        console.error(`抽屉·${title}：没有 .MuiDrawer-paper 外壳 —— 这一态没测到`);
+        site.close();
+        done(1);
+    }
+    console.log(`=== 记事本·附件抽屉·${title}：可访问性 ===`);
+    console.log(JSON.stringify(a, null, 1));
+    console.log(
+        `=== 记事本·附件抽屉·${title}：触控目标 ===\n` +
+            `   可点元素 ${t.total} 个：低于 24px 的 ${t.tooSmall} 个，24~31px 的 ${t.borderline} 个`
+    );
+    for (const s of t.samples) {
+        console.log(
+            `   ${String(s.w).padStart(4)}×${String(s.h).padStart(3)}  「${s.label}」  .${s.cls}  (父 .${s.parent})`
+        );
+    }
+    drawerStates.push({ title, a, t });
+
+    // 关抽屉并等它真的没了：残影会让下一态的扫描混进上一态的控件
+    await evaluate(`(() => {
+      const paper = document.querySelector('.MuiDrawer-paper');
+      (paper || document.body).dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+      );
+      return true;
+    })()`);
+    {
+        const deadline = Date.now() + 10_000;
+        let left = 1;
+        while (Date.now() < deadline) {
+            left = await evaluate(`document.querySelectorAll('[data-att-filter-option]').length`);
+            if (left === 0) break;
+            await new Promise(r => setTimeout(r, 150));
+        }
+        if (left !== 0) {
+            console.error(`抽屉·${title}：Esc 后 10 秒内没关掉（还剩 ${left} 档筛选）—— 结果不可信`);
+            site.close();
+            done(1);
+        }
+    }
+}
+// 复原：别让桩态漏到后面的判定里
+setAttachmentMode("rows");
+
 // ---------- 判定 ----------
 const failures = [];
 if (a11y.noNameBtns > 0) failures.push(`无名按钮 ${a11y.noNameBtns} 个`);
@@ -875,6 +986,21 @@ if (drawerA11y.inputsNoLabel > 0) {
 }
 if (drawerTouch.tooSmall > 0) {
     failures.push(`记事本·附件抽屉：触控目标小于 24px 的 ${drawerTouch.tooSmall} 个`);
+}
+// 空态 / 拉取失败态（2026-11-01 加）：和常态同一把尺子
+for (const st of drawerStates) {
+    if (st.a.noNameBtns > 0) {
+        failures.push(`记事本·附件抽屉·${st.title}：无名按钮 ${st.a.noNameBtns} 个`);
+    }
+    if (st.a.noAltImgs > 0) {
+        failures.push(`记事本·附件抽屉·${st.title}：无 alt 图片 ${st.a.noAltImgs} 张`);
+    }
+    if (st.a.inputsNoLabel > 0) {
+        failures.push(`记事本·附件抽屉·${st.title}：无 label 输入 ${st.a.inputsNoLabel} 个`);
+    }
+    if (st.t.tooSmall > 0) {
+        failures.push(`记事本·附件抽屉·${st.title}：触控目标小于 24px 的 ${st.t.tooSmall} 个`);
+    }
 }
 
 console.log("");

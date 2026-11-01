@@ -31,7 +31,7 @@
 
 import fs from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
-import { DIST, openBrowser, startSiteServer, waitRendered } from "./auditEnv.mjs";
+import { DIST, openBrowser, setAttachmentMode, startSiteServer, waitRendered } from "./auditEnv.mjs";
 
 if (!fs.existsSync(DIST)) {
     console.error(`找不到 ${DIST}，先跑 npm run build`);
@@ -97,9 +97,9 @@ const SCAN = `(() => {
   const lin = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
   const lum = ([r, g, b]) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 
-  // 往上找第一个「够不透明」的背景色，并把半透明层依次混合进来
-  const bgOf = el => {
-    let n = el, layers = [];
+  // 往上找背景色，从 startEl（含）开始，遇到第一个「够不透明」的层就停，半透明层依次混进来
+  const bgBehind = startEl => {
+    let n = startEl, layers = [];
     while (n && n !== document.documentElement) {
       const c = getComputedStyle(n).backgroundColor;
       const p = parse(c);
@@ -117,6 +117,26 @@ const SCAN = `(() => {
     return base;
   };
 
+  // ⚠️ opacity 是**分组**属性：它把「整个元素（连同它的底色和子内容）」当作一张图，
+  //    一次性混到身后的底上。所以要看**祖先链的累乘**，不能只看自己那一个数 ——
+  //    外层 wrapper 设成 0.6 的话，里面 opacity:1 的文字一样只有 60% 可见。
+  //    每个元素都要查祖先链，逐个 getComputedStyle 会退化成 O(n·depth)：先扫一遍建表。
+  const opMap = new Map();
+  for (const n of document.querySelectorAll('body, body *')) {
+    const o = Number(getComputedStyle(n).opacity);
+    if (o < 0.999) opMap.set(n, o);
+  }
+  const groupAlpha = el => {
+    let a = 1, n = el;
+    while (n && n.nodeType === 1) {
+      const o = opMap.get(n);
+      if (o !== undefined) a *= o;
+      if (a <= 0.02) return a;
+      n = n.parentElement;
+    }
+    return a;
+  };
+
   const ratio = (fg, bg) => {
     const L1 = lum(fg), L2 = lum(bg);
     return (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05);
@@ -129,19 +149,45 @@ const SCAN = `(() => {
     if (!text) continue;
     const s = getComputedStyle(el);
     if (s.visibility === 'hidden' || s.display === 'none' || Number(s.opacity) < 0.5) continue;
+    // 停用的控件豁免：WCAG 1.4.3 明确不要求「inactive UI component」的文字达标。
+    // 实测设置中心「清除访问记录」用的是 MUI 的 text.disabled（rgba(0,0,0,.26)），
+    // 压白 1.88:1 —— 这是**规范允许的**，不是缺陷。不豁免的话全站每颗禁用按钮
+    // 都会变成一条红，把真正的问题淹掉。
+    if (el.closest('[disabled], .Mui-disabled, [aria-disabled="true"]')) continue;
+    // 整组已经淡到看不见（悬停才出现的工具条，恒为 opacity 0；退出后仍留着的浮层）：
+    // 看不见的东西没有「对比度」可言，跳过。以前只判自己那一个 opacity，
+    // 这类元素的文字被当成完全不透明量过 —— 绿得没有意义。
+    const A = groupAlpha(el);
+    if (A <= 0.02) continue;
     const r = el.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) continue;
     const fgRaw = parse(s.color);
     if (!fgRaw) continue;
-    const bg = bgOf(el);
+
+    // ---- 背景要分两层算：自己画出的那层、身后的那层 ----
+    // 元素带 opacity 时，「自己画的底」也被一起淡化。只算最终底色会把这个效果算丢
+    // （文字和底色一起变淡、彼此对比度反而掉下来，这条正是最容易被漏掉的那类）。
+    const ownC = s.backgroundColor;
+    const ownRgb = parse(ownC);
+    const ownA = ownRgb ? alphaOf(ownC) : 0;
+    const behind = bgBehind(el.parentElement);
+    const bgPainted =
+      !ownRgb || ownA <= 0 ? behind : ownRgb.map((v, k) => v * ownA + behind[k] * (1 - ownA));
+
     // ⚠️ 前景色**自身也可能带 alpha**（text.disabled 就是 rgba(0,0,0,.38)）。
     //    以前这里只取 RGB，等于把它当纯黑：实测 2.66:1 被报成 **19.89:1**，
     //    于是「全站所有半透明文字只要不达 AA 就一律报绿」—— 比任何一处具体缺陷都更危险。
     //    前景必须先按算好的 bg 混一遍 alpha，再拿去算比值。
-    //    （仍未覆盖：元素自身的 opacity。scanner 只跳过 opacity<0.5 的，0.5~1 这段
-    //     不混算 —— 见 BuildBadge 那里的注释，靠「不叠第二层透明度」的写法规避。）
     const fgA = alphaOf(s.color);
-    const fg = fgA >= 0.999 ? fgRaw : fgRaw.map((v, k) => v * fgA + bg[k] * (1 - fgA));
+    const fgPainted =
+      fgA >= 0.999 ? fgRaw : fgRaw.map((v, k) => v * fgA + bgPainted[k] * (1 - fgA));
+
+    // 最后把「整组」按 opacity 混到身后的底上：文字和底色一起淡。
+    // A ≈ 1 时这一步是恒等变换，既有输出逐字节不变。
+    const mixDown = c => (A >= 0.999 ? c : c.map((v, k) => v * A + behind[k] * (1 - A)));
+    const fg = mixDown(fgPainted);
+    const bg = mixDown(bgPainted);
+
     const size = parseFloat(s.fontSize);
     const bold = Number(s.fontWeight) >= 700;
     const large = size >= 24 || (size >= 18.66 && bold);
@@ -156,6 +202,8 @@ const SCAN = `(() => {
         bg: 'rgb(' + bg.map(Math.round).join(',') + ')',
         ratio: +cr.toFixed(2),
         need,
+        // 只有真的被淡化时才打出这个字段：其余行的输出保持不变
+        ...(A < 0.999 ? { opacity: +A.toFixed(2) } : {}),
       });
     }
   }
@@ -349,6 +397,46 @@ async function openCenterAndWait() {
 }
 
 /**
+ * 等页面上的 CSS 动画 / 过渡停下来再量。
+ *
+ * 为什么（2026-11-01）：一旦把元素 opacity 混进对比度（见 SCAN 的 groupAlpha），
+ * **测量时机会直接污染结果** —— 实测抓到的两处都不是界面问题而是时机问题：
+ *   - 首页卡片的 `navReveal 0.5s` 进场动画还没跑完，`MuiPaper` 停在 opacity 0.53，
+ *     整张卡片的文字被按 53% 可见度量，白字白底、比值 1.00；
+ *   - 设置中心 `MuiDialog-container` 正在淡入（0.695），左栏每一条都被糊掉。
+ * 旧扫描器不混 opacity，所以这些「半透明中途」的帧被当完全不透明量了 —— 一直是绿的，
+ * 也一直没意义。判据用 `document.getAnimations()`（CSS animation 与 transition 都会
+ * 出现在里面），比「轮询某个数字」准，也不会被常驻的 0.7 之类卡住。
+ */
+async function waitAnimationsSettled(limitMs = 6000) {
+    const deadline = Date.now() + limitMs;
+    while (Date.now() < deadline) {
+        const running = await evaluate(`(() => {
+            try {
+                // 只算「会改变 opacity 且会结束」的动画：
+                //   - 装饰性动画（首页 .nav-aurora 的 navAurora 26s 无限循环，只动 transform）
+                //     跟对比度无关，等它等于白等 6 秒 × 5 段 × 2 态；
+                //   - 无限循环（spinner/呼吸灯）永远「没停」，等不出结果。
+                return document.getAnimations().filter(a => {
+                    if (a.playState !== 'running') return false;
+                    const t = a.effect && a.effect.getTiming ? a.effect.getTiming() : {};
+                    if (t.iterations === Infinity) return false;
+                    if (a.transitionProperty) return a.transitionProperty === 'opacity';
+                    const kf = a.effect && a.effect.getKeyframes ? a.effect.getKeyframes() : [];
+                    return kf.some(k => Object.prototype.hasOwnProperty.call(k, 'opacity'));
+                }).length;
+            } catch {
+                return 0; // 老浏览器没有 getAnimations：退化成「不等」
+            }
+        })()`);
+        if (!running) return;
+        await sleep(100);
+    }
+    // 超时不抛错，但要**说出来**：静默等满 6 秒会被误当成「等过了」。
+    console.warn(`⚠️ 有透明度动画 ${limitMs / 1000}s 内没停，按当前状态量`);
+}
+
+/**
  * 附件抽屉（`src/components/AttachmentManager.tsx`）—— 2026-11-01 加的独立一段。
  *
  * 为什么必须单独一段：抽屉顶栏的四档筛选（全部 / 图片 / 文档 / 其他）用的是共用
@@ -409,10 +497,12 @@ const ATTACHMENTS_READY = `(() => {
     options: document.querySelectorAll('[data-att-filter-option]').length,
     loading: document.querySelectorAll('[data-att-state="loading"]').length,
     rows: document.querySelectorAll('[data-attachment-row]').length,
+    empty: document.querySelectorAll('[data-att-state="empty"]').length,
+    error: document.querySelectorAll('[data-att-state="error"]').length,
   };
 })()`;
 
-async function openAttachmentsAndWait() {
+async function openAttachmentsAndWait(expect = "rows") {
     // 列表数据由共用桩（auditEnv.mjs 的 ATTACHMENT_ROWS）提供，这里不再注入 fetch 补丁
     const r = await evaluate(OPEN_ATTACHMENTS);
     if (r !== "clicked") {
@@ -424,20 +514,20 @@ async function openAttachmentsAndWait() {
     let st = null;
     while (Date.now() < deadline) {
         st = await evaluate(ATTACHMENTS_READY);
-        if (
-            st &&
-            st.options >= ATT_MIN_OPTIONS &&
-            st.loading === 0 &&
-            st.rows > 0
-        ) {
-            return st.options;
+        // ⚠️ 判据必须按期望的那一态来等：空态永远等不到「卡片 ≥1」，失败态也等不到。
+        //    以前写死 rows>0，一旦桩切成空态就会 20 秒后抛错 —— 看着像「抽屉坏了」，
+        //    实际是等待条件跟被测状态对不上。
+        if (st && st.options >= ATT_MIN_OPTIONS && st.loading === 0) {
+            if (expect === "rows" && st.rows > 0) return st.options;
+            if (expect === "empty" && st.empty > 0) return st.options;
+            if (expect === "error" && st.error > 0) return st.options;
         }
         await sleep(200);
     }
     throw new Error(
-        `附件抽屉 20 秒内没画完（筛选 ${st?.options ?? 0} 档 / 至少要 ${ATT_MIN_OPTIONS} 档、` +
-            `加载中 ${st?.loading ?? "?"} 个、卡片 ${st?.rows ?? 0} 张 —— 卡片 0 张说明列表没落地）` +
-            " —— 这一阶段没测到"
+        `附件抽屉 20 秒内没画成「${expect}」态（筛选 ${st?.options ?? 0} 档 / 至少要 ${ATT_MIN_OPTIONS} 档、` +
+            `加载中 ${st?.loading ?? "?"} 个、卡片 ${st?.rows ?? 0} 张、空态 ${st?.empty ?? 0} 个、` +
+            `失败态 ${st?.error ?? 0} 个）—— 这一阶段没测到`
     );
 }
 
@@ -574,6 +664,7 @@ for (const label of ["亮色", "暗色"]) {
         }
         console.log(`主题已切换（背景 ${lightBg} → ${darkBg}）`);
     }
+    await waitAnimationsSettled();
     const res = await evaluate(SCAN);
     failed += res.total;
     report(label, res);
@@ -592,11 +683,13 @@ for (const label of ["亮色", "暗色"]) {
     await waitNotesEditorReady();
 
     await setNotesLivePreview(true);
+    await waitAnimationsSettled();
     const notesLive = await evaluate(SCAN);
     notesFailed += notesLive.total;
     report(`${label}·记事本·即时渲染`, notesLive);
 
     await setNotesLivePreview(false);
+    await waitAnimationsSettled();
     const notesSource = await evaluate(SCAN);
     notesFailed += notesSource.total;
     report(`${label}·记事本·源码态`, notesSource);
@@ -605,10 +698,36 @@ for (const label of ["亮色", "暗色"]) {
     // 记事本 + 一个抽屉」，而不是「源码态 + 抽屉」这种谁都不会同时看到的组合。
     await setNotesLivePreview(true);
     const attOptions = await openAttachmentsAndWait();
+    await waitAnimationsSettled();
     const attachments = await evaluate(SCAN);
     attachmentsFailed += attachments.total;
     report(`${label}·记事本·附件抽屉（筛选 ${attOptions} 档）`, attachments);
     await closeAttachmentsAndWait();
+
+    // ---------- 抽屉的空态 / 拉取失败态（2026-11-01 加）----------
+    //
+    // 这三个分支各自有一套文字与配色，`data-att-state` 就是它们的钩子：
+    //   empty（「还没有上传过任何附件。」）/ none-match（「没有符合筛选的附件。」）
+    //   / error（`{error}` 渲染成 error.main）。
+    // 以前一条都没进过扫描面 —— 而空态/失败态的说明文字恰恰是最没人核色的地方。
+    // 桩态在 auditEnv.mjs（setAttachmentMode），必须在**重新打开抽屉之前**改。
+    await setAttachmentMode("empty");
+    await openAttachmentsAndWait("empty");
+    await waitAnimationsSettled();
+    const attEmpty = await evaluate(SCAN);
+    attachmentsFailed += attEmpty.total;
+    report(`${label}·附件抽屉·空态`, attEmpty);
+    await closeAttachmentsAndWait();
+
+    await setAttachmentMode("error");
+    await openAttachmentsAndWait("error");
+    await waitAnimationsSettled();
+    const attError = await evaluate(SCAN);
+    attachmentsFailed += attError.total;
+    report(`${label}·附件抽屉·拉取失败`, attError);
+    await closeAttachmentsAndWait();
+    // 复原：后面的段落（设置中心）不该被这个桩态影响
+    await setAttachmentMode("rows");
 
     // 回首页：直接重载比「点关闭按钮」稳（关闭入口在不同布局下不是同一个按钮），
     // 而且重载后才能保证下一轮「切主题」是在首页上操作的。
@@ -623,6 +742,7 @@ for (const label of ["亮色", "暗色"]) {
     //
     // 失败一律 fail-closed（见文件头）：打不开中心就报红，不许「跳过这一段继续绿」。
     const navCount = await openCenterAndWait();
+    await waitAnimationsSettled();
     const center = await evaluate(SCAN);
     centerFailed += center.total;
     report(`${label}·设置中心（左栏 ${navCount} 条）`, center);
@@ -663,7 +783,7 @@ if (centerFailed > 0) {
     done(1);
 }
 console.log(
-    "\n对比度审计通过（首页 / 记事本·即时渲染 / 记事本·源码态 / 记事本·附件抽屉 / " +
+    "\n对比度审计通过（首页 / 记事本·即时渲染 / 记事本·源码态 / 记事本·附件抽屉（常态·空态·拉取失败）/ " +
         "设置中心，亮暗两态各 0 处不合格）"
 );
 site.close();

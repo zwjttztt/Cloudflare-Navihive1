@@ -337,11 +337,17 @@ export default function AttachmentManager({
                             正在读取附件列表…
                         </Typography>
                     ) : files.length === 0 ? (
-                        <Typography data-att-state='empty' sx={{ px: 3, py: 10, textAlign: "center", fontSize: 12, color: "text.disabled" }}>
+                        // ⚠️ 不要用 text.disabled：那是「停用控件」的语义，而这里是一句
+                        // **说明文字**（WCAG 只豁免 inactive UI，不豁免说明文字）。实测亮色
+                        // rgba(0,0,0,.38) 压抽屉底只有 **2.68:1**（12px 小字线 4.5）。
+                        // 换成 text.secondary 后约 7.2:1；暗色 rgba(255,255,255,.3) 本来就
+                        // 勉强过线，换了只会更好。与上面「正在读取附件列表…」同款。
+                        <Typography data-att-state='empty' sx={{ px: 3, py: 10, textAlign: "center", fontSize: 12, color: "text.secondary" }}>
                             还没有上传过任何附件。
                         </Typography>
                     ) : filtered.length === 0 ? (
-                        <Typography data-att-state='none-match' sx={{ px: 3, py: 10, textAlign: "center", fontSize: 12, color: "text.disabled" }}>
+                        // 同上：无命中提示也是说明文字，不是停用控件
+                        <Typography data-att-state='none-match' sx={{ px: 3, py: 10, textAlign: "center", fontSize: 12, color: "text.secondary" }}>
                             没有符合筛选的附件。
                         </Typography>
                     ) : (

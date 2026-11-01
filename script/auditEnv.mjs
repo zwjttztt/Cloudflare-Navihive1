@@ -218,6 +218,26 @@ const ATTACHMENT_ROWS = [
     { id: "audit-a3", note_id: 2, filename: "归档备份.zip", mime: "application/octet-stream", size: 7340032, width: null, height: null, storage: "r2", created_at: "2026-10-03T09:00:00.000Z", ref_count: 0 },
 ];
 
+/**
+ * 附件列表的桩态（2026-11-01 加）。
+ *
+ * 抽屉除了「有 N 条」这一态，还有三条**独立的渲染分支**，各自有各自的文字与配色：
+ *   - `rows`（默认）：正常列表
+ *   - `empty`：「还没有上传过任何附件。」
+ *   - `error`：拉取失败，`{ error }` 走 `text` + `error.main`
+ * 这些分支以前从没进过任何审计面 —— 而它们恰恰是最容易被忘掉的地方
+ * （空态/失败态的说明文字，写的人通常不会去核对对比度）。
+ *
+ * ⚠️ 必须在**重新拉取之前**改，抽屉打开时才请求；改完关掉再开一次才会生效。
+ */
+let attachmentMode = "rows";
+export function setAttachmentMode(mode) {
+    if (!["rows", "empty", "error"].includes(mode)) {
+        throw new Error(`未知的附件桩态：${mode}`);
+    }
+    attachmentMode = mode;
+}
+
 // ---------------- 分享页（2026-10-24 加） ----------------
 const SHARE_NOTE_TOKEN = "a".repeat(64);
 const SHARE_GROUP_TOKEN = "b".repeat(64);
@@ -308,11 +328,17 @@ export async function startSiteServer(port = 0) {
                 res.end(JSON.stringify([]));
                 return;
             }
-            // 附件抽屉的列表（见上面 ATTACHMENT_ROWS 的说明）。
+            // 附件抽屉的列表（见上面 ATTACHMENT_ROWS / attachmentMode 的说明）。
             // ⚠️ 顺序：更具体的路径必须排在 /api/notes 之前 —— 这条是精确匹配，
             //    但保持与全节一致的书写顺序，免得后来人把它挪到后面时被 /api/notes 吃掉。
             if (pathname === "/api/notes/attachments/list") {
-                res.end(JSON.stringify(ATTACHMENT_ROWS));
+                if (attachmentMode === "error") {
+                    res.statusCode = 500;
+                    res.setHeader("Content-Type", "application/json");
+                    res.end(JSON.stringify({ success: false, message: "附件列表读取失败（审计桩）" }));
+                    return;
+                }
+                res.end(JSON.stringify(attachmentMode === "empty" ? [] : ATTACHMENT_ROWS));
                 return;
             }
             if (pathname === "/api/notes") {

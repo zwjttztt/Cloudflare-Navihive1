@@ -65,7 +65,12 @@ const theme = EditorView.theme({
         // 钳到 100% 后 pre 以视口宽为界，自己出横向滚动条。
         maxWidth: "100%",
     },
-    ".cm-gutters": { backgroundColor: "transparent", color: "inherit", opacity: "0.55", borderRight: "1px solid var(--neutral-hairline)" },
+    // ⚠️ 行号（gutter）不要用 opacity 淡化：元素 opacity 会把整块（含边框）当一张图
+    //    混到后面的底上，实测亮色下行号只有 **3.69:1**（14px 小字线 4.5）。改成直接
+    //    用 --text-muted 一个旋钮表达「淡」：亮色 rgba(15,23,42,.6) 压白 4.70、
+    //    暗色 rgba(255,255,255,.5) 压深底 6.5 左右，两态都过线。
+    //    （同一条规矩见 BuildBadge：别在 token 之外再叠第二层透明度。）
+    ".cm-gutters": { backgroundColor: "transparent", color: "var(--text-muted)", borderRight: "1px solid var(--neutral-hairline)" },
     ".cm-activeLine": { backgroundColor: "var(--neutral-wash)" },
     "&.cm-focused": { outline: "none" },
     ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "var(--editor-selection)" },
