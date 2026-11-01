@@ -5,14 +5,14 @@
 // gzip 289.736 KB，预算 920 / 300 KB，见 tests/bundleBudget.test.ts）。
 // 中心是一个**两层**懒加载结构：
 //   第一层：中心弹窗本身 —— 由 App 用 lazy(() => import(...)) + ChunkBoundary when 挂载；
-//   第二层：九个业务面板 —— 由中心内部按 activeId 分发，只有被选中那一个才下载。
+//   第二层：八个业务面板 —— 由中心内部按 activeId 分发，只有被选中那一个才下载。
 // 任一层被改回静态 import，都会把外壳（以及它那份 MUI Dialog / 面板框架）焊进
 // 首屏关键路径 —— 类型检查完全看不出来（lazy 与静态 import 的组件类型一样），
 // 只有构建产物会说话，而没人天天盯 chunk 大小。所以在这里把「引用方式」钉死。
 //
 // 判据分两段：
 //   ① 源码段：入口文件（App / HeaderActions / HeaderActionsSlot）不许静态引入
-//      中心与面板；中心自己也不许静态引入九个面板（只允许 `import(...)`）；
+//      中心与面板；中心自己也不许静态引入八个面板（只允许 `import(...)`）；
 //   ② 产物段：构建产物里带中心/面板标记的块，不许出现在 index.html 的
 //      script / modulepreload 清单里（没有 dist 时退化为只验源码）。
 //
@@ -94,11 +94,11 @@ const CENTER_MODULES = [
     "SettingsWorkspacePanel",
 ];
 
-/** 九个业务面板的模块名（按顺序，与 model.ts 的 NavCenterPanelId 一致） */
+/** 八个业务面板的模块名（按顺序，与 model.ts 的 NavCenterPanelId 一致；
+ *  A+B 方案后 BackupPanel/RecyclePanel 不再是面板入口，合成 DataSafetyPanel） */
 const PANEL_MODULES = [
     "StatsPanel",
-    "BackupPanel",
-    "RecyclePanel",
+    "DataSafetyPanel",
     "AuditPanel",
     "ConfigPanel",
     "AiPanel",
@@ -107,7 +107,7 @@ const PANEL_MODULES = [
     "ShortcutsPanel",
 ];
 
-/** 中心 + 九个面板：这些模块都不许被首屏入口静态引入 */
+/** 中心 + 八个面板：这些模块都不许被首屏入口静态引入 */
 const CENTER_AND_PANELS = [...CENTER_MODULES, ...PANEL_MODULES];
 
 /** 首屏入口：这些文件一旦静态引入中心，中心就进了 index chunk */
@@ -124,7 +124,7 @@ function offendingImports(src: string, guarded: string[]): StaticImport[] {
     );
 }
 
-test("入口文件只用动态 import 引入中心外壳与九个面板", () => {
+test("入口文件只用动态 import 引入中心外壳与八个面板", () => {
     const offenders: string[] = [];
     for (const rel of ENTRY_FILES) {
         const src = readFileSync(join(ROOT, rel), "utf8");
@@ -140,15 +140,15 @@ test("入口文件只用动态 import 引入中心外壳与九个面板", () => 
     );
 });
 
-test("中心弹窗对九个面板只用动态 import（面板是第二层懒加载）", () => {
+test("中心弹窗对八个面板只用动态 import（面板是第二层懒加载）", () => {
     const rel = "src/components/NavigationCenterDialog.tsx";
     const src = readFileSync(join(ROOT, rel), "utf8");
-    assert.equal(PANEL_MODULES.length, 9, `应有 9 个面板模块，实际 ${PANEL_MODULES.length}`);
+    assert.equal(PANEL_MODULES.length, 8, `应有 8 个面板模块，实际 ${PANEL_MODULES.length}`);
 
     const offenders = offendingImports(src, PANEL_MODULES).map(imp => `${rel} → ${imp.module}`);
-    assert.deepEqual(offenders, [], "九个面板只能被 lazy(() => import(...)) 引入");
+    assert.deepEqual(offenders, [], "八个面板只能被 lazy(() => import(...)) 引入");
 
-    // 反向的一面：九个面板**必须**真的被动态引用到，否则上面那条会因为
+    // 反向的一面：八个面板**必须**真的被动态引用到，否则上面那条会因为
     // 「压根没人引用」而永远绿 —— 少引用一个面板就等于少一块功能。
     const code = stripComments(src);
     for (const name of PANEL_MODULES) {

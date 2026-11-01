@@ -908,11 +908,13 @@ for (const vp of [{ w: 1440, h: 950 }, { w: 420, h: 780 }]) {
     })()`);
     const ids = typeof center.ids === "string" ? center.ids.split(",") : [];
     check(
-        `${vp.w}px：设置中心打开，全站设置三条在左栏（B1）`,
+        `${vp.w}px：设置中心打开，新结构条目在左栏（A+B：数据与维护/数据安全/外观与搜索）`,
         !center.error &&
             ids.includes("config-appearance") &&
             ids.includes("config-data") &&
-            ids.includes("config-advanced"),
+            ids.includes("backup") &&
+            !ids.includes("config-advanced") &&
+            !ids.includes("recycle"),
         center.error ? center.error : `${center.count} 条`
     );
     check(

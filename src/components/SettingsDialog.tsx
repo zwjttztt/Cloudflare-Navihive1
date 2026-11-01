@@ -1,7 +1,7 @@
 // src/components/SettingsDialog.tsx
-// 全站设置弹窗。2026-10-25 起分三个页签（外观与搜索 / 数据 / 高级），
-// 页签内仍按「组与组分隔线 + 组标题主色竖条」排版，组内字段按「改动频率 + 语义」排序；
-// 短字段在宽屏并排成两列，纵向更紧凑。
+// 全站设置弹窗。2026-10-25 起分页签；2026-10-31（B1）起支持两种形态：
+// 独立弹窗保留页签（外观与搜索 / 数据与维护）；导航中心模式传 section 只渲染一段
+// （三张 Tab 已摊平进左栏，「高级」拆散：CSS→外观，版本升级→数据与维护）。
 // 所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰 API，只负责渲染和回调
 //（「保存设置」按钮在弹窗底部全局层，切页签不会丢草稿）。
 // 页签栏仿「数据备份与恢复」：放在 DialogContent 外面，内容滚动时页签不跟着走；
@@ -36,13 +36,6 @@ import {
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import VersionUpgradeSection from "./VersionUpgradeSection";
 import { DEFAULT_ICON_API, DEFAULT_THUMB_API } from "../utils/iconApi";
-import {
-    RETENTION_DAYS,
-    RETENTION_DAYS_MIN,
-    RETENTION_DAYS_MAX,
-    INACTIVE_DISABLE_DAYS_DEFAULT,
-    INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
-} from "../API/http";
 import type { FontScale, RadiusStyle } from "../context/uiPrefsStore";
 import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
@@ -131,8 +124,8 @@ interface SettingsDialogProps {
     isSiteOwner?: boolean;
 }
 
-/** 三个摊平后的左栏面板各自管哪一段（B1，2026-10-31）。不传 = 独立弹窗模式，保留三张 Tab。 */
-export type ConfigSection = "appearance" | "data" | "advanced";
+/** 两个摊平后的左栏面板各自管哪一段（B1，2026-10-31；A+B 后「高级」已拆散删除）。不传 = 独立弹窗模式，保留页签。 */
+export type ConfigSection = "appearance" | "data";
 
 /** 导航中心嵌入版配置面板 Props：在 SettingsDialogProps 基础上增加 withDialog 开关。 */
 export interface ConfigPanelProps extends SettingsDialogProps {
@@ -201,12 +194,12 @@ export function ConfigPanel({
     isSiteOwner = true,
     section,
 }: ConfigPanelProps) {
-    // 页签：0 = 外观与搜索（基本信息/外观/背景/图标/搜索）；1 = 数据（离线/同步/维护/保留）；
-    // 2 = 高级（自定义 CSS / 版本与升级）。
+    // 页签：0 = 外观与搜索（基本信息/外观/背景/图标/搜索/自定义CSS）；
+    // 1 = 数据与维护（离线/同步/维护/版本升级）。数据保留已迁至中心「数据安全」面板。
     const [tab, setTab] = useState(0);
-    // 独立弹窗模式（不传 section）保留三张 Tab；中心模式按 section 只渲染一段。
+    // 独立弹窗模式（不传 section）保留页签；中心模式按 section 只渲染一段。
     const showTabs = !section;
-    const active: ConfigSection = section ?? (tab === 0 ? "appearance" : tab === 1 ? "data" : "advanced");
+    const active: ConfigSection = section ?? (tab === 0 ? "appearance" : "data");
     // 页签 + 表单内容：两种模式（独立弹窗 / 导航中心嵌入）共用同一份 JSX。
     // Tabs / DialogContent 作为独立 MUI 组件，不依赖 Dialog 父级也能正常渲染。
     const tabsAndContent = (
@@ -221,8 +214,7 @@ export function ConfigPanel({
                         sx={{ px: 2 }}
                     >
                         <Tab label='外观与搜索' />
-                        <Tab label='数据' />
-                        <Tab label='高级' />
+                        <Tab label='数据与维护' />
                     </Tabs>
                 ) : null}
                 <DialogContent
@@ -658,8 +650,31 @@ export function ConfigPanel({
                             />
                         </Section>
 
+                        {/* 6. 自定义 CSS（A+B 方案 2026-10-31 自「高级」迁入）：
+                            CSS 本质是「高级外观」，跟着外观走名正言顺。
+                            hint 删于 2026-10-31：那句「直接注入页面，写错可能影响显示」
+                            属于**删了会误操作**的信息，所以没删 —— 降成字段 helperText */}
+                        <Section title='自定义 CSS'>
+                            <TextField
+                                margin='dense'
+                                size='small'
+                                id='site-custom-css'
+                                name='site.customCss'
+                                label='自定义CSS'
+                                type='text'
+                                fullWidth
+                                multiline
+                                rows={5}
+                                variant='outlined'
+                                value={tempConfigs["site.customCss"]}
+                                onChange={onConfigInputChange}
+                                placeholder={'/* 自定义样式 */\nbody { }'}
+                                helperText='直接注入页面，写错可能影响显示。'
+                            />
+                        </Section>
+
                     </Stack>
-                    ) : active === "data" ? (
+                    ) : (
                     <Stack spacing={2.5}>
                         {/* 5.5 离线与缓存（图标隐私已挪进「图标与缩略图」，它管的是同一件事） */}
                         {/* hint 删于 2026-10-31：开关的 caption 已经写明
@@ -726,101 +741,9 @@ export function ConfigPanel({
                             它的配置跟着登录账号走、凭据加密且不进备份，
                             跟这里管的「站点长什么样」不是一回事，混在一起容易误改。 */}
 
-                        {/* 7. 数据保留：这三项决定「过期数据什么时候真的消失」，
-                            都是全站共享配置 —— 服务端只认站点所有者，这里同步禁用并说明原因。
-                            沉睡治理两个阈值（v3.1.1 按用户要求恢复给所有者配置）：普通账号
-                            仍会被自动停用/清除，所有者本人永不被治理，但阈值归所有者调。 */}
-                        {/* hint 删于 2026-10-31：三个字段的 helperText 各自写了
-                            范围与后果，这一段只是把下面三个标签再复述一遍 */}
-                        <Section title='数据保留'>
-                            {!isSiteOwner ? (
-                                <Alert severity='info' sx={{ mb: 1 }}>
-                                    这几项是全站设置，只有站点所有者可以修改；保存时服务端也会拒绝。
-                                </Alert>
-                            ) : null}
-                            <TwoCol>
-                                <TextField
-                                    margin='dense'
-                                    size='small'
-                                    id='retention-days'
-                                    name='retention.days'
-                                    label='审计与回收站保留（天）'
-                                    type='number'
-                                    fullWidth
-                                    variant='outlined'
-                                    disabled={!isSiteOwner}
-                                    value={tempConfigs["retention.days"] ?? String(RETENTION_DAYS)}
-                                    onChange={onConfigInputChange}
-                                    helperText={`到期自动清除（${RETENTION_DAYS_MIN}-${RETENTION_DAYS_MAX}，默认 ${RETENTION_DAYS}）`}
-                                    slotProps={{
-                                        htmlInput: { min: RETENTION_DAYS_MIN, max: RETENTION_DAYS_MAX }
-                                    }}
-                                />
-                                <TextField
-                                    margin='dense'
-                                    size='small'
-                                    id='inactive-disable-days'
-                                    name='inactive.disableDays'
-                                    label='多久没登录算沉睡（天）'
-                                    type='number'
-                                    fullWidth
-                                    variant='outlined'
-                                    disabled={!isSiteOwner}
-                                    value={tempConfigs["inactive.disableDays"] ?? ""}
-                                    onChange={onConfigInputChange}
-                                    placeholder={String(INACTIVE_DISABLE_DAYS_DEFAULT)}
-                                    helperText={`停用沉睡账号，数据保留（默认 ${INACTIVE_DISABLE_DAYS_DEFAULT} 天）；所有者不受影响。`}
-                                    slotProps={{
-                                        htmlInput: { min: 30 }
-                                    }}
-                                />
-                            </TwoCol>
-                            <TextField
-                                margin='dense'
-                                size='small'
-                                id='inactive-grace-days'
-                                name='inactive.deleteGraceDays'
-                                label='停用后再过多久彻底删除（天）'
-                                type='number'
-                                fullWidth
-                                variant='outlined'
-                                disabled={!isSiteOwner}
-                                value={tempConfigs["inactive.deleteGraceDays"] ?? ""}
-                                onChange={onConfigInputChange}
-                                placeholder={String(INACTIVE_DELETE_GRACE_DAYS_DEFAULT)}
-                                helperText={`期间重新登录即可恢复，到期才彻底删除（默认 ${INACTIVE_DELETE_GRACE_DAYS_DEFAULT} 天）。`}
-                                slotProps={{
-                                    htmlInput: { min: 1 }
-                                }}
-                            />
-                        </Section>
-
-                    </Stack>
-                    ) : (
-                    <Stack spacing={2.5}>
-                        {/* 8. 高级 */}
-                        {/* hint 删于 2026-10-31：那句「直接注入页面，写错可能影响显示」
-                            属于**删了会误操作**的信息，所以没删 —— 降成字段 helperText */}
-                        <Section title='高级'>
-                            <TextField
-                                margin='dense'
-                                size='small'
-                                id='site-custom-css'
-                                name='site.customCss'
-                                label='自定义CSS'
-                                type='text'
-                                fullWidth
-                                multiline
-                                rows={5}
-                                variant='outlined'
-                                value={tempConfigs["site.customCss"]}
-                                onChange={onConfigInputChange}
-                                placeholder={'/* 自定义样式 */\nbody { }'}
-                                helperText='直接注入页面，写错可能影响显示。'
-                            />
-                        </Section>
-                        {/* 9. 版本与升级：显示当前运行版本 + 检查 GitHub 最新版本。
-                            自包含组件（不碰本站 API、无 props），放最后 —— 低频操作。 */}
+                        {/* 7. 版本与升级（A+B 方案 2026-10-31 自「高级」迁入）：
+                            显示当前运行版本 + 检查 GitHub 最新版本。自包含组件
+                            （不碰本站 API、无 props），放最后 —— 低频操作。 */}
                         <VersionUpgradeSection />
                     </Stack>
                     )}

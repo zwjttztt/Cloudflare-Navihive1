@@ -51,20 +51,18 @@ import type { AccountCenterPanelProps } from "./navigationCenter/panels/AccountP
 // 与 App.tsx 里那些 lazy 弹窗不同，这里是「中心之内再分一层」：
 // 打开中心只下外壳块，切到哪个面板才下哪一块（首屏预算经不起九个一起下）。
 const StatsPanel = lazy(() => import("./navigationCenter/panels/StatsPanel"));
-const BackupPanel = lazy(() => import("./navigationCenter/panels/BackupPanel"));
-const RecyclePanel = lazy(() => import("./navigationCenter/panels/RecyclePanel"));
+// 「数据安全」（A+B 方案 2026-10-31）：备份与恢复 + 回收站 + 数据保留策略合成的
+// 面板块，业务体复用 BackupPanel / RecyclePanel 转发件（详见 DataSafetyPanel.tsx）。
+const DataSafetyPanel = lazy(() => import("./navigationCenter/panels/DataSafetyPanel"));
 const AuditPanel = lazy(() => import("./navigationCenter/panels/AuditPanel"));
-// 全站设置的三段（B1 摊平）共用**同一个**懒加载 chunk：三个入口指向同一个
-// 模块，打包器只出一块；业务体是大块，拆三个文件会把它复制三份。
+// 全站设置的两段（B1 摊平，A+B 后「高级」拆散删除）共用**同一个**懒加载 chunk：
+// 两个入口指向同一个模块，打包器只出一块；业务体是大块，拆文件会把它复制多份。
 const loadConfigChunk = () => import("./navigationCenter/panels/ConfigPanel");
 const ConfigAppearancePanel = lazy(() =>
     loadConfigChunk().then(m => ({ default: m.ConfigAppearancePanel }))
 );
 const ConfigDataPanel = lazy(() =>
     loadConfigChunk().then(m => ({ default: m.ConfigDataPanel }))
-);
-const ConfigAdvancedPanel = lazy(() =>
-    loadConfigChunk().then(m => ({ default: m.ConfigAdvancedPanel }))
 );
 const AiPanel = lazy(() => import("./navigationCenter/panels/AiPanel"));
 const VaultPanel = lazy(() => import("./navigationCenter/panels/VaultPanel"));
@@ -201,13 +199,14 @@ export default function NavigationCenterDialog({
     /** 右栏正文：九屏全部是真实面板（T01~T04 迁完，不再有占位） */
     const renderPanel = (): ReactNode => {
         if (active === "stats") return <StatsPanel {...stats} />;
-        if (active === "backup") return <BackupPanel {...backup} />;
-        if (active === "recycle") return <RecyclePanel {...recycle} />;
+        // 数据安全（备份与恢复 + 回收站 + 保留策略）：三份 props 原样传入，
+        // 面板块内部按小节拼接（保留策略读的是 config 里的 tempConfigs）
+        if (active === "backup")
+            return <DataSafetyPanel backup={backup} recycle={recycle} config={config} />;
         if (active === "audit") return <AuditPanel {...audit} />;
-        // 全站设置三段（B1）：同一份 props（同一份草稿），业务体内部按 section 分叉
+        // 全站设置两段（B1）：同一份 props（同一份草稿），业务体内部按 section 分叉
         if (active === "config-appearance") return <ConfigAppearancePanel {...config} />;
         if (active === "config-data") return <ConfigDataPanel {...config} />;
-        if (active === "config-advanced") return <ConfigAdvancedPanel {...config} />;
         if (active === "account") return <AccountPanel {...account} />;
         if (active === "shortcuts") return <ShortcutsPanel {...shortcuts} />;
         if (active === "vault") return <VaultPanel {...vault} />;

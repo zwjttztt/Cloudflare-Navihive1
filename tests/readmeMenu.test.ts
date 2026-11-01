@@ -65,7 +65,7 @@ function readmeEntries(readme: string): string[] {
 test("中心里确实取得到项名（守卫本身要站得住）", () => {
     const labels = menuLabels();
     assert.ok(labels.length >= 8, `只解析出 ${labels.length} 个条目，解析规则多半失效了`);
-    assert.ok(labels.includes("备份与恢复"));
+    assert.ok(labels.includes("数据安全"));
     assert.ok(labels.includes("账号与安全"));
 });
 

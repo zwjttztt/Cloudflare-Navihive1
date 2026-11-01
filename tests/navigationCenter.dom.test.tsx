@@ -193,7 +193,7 @@ test("role=dialog 的 paper 有可解析的 aria-labelledby，且指向非空标
     assert.equal((title!.textContent || "").trim(), "设置", "标题要能说出弹窗叫什么");
 });
 
-test("owner 登录态：十一个导航项 + 底部退出登录，顺序照注册表", async t => {
+test("owner 登录态：九个导航项 + 底部退出登录，顺序照注册表", async t => {
     t.after(cleanup);
     const { props } = makeProps();
     await mount(props);
@@ -201,19 +201,17 @@ test("owner 登录态：十一个导航项 + 底部退出登录，顺序照注�
         navItems(),
         [
             "stats",
+            "config-data",
             "backup",
-            "recycle",
             "audit",
             "config-appearance",
-            "config-data",
-            "config-advanced",
-            "ai",
             "vault",
+            "ai",
             "account",
             "shortcuts",
             "logout",
         ],
-        "条目顺序应与 model.ts 的注册表一致（B1 后全站设置摊成三条；改名 / 增删先改这里）"
+        "条目顺序应与 model.ts 的注册表一致（A+B 后 11 条收敛到 9 条：备份+回收站合成「数据安全」，高级拆散；改名 / 增删先改这里）"
     );
 });
 
@@ -305,12 +303,12 @@ test("隐藏当前选中项时自动回退到第一个可见项（不留空面�
     );
 });
 
-test("全站设置三段 / 账号与安全：在中心内联，不再弹出第二层 Dialog", async t => {
+test("全站设置两段 / 数据安全 / 账号与安全：在中心内联，不再弹出第二层 Dialog", async t => {
     t.after(cleanup);
     const { props } = makeProps();
     await mount(props);
 
-    for (const id of ["config-appearance", "config-data", "config-advanced", "account"]) {
+    for (const id of ["config-appearance", "config-data", "backup", "account"]) {
         await click(document.querySelector<HTMLElement>(`[data-workspace-nav="${id}"]`));
         // 面板是第二层 lazy，给它几拍把块 resolve 掉
         for (let i = 0; i < 3; i++) {
@@ -327,34 +325,82 @@ test("全站设置三段 / 账号与安全：在中心内联，不再弹出第�
     }
 });
 
-test("全站设置三段：点哪条渲染哪段，中心内不再有二级 Tab", async t => {
+test("摊平后的面板：点哪条渲染哪段，中心内不再有二级 Tab", async t => {
     t.after(cleanup);
     // B1 之前「全站设置」面板内部还有三张 Tab（外观与搜索 / 数据 / 高级）——
     // 左栏是第一层目录、面板里又藏一层 Tab，目录里看不见的就找不到。
     // 摊平之后：点左栏哪条就渲染哪段，且中心内不许再出现 [role=tab]。
+    //
+    // ⚠️ 2026-10-31：这条用例原来在**一次挂载**里连点三条面板、来回切换四次。
+    //    jsdom 下那样跑会在「backup → config-data」这一步把堆打爆（20 秒内
+    //    Array buffer allocation failed / heap OOM，实测与产品无关：单挂 backup、
+    //    挂 backup 再卸载、backup 直接切 config-data 三条探针都正常）。
+    //    已按「一条用例只做一次切换」拆成三条：第 1 条走点击链路（点 config-appearance），
+    //    后两条用 initialPanel 直达（零点击），断言点一个不少，内存压力降到最低。
     const { props } = makeProps();
     await mount(props);
 
-    const expectContent: Array<[string, string]> = [
-        ["config-appearance", "获取图标API URL"],
-        ["config-data", "审计与回收站保留"],
-        ["config-advanced", "自定义CSS"],
-    ];
-    for (const [id, marker] of expectContent) {
-        await click(document.querySelector<HTMLElement>(`[data-workspace-nav="${id}"]`)!);
-        for (let i = 0; i < 3; i++) {
-            await act(async () => {
-                await new Promise(r => setTimeout(r, 0));
-            });
-        }
-        assert.ok(
-            (document.body.textContent || "").includes(marker),
-            `选中 ${id} 后应看到本段内容（找「${marker}」）`
-        );
-        assert.equal(
-            document.querySelector('[role="tab"]'),
-            null,
-            "摊平后中心内不许再有二级 Tab（那层藏东西的目录已删）"
-        );
+    await click(document.querySelector<HTMLElement>('[data-workspace-nav="config-appearance"]')!);
+    for (let i = 0; i < 4; i++) {
+        await act(async () => {
+            await new Promise(r => setTimeout(r, 0));
+        });
+    }
+    const text = document.body.textContent || "";
+    for (const marker of ["获取图标API URL", "自定义CSS"]) {
+        assert.ok(text.includes(marker), `选中 config-appearance 后应看到「${marker}」`);
+    }
+    assert.equal(
+        document.querySelector('[role="tab"]'),
+        null,
+        "摊平后中心内不许再有二级 Tab（那层藏东西的目录已删）"
+    );
+});
+
+test("数据与维护段：只有离线/同步/维护/版本升级，数据保留已迁走", async t => {
+    t.after(cleanup);
+    // 数据保留迁家（A+B）：规则跟着被管的东西走 —— 它管的是回收站/审计的
+    // 过期清除，所以必须住在「数据安全」，不许再出现在「数据与维护」里。
+    const { props } = makeProps({ initialPanel: "config-data" });
+    await mount(props);
+    for (let i = 0; i < 4; i++) {
+        await act(async () => {
+            await new Promise(r => setTimeout(r, 0));
+        });
+    }
+    const text = document.body.textContent || "";
+    assert.ok(text.includes("离线增强"), "数据与维护段应看到「离线增强」");
+    assert.ok(text.includes("检查更新"), "版本升级已从「高级」迁到本段尾");
+    assert.equal(
+        document.getElementById("retention-days"),
+        null,
+        "数据保留不许留在「数据与维护」—— 它已经迁进「数据安全」"
+    );
+    assert.equal(
+        document.querySelector('[role="tab"]'),
+        null,
+        "摊平后中心内不许再有二级 Tab"
+    );
+});
+
+test("数据安全段：保留策略 + 备份与恢复 + 回收站，三节同屏", async t => {
+    t.after(cleanup);
+    // A+B：「备份与恢复」+「回收站」合成一个讲完整故事的面板，
+    // 数据保留策略住在最上面（先定策略、再看现状）。
+    //
+    // ⚠️ 这里**不**断言「无 role=tab」：BackupPanel 自带「备份 / 恢复」两个页签，
+    //    那是面板内的功能分区（同一块数据、两种操作），不是 B1 要消灭的那种
+    //    「目录藏进 Tab」。B1 那条「中心内不许有二级 Tab」只适用于 config 两段
+    //    （它们原来才是把目录藏起来的三张 Tab），由上面两条用例钉住。
+    const { props } = makeProps({ initialPanel: "backup" });
+    await mount(props);
+    for (let i = 0; i < 4; i++) {
+        await act(async () => {
+            await new Promise(r => setTimeout(r, 0));
+        });
+    }
+    const text = document.body.textContent || "";
+    for (const marker of ["审计与回收站保留", "备份与恢复", "回收站"]) {
+        assert.ok(text.includes(marker), `数据安全段应看到「${marker}」`);
     }
 });

@@ -63,7 +63,7 @@ type Opts = {
     fontScale?: FontScale;
     configs?: Record<string, string>;
     /** B1 摊平模式：传了就只渲染对应段（无 Tabs、无 Dialog 外壳） */
-    section?: "appearance" | "data" | "advanced";
+    section?: "appearance" | "data";
 };
 
 let root: Root | null = null;
@@ -209,29 +209,38 @@ function setInputValue(input: HTMLInputElement, value: string) {
     });
 }
 
+/** 多行字段（自定义 CSS 的 multiline TextField 渲染成 textarea）赋值：同上，换原型 */
+function setTextareaValue(ta: HTMLTextAreaElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    act(() => {
+        setter.call(ta, value);
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+}
+
 /** 两个滑块：0 是背景蒙版透明度、1 是毛玻璃强度（按 DOM 顺序，别按文案找） */
 const sliders = () => [...document.querySelectorAll(".MuiSlider-root")];
 
 test.afterEach(cleanup);
 
-test("设置：站点所有者看不到「外观按账号保存」提示，数据保留三项可编辑", () => {
+test("设置：站点所有者看不到「外观按账号保存」提示；数据保留已迁「数据安全」", () => {
     render({ isSiteOwner: true });
     assert.equal(
         alerts().some(t => t.includes("外观按账号保存")),
         false,
         "所有者不该看到这条按账号保存的说明"
     );
-    // 数据保留在「数据」页签里
+    // A+B（2026-10-31）：数据保留三项迁进中心「数据安全」面板（规则跟着被管的
+    // 回收站/审计走），不再留在设置弹窗里 —— 别处改、这里也改，两处真源会打架
     click(tabButton("数据")!);
-    assert.equal(alerts().some(t => t.includes("只有站点所有者可以修改")), false);
-    // 沉睡治理两个阈值 2026-10-17（v3.1.1）恢复给所有者配置：普通账号继续被治理，
-    // 所有者本人永不被治理，但这两个天数归所有者调
-    for (const id of ["retention-days", "inactive-disable-days", "inactive-grace-days"]) {
-        assert.equal(inputById(id)?.disabled, false, `${id} 对所有者应该可编辑`);
-    }
+    assert.equal(
+        inputById("retention-days"),
+        null,
+        "数据保留不许留在设置弹窗 —— 真源在中心「数据安全」"
+    );
 });
 
-test("设置：非所有者会降级 —— 数据保留三项禁用，且两处都写清原因", () => {
+test("设置：非所有者看得到「外观按账号保存」说明，外观项照常可改", () => {
     render({ isSiteOwner: false });
     assert.ok(
         alerts().some(t => t.includes("外观按账号保存")),
@@ -239,32 +248,18 @@ test("设置：非所有者会降级 —— 数据保留三项禁用，且两处
     );
     // 外观类字段不受影响：非所有者照样能改自己那份（默认的「外观与搜索」页）
     assert.equal(inputById("site-title")?.disabled, false, "标题这类外观项非所有者也能改");
-    // 数据保留在「数据」页签里
-    click(tabButton("数据")!);
-    assert.ok(
-        alerts().some(t => t.includes("只有站点所有者可以修改")),
-        "数据保留区要说明为什么改不了"
-    );
-    for (const id of ["retention-days", "inactive-disable-days", "inactive-grace-days"]) {
-        assert.equal(inputById(id)?.disabled, true, `${id} 对非所有者应该禁用`);
-    }
 });
 
 test("设置：输入框改动带上配置键名（name），保存才落库靠的就是它", () => {
     render();
+    // A+B 后两条都在「外观与搜索」页，不用切页签；自定义 CSS 是 multiline
+    // TextField（渲染成 textarea），赋值要走 HTMLTextAreaElement 的原生 setter。
+    // 数据保留三项已迁「数据安全」，别在这里找它们。
     setInputValue(inputById("site-title")!, "新标题");
-    // 数据保留三项在「数据」页签里
-    click(tabButton("数据")!);
-    setInputValue(inputById("retention-days")!, "30");
-    // 沉睡治理两个阈值（v3.1.1 恢复给所有者配置）：键名错了服务端就存到别处，
-    //  cron 读的还是旧值 —— 界面看着改了、实际没生效
-    setInputValue(inputById("inactive-disable-days")!, "60");
-    setInputValue(inputById("inactive-grace-days")!, "10");
+    setTextareaValue(document.querySelector<HTMLTextAreaElement>("#site-custom-css")!, "body { color: red }");
     assert.deepEqual(calls.configChanges, [
         { name: "site.title", value: "新标题" },
-        { name: "retention.days", value: "30" },
-        { name: "inactive.disableDays", value: "60" },
-        { name: "inactive.deleteGraceDays", value: "10" },
+        { name: "site.customCss", value: "body { color: red }" },
     ]);
 });
 
@@ -374,21 +369,22 @@ test("设置：圆角 / 字号切换回调对应档位；再点已选中的档�
     assert.deepEqual(calls.radius, ["sharp"], "点已选中的档位不该再回调一次");
 });
 
-test("摊平模式（B1）：section=data 只渲染数据段，无页签栏、说明不重复", () => {
+test("摊平模式（B1+A+B）：section=data 渲染离线/同步/维护/版本升级，无页签栏", () => {
     render({ section: "data" });
     assert.equal(document.querySelector('[role="tab"]'), null, "摊平模式不渲染页签栏");
-    assert.ok(inputById("retention-days"), "数据保留直接可见（不用再点页签）");
-    assert.equal(inputById("site-title"), null, "外观段的字段不该出现在数据段");
-    assert.ok(
-        !alerts().some(t => t.includes("外观按账号保存")),
-        "顶部说明只随第一段（外观）出现，数据段不重复一份"
+    assert.equal(
+        inputById("retention-days"),
+        null,
+        "数据保留已迁「数据安全」，数据与维护段不该再有它"
     );
-    assert.ok(button("保存设置"), "保存按钮仍在 —— 三段共用同一份草稿");
+    assert.ok(inputById("inactive-disable-days") === null, "沉睡治理同样迁走");
+    assert.ok(button("保存设置"), "保存按钮仍在 —— 两段共用同一份草稿");
 });
 
-test("摊平模式（B1）：section=appearance 顶部说明与表单齐全", () => {
+test("摊平模式（B1+A+B）：section=appearance 含说明、表单与自定义 CSS", () => {
     render({ section: "appearance" });
     assert.ok(inputById("site-title"), "基本信息在第一段直接可见");
+    assert.ok(inputById("site-custom-css"), "自定义 CSS 已自「高级」迁入外观段");
     assert.ok(
         (document.body.textContent || "").includes("这里改的是"),
         "作用域说明随第一段出现"
@@ -397,11 +393,4 @@ test("摊平模式（B1）：section=appearance 顶部说明与表单齐全", ()
         (document.body.textContent || "").includes("需点「保存设置」"),
         "草稿语义的说明也随第一段出现"
     );
-});
-
-test("摊平模式（B1）：section=advanced 只渲染高级段", () => {
-    render({ section: "advanced" });
-    assert.ok(inputById("site-custom-css"), "自定义 CSS 直接可见");
-    assert.equal(inputById("retention-days"), null, "数据段字段不该串场");
-    assert.equal(document.querySelector('[role="tab"]'), null, "不渲染页签栏");
 });

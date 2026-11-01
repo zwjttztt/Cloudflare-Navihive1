@@ -8,20 +8,20 @@
 //   · 不带 JSX 的模块不会被打包器当成组件块，将来「按 id 懒加载面板」的
 //     边界也干净 —— 注册表本身永远进不了面板块。
 //
-// 信息架构（2026-10-29 用户确认）：
-//   数据与活动（统计 / 备份与恢复 / 回收站 / 审计日志）
-//   系统与工具（全站设置 / AI 设置 / 密码保险库）
+// 信息架构（2026-10-31 A+B 方案用户确认）：
+//   数据与活动（统计 / 数据与维护 / 数据安全 / 审计日志）
+//   外观与工具（外观与搜索 / 密码保险库 / AI 设置）
 //   个人与支持（账号与安全 / 快捷键与操作帮助）
 //   底部危险区（退出登录 —— 不做导航项，固定在左栏底部、隔分隔线、error 色）
+// 「备份与恢复」+「回收站」合成「数据安全」，「高级」拆散吸收（CSS→外观，
+// 版本升级→数据与维护）：11 条收敛到 9 条，每个分组重新只讲一个主题。
 // 原来的「帮助」「会话」两个单条分组删掉：一个分组只装一项，等于多一层目录。
 import type SvgIcon from "@mui/material/SvgIcon";
 import InsightsIcon from "@mui/icons-material/Insights";
 import SettingsBackupRestoreIcon from "@mui/icons-material/SettingsBackupRestore";
-import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
 import HistoryIcon from "@mui/icons-material/History";
 import PaletteIcon from "@mui/icons-material/Palette";
 import StorageIcon from "@mui/icons-material/Storage";
-import TuneIcon from "@mui/icons-material/Tune";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import LockIcon from "@mui/icons-material/Lock";
 import ManageAccountsIcon from "@mui/icons-material/ManageAccounts";
@@ -35,11 +35,9 @@ export type NavCenterIcon = typeof SvgIcon;
 export type NavCenterId =
     | "stats"
     | "backup"
-    | "recycle"
     | "audit"
     | "config-appearance"
     | "config-data"
-    | "config-advanced"
     | "ai"
     | "vault"
     | "account"
@@ -84,17 +82,20 @@ export const NAV_CENTER_GROUPS: NavCenterGroup[] = [
                 audience: "always",
             },
             {
-                id: "backup",
-                label: "备份与恢复",
-                description: "导出整站数据、配置自动备份，或从备份文件恢复。",
-                icon: SettingsBackupRestoreIcon,
+                id: "config-data",
+                label: "数据与维护",
+                description: "离线缓存、跨设备同步、失效链接检测与版本升级。",
+                icon: StorageIcon,
                 audience: "always",
             },
+            // A+B 方案（2026-10-31 用户确认）：备份与回收站合成「数据安全」
+            // —— 怎么不丢（备份）、怎么找回（回收站）、留多久（保留策略，
+            // 从「数据与同步」迁来：规则跟着被管的东西走）。见 panels/DataSafetyPanel.tsx。
             {
-                id: "recycle",
-                label: "回收站",
-                description: "还原或彻底删除被删除的网站与分组。",
-                icon: RestoreFromTrashIcon,
+                id: "backup",
+                label: "数据安全",
+                description: "数据保留策略、备份与恢复、回收站：怎么不丢、怎么找回、留多久。",
+                icon: SettingsBackupRestoreIcon,
                 audience: "always",
             },
             {
@@ -108,38 +109,17 @@ export const NAV_CENTER_GROUPS: NavCenterGroup[] = [
     },
     {
         id: "system",
-        title: "系统与工具",
+        title: "外观与工具",
         items: [
             // 全站设置原是一个面板内三张 Tab（外观与搜索 / 数据 / 高级），
-            // 2026-10-31（B1）摊平成左栏三条：一个「一屏能看全的目录」里，
-            // 二级 Tab 是第二层藏东西的地方，目录里看不见就找不到。
-            // 三条共用同一个懒加载 chunk（见 panels/ConfigPanel.tsx）。
+            // 2026-10-31（B1）摊平：外观与搜索 / 数据与维护进左栏，
+            // 「高级」拆散吸收（CSS → 外观与搜索，版本升级 → 数据与维护）。
+            // 两条共用同一个懒加载 chunk（见 panels/ConfigPanel.tsx）。
             {
                 id: "config-appearance",
                 label: "外观与搜索",
-                description: "站点名称、主色、圆角字号、背景壁纸、图标与拼音搜索。",
+                description: "站点名称、主色、圆角字号、背景壁纸、自定义 CSS、图标与拼音搜索。",
                 icon: PaletteIcon,
-                audience: "always",
-            },
-            {
-                id: "config-data",
-                label: "数据与同步",
-                description: "离线缓存、跨设备同步、失效链接检测与数据保留策略。",
-                icon: StorageIcon,
-                audience: "always",
-            },
-            {
-                id: "config-advanced",
-                label: "高级",
-                description: "自定义 CSS 与版本升级。",
-                icon: TuneIcon,
-                audience: "always",
-            },
-            {
-                id: "ai",
-                label: "AI 设置",
-                description: "模型服务与凭据配置，配好才能用智能补全与语义搜索。",
-                icon: AutoAwesomeIcon,
                 audience: "always",
             },
             {
@@ -147,6 +127,13 @@ export const NAV_CENTER_GROUPS: NavCenterGroup[] = [
                 label: "密码保险库",
                 description: "端到端加密保存站点密码，主密码独立、可用恢复码找回。",
                 icon: LockIcon,
+                audience: "always",
+            },
+            {
+                id: "ai",
+                label: "AI 设置",
+                description: "模型服务与凭据配置，配好才能用智能补全与语义搜索。",
+                icon: AutoAwesomeIcon,
                 audience: "always",
             },
         ],
