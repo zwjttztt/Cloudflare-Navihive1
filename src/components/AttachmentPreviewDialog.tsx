@@ -518,7 +518,16 @@ export default function AttachmentPreviewDialog({
                 )}
 
                 {tooLarge && (
-                    <Typography sx={{ mt: 1, fontSize: 11.5, color: "warning.main" }} data-att-too-large='1'>
+                    // 这句是**文字**（11.5px），压在弹窗纸面 #fff 上：亮色 #ed6c02 实测
+                    // **3.11:1**，小字线 4.5 —— 换 --warn-on-wash 后 **5.72:1**；
+                    // 暗色 #ffa726 压 rgb(23,26,37) **8.93:1**，视觉零变化。
+                    <Typography
+                        sx={{
+                            mt: 1,
+                            fontSize: 11.5,
+                            color: "var(--warn-on-wash)",
+                        }}
+                        data-att-too-large='1'>
                         文件较大（{text.length} 个字符），这里只显示前 {EDITABLE_MAX_CHARS} 个，且不支持在线编辑。
                     </Typography>
                 )}

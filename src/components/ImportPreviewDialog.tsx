@@ -190,7 +190,11 @@ export default function ImportPreviewDialog({
                         variant='caption'
                         noWrap
                         sx={{
-                            color: 'warning.main',
+                            // 压在弹窗纸面 #fff（悬停时是 action.hover 的 rgb(245,245,245)）上的
+                            // 警示**文字**：亮色 #ed6c02 实测 3.11:1 / 悬停 2.86:1，小字线 4.5 ——
+                            // 换 --warn-on-wash 后 5.72:1 / 悬停 5.24:1；暗色 #ffa726 压
+                            // rgb(23,26,37) 8.93:1、悬停 7.15:1。
+                            color: 'var(--warn-on-wash)',
                             display: "block"
                         }}>
                         {entry.changeSummary}

@@ -531,7 +531,12 @@ export default function BackupTab({
                         sx={{
                             display: 'block',
                             mt: -0.25,
-                            color: 'warning.main'
+                            // 压在弹窗纸面（--surface-modal = rgba(255,255,255,0.94)，叠在
+                            // background.default #fff 上就是纯白）的**文字**：亮色 #ed6c02 实测
+                            // **3.11:1**，12px 小字线是 4.5 —— 差 1.39（2026-11 复量）。
+                            // 换 --warn-on-wash 后同底 **5.72:1**；暗色那档 #ffa726 压 rgb(23,26,37)
+                            // 是 **8.93:1**，视觉零变化。同色相压深、不换色，来历见 index.css。
+                            color: 'var(--warn-on-wash)'
                         }}>
                         留空 = 备份文件不加密。文件里有
                         {includeCredentials ? "站点账号密码（当前设置下会导出）与 " : ""}
@@ -608,7 +613,10 @@ export default function BackupTab({
                                 <Box
                                     component='span'
                                     sx={{
-                                        color: lastInfo.encrypted ? "text.secondary" : "warning.main",
+                                        // 「未加密」是纯文字，不是图形：亮色 #ed6c02 压弹窗纸面
+                                        // #fff 只有 **3.11:1**（< 4.5），换 --warn-on-wash 后
+                                        // **5.72:1**；暗色 #ffa726 压 rgb(23,26,37) **8.93:1**。
+                                        color: lastInfo.encrypted ? "text.secondary" : "var(--warn-on-wash)",
                                         fontWeight: lastInfo.encrypted ? 400 : 600
                                     }}>
                                     {encryptionNote}
@@ -639,9 +647,11 @@ export default function BackupTab({
                                     <Box
                                         component='span'
                                         sx={{
+                                            // 同上（手动备份那一行的「未加密」）：亮 3.11:1 → 5.72:1，
+                                            // 暗色 #ffa726 压 rgb(23,26,37) 8.93:1。
                                             color: lastInfo?.encrypted
                                                 ? "text.secondary"
-                                                : "warning.main",
+                                                : "var(--warn-on-wash)",
                                             fontWeight: lastInfo?.encrypted ? 400 : 600
                                         }}>
                                         {encryptionNote}
@@ -657,7 +667,10 @@ export default function BackupTab({
                                 className='nav-backup-auto-stale'
                                 sx={{
                                     display: 'block',
-                                    color: 'warning.main',
+                                    // 这一行最该被看见，也最不能糊：亮色 #ed6c02 压弹窗纸面 #fff
+                                    // 只有 **3.11:1**（< 4.5），换 --warn-on-wash 后 **5.72:1**；
+                                    // 暗色 #ffa726 压 rgb(23,26,37) **8.93:1**。
+                                    color: 'var(--warn-on-wash)',
                                     fontWeight: 600
                                 }}>
                                 自动备份已 {autoDays} 天没有成功，请检查网盘配置

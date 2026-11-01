@@ -357,36 +357,15 @@ async function openCenterAndWait() {
  * （亮 5.04 / 暗 8.04），但它**绿了很久**，原因不是界面没问题，而是附件抽屉
  * 从来不在这个脚本的扫描面上 —— 和记事本源码态是同一个病根。现在把它扫进来。
  *
- * ⚠️ 抽屉需要一份**非空**的列表数据才画得出来。`auditEnv.mjs` 的只读桩没实现
+ * ⚠️ 抽屉需要一份**非空**的列表数据才画得出来。`auditEnv.mjs` 的只读桩原先没实现
  *    `GET /api/notes/attachments/list`，请求落回通用的 `{ success: true }`，组件
  *    拿这个对象去 `.slice()` 直接抛 `TypeError: D.slice is not a function` ——
  *    抽屉连挂都挂不上（分段控件一起没了），那一刻扫出来的「0 处」是彻底的假绿。
- *    这一轮不动共用的 `auditEnv.mjs`（a11y / site 两个审计也在用），只在**本脚本**
- *    里给这一个 URL 补一份响应。以后若要收口，正解是在 auditEnv 里加一个
- *    `/api/notes/attachments/list` 分支，然后把下面这十来行删掉。
+ *    2026-11-01 起这份桩**下沉到 `auditEnv.mjs`**（见那里的 `ATTACHMENT_ROWS`）：
+ *    本脚本原来在页面里内联过一段 `window.fetch` 补丁，只对自己生效、还要抢在
+ *    点开抽屉之前注入；a11y-audit 拿不到那份补丁，一碰抽屉就整条崩掉。放到服务端
+ *    之后两个审计走同一条路，「谁先注入」这种时序问题不复存在。
  */
-const ATTACHMENT_ROWS = [
-    { id: "audit-a1", note_id: 1, filename: "白板草图.png", mime: "image/png", size: 184320, width: 800, height: 600, storage: "r2", created_at: "2026-10-05T09:00:00.000Z", ref_count: 2 },
-    { id: "audit-a2", note_id: 1, filename: "会议记录.txt", mime: "text/plain", size: 2048, width: null, height: null, storage: "r2", created_at: "2026-10-04T09:00:00.000Z", ref_count: 0 },
-    { id: "audit-a3", note_id: 2, filename: "归档备份.zip", mime: "application/octet-stream", size: 7340032, width: null, height: null, storage: "r2", created_at: "2026-10-03T09:00:00.000Z", ref_count: 0 },
-];
-
-/** 只补 list 这一个 URL，其余请求照旧走真 fetch（见上面注释里的取舍）。 */
-const STUB_ATTACHMENT_LIST = `(() => {
-  if (window.__auditAttStubbed) return 'already';
-  const real = window.fetch.bind(window);
-  const body = ${JSON.stringify(JSON.stringify(ATTACHMENT_ROWS))};
-  window.fetch = (input, init) => {
-    const url = typeof input === 'string' ? input : (input && input.url) || '';
-    if (url.includes('/api/notes/attachments/list')) {
-      return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } }));
-    }
-    return real(input, init);
-  };
-  window.__auditAttStubbed = true;
-  return 'patched';
-})()`;
-
 /**
  * 打开附件抽屉并等它真的渲染出来。
  *
@@ -434,7 +413,7 @@ const ATTACHMENTS_READY = `(() => {
 })()`;
 
 async function openAttachmentsAndWait() {
-    await evaluate(STUB_ATTACHMENT_LIST);
+    // 列表数据由共用桩（auditEnv.mjs 的 ATTACHMENT_ROWS）提供，这里不再注入 fetch 补丁
     const r = await evaluate(OPEN_ATTACHMENTS);
     if (r !== "clicked") {
         throw new Error(

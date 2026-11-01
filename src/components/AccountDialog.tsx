@@ -703,13 +703,18 @@ export function AccountPanel({
                                                         ? "（站点所有者）"
                                                         : ""}
                                                 </Typography>
+                                                {/* 「已停用，约 N 天后清除」是**文字**，压在这一行的
+                                                    action.hover 底上（亮 rgb(245,245,245) / 暗 rgb(42,44,54)）。
+                                                    亮色 #ed6c02 实测 **2.86:1**（12px 小字线 4.5），
+                                                    换 --warn-on-wash 后同底 **5.24:1**；
+                                                    暗色 #ffa726 同底 **7.15:1**，视觉零变化。 */}
                                                 <Typography
                                                     variant='caption'
                                                     color={
                                                         disabled
                                                             ? disabled && daysToDelete !== null && daysToDelete <= 7
                                                                 ? "error.main"
-                                                                : "warning.main"
+                                                                : "var(--warn-on-wash)"
                                                             : "text.secondary"
                                                     }
                                                 >

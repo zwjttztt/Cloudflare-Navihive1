@@ -12,10 +12,13 @@
 // 焦点可见性也是判据（用 CDP 发真 Tab 键触发 :focus-visible，见第 4 节）。
 //   - 滚动帧耗时 / 堆内存：CI 机器性能差异太大，钉死阈值只会偶发假红。
 //
-// 覆盖面（2026-10-31 起三段）：首页 → 记事本 → **设置中心**。
+// 覆盖面（2026-11-01 起四段）：首页 → 记事本 → 设置中心 → **记事本·附件抽屉**。
 // 加第三段的理由：中心是另一个 Modal 外壳 + 左栏导航（`Box component="button"`，
 // 行高随视口在 36/44 之间切），前面的「弹窗」一节只看命令面板（Ctrl+K），
 // 中心那一整套从没被量过 —— 行高从 44 压到 36 那次，判据只能靠人肉确认。
+// 加第四段的理由：附件抽屉是盖在记事本上的又一个界面态，里面的四档筛选、
+// 「文件名 = 预览入口」的裸按钮、悬停浮出的删除按钮从没被量过；对比度审计把它
+// 纳入扫描面时当场抓出 7 处不达标 —— 「没扫过的面 = 假的绿」已经应验过一次。
 //
 // ⚠️ 每一段都 **fail-closed**：入口找不到 / 界面没渲染出来 → 报红并写明「没测到」，
 //    绝不静默跳过。一条会悄悄不跑的审计比没有审计更糟：它的绿灯会被当成
@@ -84,9 +87,27 @@ if (pageErrors.length) {
 // 是因为「首页与记事本的判据必须是同一套」—— 各写一份迟早会漂移，
 // 而漂移之后量出来的绿灯就说明不了任何事。
 
-/** 无名按钮 / 无 alt 图 / 无标签输入 / 焦点可及数量 */
-const SCAN_A11Y = `(() => {
-  const q = s => [...document.querySelectorAll(s)];
+/**
+ * 无名按钮 / 无 alt 图 / 无标签输入 / 焦点可及数量。
+ *
+ * 提成**可限根**的函数（2026-11-01），写法照下面的 `scanTouch`：
+ *   · 不传 = 整页（首页 / 记事本两段的行为与参数化之前**一字不差**）
+ *   · 传选择器 = 只在那一个根里扫
+ *
+ * 为什么必须能限根：附件抽屉盖在记事本上时，记事本整页的控件仍在 DOM 里，
+ * 整页扫会把「记事本 94 个按钮」和「抽屉里那十几个」混成一个数 ——
+ * 「抽屉里到底几个无名控件」就说不出来了。判据只有一份实现：
+ * 各写一遍迟早漂移，漂移之后的绿灯说明不了任何事。
+ *
+ * ⚠️ 根找不到时返回 `{ missing: true }`（与 scanTouch 同一个约定），
+ *    调用方必须 fail-closed，不许把「没找到根」当成「扫了 0 处问题」。
+ *    注意 normal 分支**不返回** missing 字段 —— 首页 / 记事本两段的
+ *    JSON 输出要跟参数化之前完全一致，多一个 false 也算变了。
+ */
+const scanA11y = rootSelector => `(() => {
+  const root = ${rootSelector ? `document.querySelector(${JSON.stringify(rootSelector)}) || null` : "document"};
+  if (!root) return { missing: true };
+  const q = s => [...root.querySelectorAll(s)];
   const nameOf = el => (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim();
   const noNameBtns = q('button').filter(b => !nameOf(b)).length;
   const noAltImgs  = q('img').filter(i => !i.getAttribute('alt')).length;
@@ -100,6 +121,8 @@ const SCAN_A11Y = `(() => {
       const cs = getComputedStyle(i);
       if (cs.display === 'none' || cs.visibility === 'hidden') return false;
       if (i.getAttribute('aria-label')) return false;
+      // 这里刻意用 **document** 而不是 root：<label for> 允许挂在根外面，
+      // 限根扫描不该因为「标签在抽屉外」就把它判成无标签。
       if (i.id && document.querySelector('label[for="' + i.id + '"]')) return false;
       return !i.closest('label');
   }).length;
@@ -261,7 +284,7 @@ async function focusSweep(steps = 30) {
 }
 
 // ---------- 1. 可访问性：无名按钮 / 无 alt 图片 / 无标签输入 ----------
-const a11y = await evaluate(SCAN_A11Y);
+const a11y = await evaluate(scanA11y());
 console.log("=== 可访问性 ===");
 console.log(JSON.stringify(a11y, null, 1));
 
@@ -497,7 +520,7 @@ if (notesOpened !== "clicked") {
     }
 }
 
-const notesA11y = await evaluate(SCAN_A11Y);
+const notesA11y = await evaluate(scanA11y());
 console.log("=== 记事本：可访问性 ===");
 console.log(JSON.stringify(notesA11y, null, 1));
 
@@ -598,6 +621,193 @@ for (const s of centerTouch.warnSamples) {
     console.log(`   ~ ${String(s.w).padStart(4)}×${String(s.h).padStart(3)}  「${s.label}」  .${s.cls}`);
 }
 
+// ---------- 记事本·附件抽屉（2026-11-01 加）----------
+//
+// 为什么单独一段：抽屉（`src/components/AttachmentManager.tsx`）是盖在记事本上的
+// 又一个界面态 —— 顶栏四档筛选、卡片里那颗「文件名 = 预览入口」的裸 <button>、
+// 悬停/聚焦才浮出的删除 IconButton、底部的加载更多 / 清理，这一整套从来没被任何
+// 无障碍审计看过。对比度审计把它纳入扫描面时当场抓出 7 处不达标，「没扫过的面 =
+// 假的绿」这条规律在这个抽屉上已经应验过一次，所以这里也补上。
+//
+// ⚠️ 抽屉要有**非空**列表才画得出来：列表接口的桩已下沉到 `auditEnv.mjs`
+//    （那里的 `ATTACHMENT_ROWS`）。没有它，`mgr.list()` 拿到通用的
+//    `{ success: true }` 去 `.slice()` 会抛 `TypeError`，抽屉整个挂不上 ——
+//    那一刻量到的「0 处不合格」是彻底的假绿。
+//
+// ⚠️ **fail-closed**：找不到附件入口 / 抽屉画不完 / Esc 关不掉 —— 一律报错并写明
+//    「这一节没测到」。一条会悄悄不跑的审计比没有审计更糟。
+
+// 设置中心还盖着一个 Modal，先回首页再开记事本：重载是唯一稳的「回到起点」
+// （关闭入口在窄屏/桌面不是同一个控件，按文案找必然随界面漂，见对比度审计同款说明）
+await evaluate(`location.href = ${JSON.stringify(site.url)}`);
+await waitRendered(evaluate, { minButtons: 8, timeoutMs: 20_000 });
+
+const drawerNotesOpened = await evaluate(`(() => {
+    const btn = [...document.querySelectorAll('button')]
+        .find(b => (b.getAttribute('aria-label') || '') === '打开记事本');
+    if (!btn) return 'no-entry';
+    btn.click();
+    return 'clicked';
+})()`);
+if (drawerNotesOpened !== "clicked") {
+    console.error(
+        `抽屉段：记事本入口找不到（${drawerNotesOpened}）—— 这一节没测到，审计结果不可信`
+    );
+    site.close();
+    done(1);
+}
+{
+    const deadline = Date.now() + 20_000;
+    let ready = false;
+    while (Date.now() < deadline) {
+        ready = await evaluate(`(document.body.innerText || '').includes('会议纪要')`);
+        if (ready) break;
+        await new Promise(r => setTimeout(r, 300));
+    }
+    if (!ready) {
+        console.error("抽屉段：记事本 20 秒内没渲染出桩里的笔记 —— 这一节没测到，审计结果不可信");
+        site.close();
+        done(1);
+    }
+}
+
+/**
+ * 打开附件抽屉。
+ *
+ * 用 `[data-nav-attachments]`（NotesNavPanel 里那颗 NavRow 的 data 属性）而不是
+ * 可访问名：那颗按钮没有 aria-label，名字来自内部文字「附件」，按文字找会随文案
+ * 改写而漂。文字只作为 data 属性消失时的兜底 —— 与对比度审计同一套写法。
+ */
+const drawerOpened = await evaluate(`(() => {
+  const vis = el => {
+    const s = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+  };
+  const btn = document.querySelector('[data-nav-attachments]')
+      || [...document.querySelectorAll('button,[role="button"]')]
+          .filter(vis)
+          .find(b => (b.textContent || '').trim() === '附件');
+  if (!btn) return 'no-entry';
+  btn.click();
+  return 'clicked';
+})()`);
+if (drawerOpened !== "clicked") {
+    console.error(
+        `记事本里找不到「附件」入口（${drawerOpened}）—— 抽屉这一节没测到，审计结果不可信`
+    );
+    site.close();
+    done(1);
+}
+
+/** 四档筛选：全部 / 图片 / 文档 / 其他（少一档就说明分段控件没画全）。 */
+const ATT_MIN_OPTIONS = 4;
+
+/**
+ * 「抽屉真的画完了」的判据：四档筛选都在 + 列表已落地（没有 loading 态）
+ * + 至少一张卡片。
+ *
+ * ⚠️ 只等分段控件是不够的：它在抽屉头部**同步**渲染，而列表是**异步拉的** ——
+ *    那一刻网格里还是「正在读取附件列表…」的骨架态，卡片 / 文件名 / 删除按钮
+ *    一个都还没挂，扫出来 0 处不合格。加这一段原本就是为了量这些控件，
+ *    等错对象等于白加（对比度审计那边踩过同一个坑）。
+ */
+const ATTACHMENTS_READY = `(() => {
+  return {
+    options: document.querySelectorAll('[data-att-filter-option]').length,
+    loading: document.querySelectorAll('[data-att-state="loading"]').length,
+    rows: document.querySelectorAll('[data-attachment-row]').length,
+  };
+})()`;
+{
+    const deadline = Date.now() + 20_000;
+    let st = null;
+    let ok = false;
+    while (Date.now() < deadline) {
+        st = await evaluate(ATTACHMENTS_READY);
+        if (st && st.options >= ATT_MIN_OPTIONS && st.loading === 0 && st.rows > 0) {
+            ok = true;
+            break;
+        }
+        await new Promise(r => setTimeout(r, 200));
+    }
+    if (!ok) {
+        console.error(
+            `附件抽屉 20 秒内没画完（筛选 ${st?.options ?? 0} 档 / 至少要 ${ATT_MIN_OPTIONS} 档、` +
+                `加载中 ${st?.loading ?? "?"} 个、卡片 ${st?.rows ?? 0} 张）—— 这一节没测到，` +
+                "审计结果不可信（宁可红也别静默跳过）"
+        );
+        site.close();
+        done(1);
+    }
+}
+
+// 只扫抽屉内部（`.MuiDrawer-paper`）：抽屉盖在记事本上时记事本的控件仍在 DOM 里，
+// 整页扫会把「记事本 94 个按钮」和「抽屉里这十几个」混成一个数
+const drawerA11y = await evaluate(scanA11y(".MuiDrawer-paper"));
+if (drawerA11y.missing) {
+    console.error("附件抽屉没有 .MuiDrawer-paper 外壳 —— 这一节没测到，审计结果不可信");
+    site.close();
+    done(1);
+}
+const drawerTouch = await evaluate(scanTouch(".MuiDrawer-paper"));
+if (drawerTouch.missing) {
+    console.error("附件抽屉没有 .MuiDrawer-paper 外壳 —— 这一节没测到，审计结果不可信");
+    site.close();
+    done(1);
+}
+console.log("=== 记事本·附件抽屉：可访问性 ===");
+console.log(JSON.stringify(drawerA11y, null, 1));
+console.log("=== 记事本·附件抽屉：触控目标 ===");
+console.log(
+    `   可点元素 ${drawerTouch.total} 个：低于 24px 的 ${drawerTouch.tooSmall} 个，24~31px 的 ${drawerTouch.borderline} 个`
+);
+for (const s of drawerTouch.samples) {
+    console.log(
+        `   ${String(s.w).padStart(4)}×${String(s.h).padStart(3)}  「${s.label}」  .${s.cls}  (父 .${s.parent})`
+    );
+}
+for (const s of drawerTouch.warnSamples) {
+    console.log(`   ~ ${String(s.w).padStart(4)}×${String(s.h).padStart(3)}  「${s.label}」  .${s.cls}`);
+}
+
+/**
+ * Esc 关抽屉，并等它**真的消失**再往下走。
+ *
+ * 用 Esc 而不是点遮罩 / 找关闭键：Drawer（Modal）认 Esc 是 MUI 的固定契约，
+ * 而遮罩与关闭键在不同布局下不是同一个节点 —— 按位置点必然随界面漂，一次漂移
+ * 就是「关不掉、后面全错」。关完必须确认它没了：残影会把抽屉里的控件混进后面的
+ * 判定里（本轮后面虽然没有别的段，但下一轮插段就会中招）。
+ */
+await evaluate(`(() => {
+  const paper = document.querySelector('.MuiDrawer-paper');
+  (paper || document.body).dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+  );
+  return true;
+})()`);
+{
+    const deadline = Date.now() + 10_000;
+    let left = 1;
+    let closed = false;
+    while (Date.now() < deadline) {
+        left = await evaluate(`document.querySelectorAll('[data-att-filter-option]').length`);
+        if (left === 0) {
+            closed = true;
+            break;
+        }
+        await new Promise(r => setTimeout(r, 150));
+    }
+    if (!closed) {
+        console.error(
+            `附件抽屉按 Esc 后 10 秒内没关掉（还剩 ${left} 档筛选）—— 这一节没测到/没关掉，审计结果不可信`
+        );
+        site.close();
+        done(1);
+    }
+}
+console.log(`=== 记事本·附件抽屉：Esc 关闭 ok（筛选 ${ATT_MIN_OPTIONS} 档已归零）===`);
+
 // ---------- 判定 ----------
 const failures = [];
 if (a11y.noNameBtns > 0) failures.push(`无名按钮 ${a11y.noNameBtns} 个`);
@@ -638,6 +848,22 @@ if (notesNoRing.length > 0) {
 // 设置中心：同一把尺子（< 24px 就是 WCAG 2.5.8 违规；24~31px 只提示）
 if (centerTouch.tooSmall > 0) {
     failures.push(`设置中心：触控目标小于 24px 的 ${centerTouch.tooSmall} 个`);
+}
+
+// 记事本·附件抽屉：与设置中心同一条尺子（< 24px 就是 WCAG 2.5.8 违规；
+// 24~31px 只提示不判失败）。这一段 2026-11-01 才第一次被量 ——
+// 之前它的无名控件与触控目标一次都没进过审计面，绿灯纯粹是没扫过。
+if (drawerA11y.noNameBtns > 0) {
+    failures.push(`记事本·附件抽屉：无名按钮 ${drawerA11y.noNameBtns} 个`);
+}
+if (drawerA11y.noAltImgs > 0) {
+    failures.push(`记事本·附件抽屉：无 alt 图片 ${drawerA11y.noAltImgs} 张`);
+}
+if (drawerA11y.inputsNoLabel > 0) {
+    failures.push(`记事本·附件抽屉：无 label 输入 ${drawerA11y.inputsNoLabel} 个`);
+}
+if (drawerTouch.tooSmall > 0) {
+    failures.push(`记事本·附件抽屉：触控目标小于 24px 的 ${drawerTouch.tooSmall} 个`);
 }
 
 console.log("");

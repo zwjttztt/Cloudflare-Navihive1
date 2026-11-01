@@ -197,6 +197,27 @@ const NOTES = [
 /** 笔记 id → 标签 id[]（GET /api/notes/tag-links 的形状） */
 const NOTE_TAG_LINKS = { 1: [1], 2: [1, 2], 3: [] };
 
+// ---------------- 附件列表（2026-11-01 从 contrast-audit 下沉到共用桩） ----------------
+//
+// 为什么必须有这份桩：附件抽屉（`src/components/AttachmentManager.tsx`）一打开就拉
+// `GET /api/notes/attachments/list`。原先桩里没有这个分支，请求落回末尾那个通用的
+// `{ success: true }`，组件拿着这个对象去 `.slice()` 直接抛
+// `TypeError: D.slice is not a function` —— 抽屉连挂都挂不上（四档筛选一起消失），
+// 那一刻审计量到的「0 处不合格」是彻底的假绿。
+//
+// 之前 contrast-audit 在**自己脚本里**内联过一份 `window.fetch` 补丁（只对自己生效、
+// 且必须赶在点开抽屉之前注入），a11y-audit 拿不到就一直崩在抽屉上。下沉到这里之后
+// 两个脚本走同一条路：桩在服务端，与「谁先注入」无关。
+//
+// 三条数据刻意覆盖抽屉的三种渲染分支：图片（走缩略图 fetch 三态）、
+// 文本/文档（走文档图标占位）、octet-stream（落到「其他」筛选）；
+// ref_count 同时覆盖「引用 N 次」与「未引用」两种文案与配色。
+const ATTACHMENT_ROWS = [
+    { id: "audit-a1", note_id: 1, filename: "白板草图.png", mime: "image/png", size: 184320, width: 800, height: 600, storage: "r2", created_at: "2026-10-05T09:00:00.000Z", ref_count: 2 },
+    { id: "audit-a2", note_id: 1, filename: "会议记录.txt", mime: "text/plain", size: 2048, width: null, height: null, storage: "r2", created_at: "2026-10-04T09:00:00.000Z", ref_count: 0 },
+    { id: "audit-a3", note_id: 2, filename: "归档备份.zip", mime: "application/octet-stream", size: 7340032, width: null, height: null, storage: "r2", created_at: "2026-10-03T09:00:00.000Z", ref_count: 0 },
+];
+
 // ---------------- 分享页（2026-10-24 加） ----------------
 const SHARE_NOTE_TOKEN = "a".repeat(64);
 const SHARE_GROUP_TOKEN = "b".repeat(64);
@@ -285,6 +306,13 @@ export async function startSiteServer(port = 0) {
             }
             if (pathname === "/api/notes/shares") {
                 res.end(JSON.stringify([]));
+                return;
+            }
+            // 附件抽屉的列表（见上面 ATTACHMENT_ROWS 的说明）。
+            // ⚠️ 顺序：更具体的路径必须排在 /api/notes 之前 —— 这条是精确匹配，
+            //    但保持与全节一致的书写顺序，免得后来人把它挪到后面时被 /api/notes 吃掉。
+            if (pathname === "/api/notes/attachments/list") {
+                res.end(JSON.stringify(ATTACHMENT_ROWS));
                 return;
             }
             if (pathname === "/api/notes") {

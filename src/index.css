@@ -305,8 +305,10 @@
        与 --accent-on-wash 同一个思路：底色几乎是白，要的是「同色相更深」而不是换色。
        #9a5500 同底实测 **5.41:1**：色相仍是琥珀（不是红），只压明度。
        ⚠️ 只给**文字**用，别拿去刷图标/描边（图形线是 3:1，那档 warning.main 本来就够）。
-       ⚠️ 也别顺手把它当成「warning.main 的替代品」全站铺开：其余十来处 warning.main
-       大多不在扫描面上、各自底色也不一样，要改得一处一处量过再改。 */
+       ⚠️ 全站的**警示文字**已在 24.3.0 逐处量过并换完（AccountDialog / BackupTab ×4 /
+       AttachmentPreviewDialog / ImportPreviewDialog / SearchStatusLine / 附件抽屉 ×2），
+       剩下 2 处 `warning.main` 都不是文字：BackupTab 的勾选框描边、MaintenanceBanner 的
+       淡底，按图形线 3:1 本来就达标，别顺手换掉。新增警示文字仍要**先量底色再选**。 */
     --warn-on-wash: #9a5500;
 
     /* 笔记编辑器里「Markdown 结构记号」的颜色 —— 就是 `#`（标题记号）、`-`（列表记号）、

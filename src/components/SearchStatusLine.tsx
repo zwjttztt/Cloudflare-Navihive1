@@ -98,7 +98,11 @@ export default function SearchStatusLine({
                 <Typography
                     variant='caption'
                     sx={{
-                        color: 'warning.main',
+                        // 压页面底（.nav-root 的 background.default：亮 #fff / 暗 #121212）的
+                        // 警示**文字**：亮色 #ed6c02 实测 **3.11:1**，小字线 4.5 ——
+                        // 换 --warn-on-wash 后 **5.72:1**；暗色 #ffa726 压 #121212 **9.64:1**。
+                        // （用户自设了背景图时底色是那张图，量不出来，按这条同色相压深走。）
+                        color: 'var(--warn-on-wash)',
                         display: "block",
                         mt: -2,
                         mb: 2

@@ -419,6 +419,11 @@ export default function AttachmentManager({
                                                         setDeleteTarget(file);
                                                     }}
                                                     sx={{
+                                                        // ⚠️ size="small" 的实测盒子是 **27×27**（图标 15 + 内边距 5×2
+                                                        // + 边框 1×2）—— 刚过 24 底线但落在 24~31 的提示档。
+                                                        // 抬到 28 就离开那一档：只改盒子不改图标，视觉几乎没有变化。
+                                                        minWidth: 28,
+                                                        minHeight: 28,
                                                         bgcolor: "background.paper",
                                                         border: "1px solid var(--neutral-border)",
                                                         "&:hover": { color: "error.main" },
@@ -447,6 +452,15 @@ export default function AttachmentManager({
                                                     sx={{
                                                         display: "block",
                                                         width: "100%",
+                                                        // ⚠️ 触控目标 ≥24（WCAG 2.5.8）：这颗裸 <button> 的字号
+                                                        // 只有 11.5px，行高按 1.5 算出来的盒子是 **180×17**，
+                                                        // 比 24px 底线矮 7px —— 审计（script/a11y-audit.mjs 的
+                                                        // 附件抽屉段）量到的就是 getBoundingClientRect。
+                                                        // 字号不动，把**行盒**撑到 24px：文字仍在盒子正中，
+                                                        // 视觉只多出 3~4px 上下的空隙；同时显式给 minHeight，
+                                                        // 免得将来某处 font/inherit 一改高度又掉回 17。
+                                                        minHeight: 24,
+                                                        lineHeight: "24px",
                                                         p: 0,
                                                         m: 0,
                                                         border: "none",
