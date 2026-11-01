@@ -7,6 +7,7 @@
 //      上报落库时是一小段 JSON，直接在流水里翻没人看得懂，所以单开一个视图。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { actionLabel } from "../utils/auditActionLabels";
+import { errorSourceLabel, formatAuditDetail, formatAuditPath } from "../utils/auditDetailText";
 import { fmtDateTime } from "../utils/format";
 import {
     Button,
@@ -271,33 +272,37 @@ export function AuditPanel({ client, retentionDays }: AuditPanelProps) {
                             />
                         ) : (
                             <List dense sx={{ py: 0 }}>
-                                {rows.map(row => (
-                                    <DialogListRow
-                                        key={row.id}
-                                        alignItems='flex-start'
-                                        primary={
-                                            <span>
-                                                <b>{actionLabel(row.action)}</b>
-                                                {row.actor ? ` · ${row.actor}` : ""}
-                                            </span>
-                                        }
-                                        secondary={
-                                            <span>
-                                                {row.detail ? `${row.detail} · ` : ""}
-                                                {fmtDateTime(row.created_at)}
-                                            </span>
-                                        }
-                                        actions={
-                                            <Chip
-                                                size='small'
-                                                variant='outlined'
-                                                label={row.ip || "—"}
-                                                sx={{ maxWidth: 132 }}
-                                            />
-                                        }
-                                        actionsWidth={144}
-                                    />
-                                ))}
+                                {rows.map(row => {
+                                    // 错误上报的 detail 是一小段 JSON，直接摊在流水里没人看得懂
+                                    const detailText = formatAuditDetail(row.action, row.detail);
+                                    return (
+                                        <DialogListRow
+                                            key={row.id}
+                                            alignItems='flex-start'
+                                            primary={
+                                                <span>
+                                                    <b>{actionLabel(row.action)}</b>
+                                                    {row.actor ? ` · ${row.actor}` : ""}
+                                                </span>
+                                            }
+                                            secondary={
+                                                <span>
+                                                    {detailText ? `${detailText} · ` : ""}
+                                                    {fmtDateTime(row.created_at)}
+                                                </span>
+                                            }
+                                            actions={
+                                                <Chip
+                                                    size='small'
+                                                    variant='outlined'
+                                                    label={row.ip || "—"}
+                                                    sx={{ maxWidth: 132 }}
+                                                />
+                                            }
+                                            actionsWidth={144}
+                                        />
+                                    );
+                                })}
                             </List>
                         )}
                         {hasMore && (
@@ -353,10 +358,11 @@ export function AuditPanel({ client, retentionDays }: AuditPanelProps) {
                                     key={group.key}
                                     alignItems='flex-start'
                                     primary={
-                                        <span>
-                                            <b>{group.source}</b>
+                                        // title 保留原始代号：想按 source 去日志里查的人悬停就能看到
+                                        <span title={group.source}>
+                                            <b>{errorSourceLabel(group.source)}</b>
                                             {group.paths.length > 0
-                                                ? ` · ${group.paths.join("、")}`
+                                                ? ` · ${group.paths.map(formatAuditPath).join("、")}`
                                                 : ""}
                                         </span>
                                     }

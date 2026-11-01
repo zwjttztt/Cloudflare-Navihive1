@@ -206,6 +206,54 @@ test("切到「前端错误」才拉，并按次数归并展示", async () => {
     cleanup();
 });
 
+test("错误上报的 detail 是一段 JSON：流水和「前端错误」两块都得说人话", async () => {
+    // 用户 2026-11-01 反馈「审计日志里两块内容看不懂」：一块是操作日志里那一整坨 JSON，
+    // 另一块是前端错误视图里的代码代号 + 孤零零一个 `/`。这条用例同时盯住两边 ——
+    // 两边都在同一个面板里，只测一半的话另一处退回去也没人发现。
+    const detail = JSON.stringify({
+        source: "save-error",
+        path: "/",
+        name: "NonError",
+        message: "加载数据失败: 认证失败: 请先登录",
+        rid: "-",
+    });
+    const { client } = makeClient({
+        rows: [{ ...ROW, id: 2, action: "client-error", actor: "anonymous", detail }],
+        groups: [
+            {
+                key: "save-error|加载数据失败",
+                source: "save-error",
+                message: "加载数据失败: 认证失败: 请先登录",
+                count: 10,
+                lastAt: "2026-11-01 03:29:50",
+                paths: ["/"],
+            },
+        ],
+    });
+    mount(client);
+    await waitFor(
+        "流水渲染出来",
+        () => (document.body.textContent ?? "").includes("前端错误上报")
+    );
+
+    const logText = document.body.textContent ?? "";
+    assert.equal(logText.includes('{"source"'), false, "流水里不能出现 JSON 原文");
+    assert.match(logText, /保存数据/, "来源代号要翻成中文");
+    assert.match(logText, /加载数据失败: 认证失败: 请先登录/, "原始错误信息要保留");
+
+    const tab = document.querySelector<HTMLButtonElement>('[aria-label="前端错误"]');
+    assert.ok(tab, "应有「前端错误」视图切换");
+    await clickAsync(tab);
+    await waitFor("错误聚合渲染出来", () => (document.body.textContent ?? "").includes("10 次"));
+
+    const errorText = document.body.textContent ?? "";
+    assert.equal(errorText.includes('{"source"'), false, "错误视图同样不能出现 JSON 原文");
+    assert.match(errorText, /保存数据/, "这里也要显示中文来源名");
+    assert.equal(errorText.includes("save-error"), false, "原始代号不该出现在正文里");
+    assert.match(errorText, /首页/, "`/` 要显示成「首页」，不能是孤零零一个斜杠");
+    cleanup();
+});
+
 test("按操作者筛选：只有点「筛选」（或回车）才重新拉，不是每敲一个字都拉", async () => {
     const { client, calls } = makeClient({ rows: [ROW] });
     mount(client);
