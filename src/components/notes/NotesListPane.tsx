@@ -863,6 +863,15 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                             visibility: menuClosing || rowActionsSuppressed === note.id ? "hidden" : "visible",
                                             flexShrink: 0,
                                             p: 0.375,
+                                            // ⚠️ 这颗按钮的盒子正好压在 24×24 的触控底线上
+                                            // （3px 内边距 ×2 + 18px 图标）。本机实测 24.00，
+                                            // 但「刚好等于底线」太脆：换环境（CI 的 Chrome 版本 /
+                                            // DPR 不同）图标度量差半个像素就成了 23.98，
+                                            // a11y 审计当场红一次（2026-11-01 真发生过）。
+                                            // 显式钉住上下限，让盒子由布局决定、不由图标度量决定。
+                                            minWidth: 24,
+                                            minHeight: 24,
+                                            boxSizing: "border-box",
                                             color: "text.secondary",
                                             bgcolor: "var(--bg-base)",
                                             borderRadius: "50%",

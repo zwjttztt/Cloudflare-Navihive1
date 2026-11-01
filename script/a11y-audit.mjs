@@ -144,6 +144,15 @@ const scanA11y = rootSelector => `(() => {
 const scanTouch = scopeSelector => `(() => {
   const root = ${scopeSelector ? `document.querySelector(${JSON.stringify(scopeSelector)}) || null` : "document"};
   if (!root) return { total: 0, tooSmall: 0, samples: [], borderline: 0, warnSamples: [], missing: true };
+  // ⚠️ 亚像素容差（2026-11-01，CI 假红之后加的）。
+  //    背景：记事本行尾的「⋯ 的操作」按钮是 padding 3px + 18px 图标 = **24.00**，
+  //    本机实测正是 24.00；同版本代码在 CI 上被判「小于 24px 1 个」，日志里却打印
+  //    「24×24」—— 因为**判据比的是原始浮点、打印用的是取整**，两个数字不是同一个。
+  //    浏览器布局单位是 LayoutUnit（1/64 px），再加上 devicePixelRatio 贴齐，
+  //    24px 的盒子完全可能报成 23.98 或 24.02；这不是缺陷，是渲染精度。
+  //    容差取 0.5：远大于 LayoutUnit 舍入（≤1/64≈0.016）与 DPR 贴齐误差，
+  //    又远小于任何有意义的尺寸差 —— 23.5 依然判红，真缩水到 22/20 抓得住。
+  const EPS = 0.5;
   const els = [...root.querySelectorAll('button, a[href], [role="button"], [role="option"]')];
   const small = [], warn = [];
   for (const el of els) {
@@ -156,11 +165,13 @@ const scanTouch = scopeSelector => `(() => {
           cls: el.className.toString().slice(0, 40),
           label: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 16),
           parent: (el.parentElement && el.parentElement.className.toString().slice(0, 30)) || '',
-          w: Math.round(r.width),
-          h: Math.round(r.height),
+          // 打印的就是**被判定**的那个数（两位小数）：日志里看到 24，就真的是 24 附近，
+          // 不会出现「打印 24、却判小于 24」这种没法复现的鬼话。
+          w: +r.width.toFixed(2),
+          h: +r.height.toFixed(2),
       };
-      if (r.height < 24 || r.width < 24) small.push(rec);
-      else if (r.height < 32 || r.width < 32) warn.push(rec);
+      if (r.height < 24 - EPS || r.width < 24 - EPS) small.push(rec);
+      else if (r.height < 32 - EPS || r.width < 32 - EPS) warn.push(rec);
   }
   return { total: els.length, tooSmall: small.length, samples: small.slice(0, 20), borderline: warn.length, warnSamples: warn.slice(0, 10) };
 })()`;
