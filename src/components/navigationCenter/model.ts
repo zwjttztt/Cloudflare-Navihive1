@@ -202,6 +202,20 @@ export const NAV_CENTER_DANGER: NavCenterItem[] = [
 /** 有右栏面板的 id：退出登录不是导航项，没有面板 */
 export type NavCenterPanelId = Exclude<NavCenterId, "logout">;
 
+/**
+ * 左栏过滤用的全文本：名称 + 别名 + 一行说明。纯拼接，规矩写在一处，好让守卫盯得住。
+ *
+ * 为什么抽出来：这三段拼成的那串字符串是左栏过滤**唯一的**搜索面
+ * （`filterNavGroups` 只做 `includes`），但它原来是散在
+ * NavigationCenterDialog 的 JSX 里一行内联的数组拼 join —— 拼错、漏掉一段、
+ * 或者误以为「说明不参与过滤」，编译和类型都看不出来，只有人打字搜不到才发现。
+ * 抽成纯函数之后，tests/settingsNavFilter.test.ts 能拿**真实注册表**去断言
+ * 「说明也参与过滤」「别名 + 大小写不敏感」这些行为。
+ */
+export function navSearchText(item: NavCenterItem): string {
+    return [item.label, ...(item.keywords ?? []), item.description].join(" ");
+}
+
 /** 按 id 取条目（左栏分组与底部危险区都查） */
 export function findNavItem(id: NavCenterId): NavCenterItem | undefined {
     for (const group of NAV_CENTER_GROUPS) {

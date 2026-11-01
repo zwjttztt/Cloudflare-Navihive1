@@ -24,11 +24,13 @@
 // `filterable` / `filterValue` / `onFilterChange`，而外壳是**所有中心共用**的 ——
 // 下一个中心接进来，第一件事就是继承一个「打字过滤什么都没发生」的空框。
 // 所以过滤、空态、结果播报全部留在这一层；外壳与中心零改动（中心只多拼一个
-// `searchText` 字符串）。过滤本身是纯函数，在 SettingsWorkspaceNavFilter.tsx。
+// `searchText` 字符串）。过滤本身是纯函数，在 navFilter.ts（.ts 不是 .tsx：
+// 那里不导出组件，纯函数测试也不必为此拉进 React/MUI）。
 import { createContext, useContext, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Box from "@mui/material/Box";
-import WorkspaceNavFilter, { filterNavGroups } from "./SettingsWorkspaceNavFilter";
+import WorkspaceNavFilter from "./SettingsWorkspaceNavFilter";
+import { filterNavGroups } from "./navFilter";
 
 /**
  * 外壳 ↔ 导航的信号：窄屏两步式导航里，点中条目要把外壳切到「面板」那一步。

@@ -110,7 +110,10 @@ function AttachmentThumb({ id, filename }: { id: string; filename: string }) {
                 flexDirection: "column",
                 alignItems: "center",
                 gap: 0.5,
-                color: failed ? "warning.main" : "text.secondary",
+                // ⚠️ 失败态不能用 warning.main：亮色 #ed6c02 压卡片近白底只有 **2.8:1**
+                // （10px 小字要 4.5）。与卡片底部「未引用」是同一个问题，
+                // 同样走 --warn-on-wash（亮 5.41 / 暗 9.18）。见 index.css 里的说明。
+                color: failed ? "var(--warn-on-wash)" : "text.secondary",
                 px: 1,
             }}
         >
@@ -479,12 +482,23 @@ export default function AttachmentManager({
                                                     {file.filename || "(未命名)"}
                                                 </Typography>
                                             )}
+                                            {/* 「大小 · 引用 N 次 / 未引用」。
+                                                ⚠️ 「未引用」不能用 `warning.main`：亮色 #ed6c02
+                                                压这张近白卡片（rgb(249,249,249)）只有 **2.95:1**，
+                                                10.5px 的小字线是 4.5。改用 --warn-on-wash
+                                                （亮色压深到 #9a5500 = 5.41:1，暗色沿用 #ffa726 = 9.18:1），
+                                                色相不变、仍读作「警示」。见 index.css 里的说明。
+                                                ⚠️ 「引用 N 次」也从 text.disabled 换成 text.secondary：
+                                                前者是 rgba(0,0,0,.38)，**混alpha 之后**在亮色实测
+                                                2.66:1（对比度扫描器只取 RGB 不混前景 alpha，会把它报成
+                                                19.89 —— 那条判据的缺陷另记，别指望它拦住这一类）。
+                                                这是纯元信息、不是「禁用控件」，用 secondary 语义也更对。 */}
                                             <Typography
                                                 sx={{
                                                     fontSize: 10.5,
                                                     display: "flex",
                                                     gap: 0.5,
-                                                    color: refs > 0 ? "text.disabled" : "warning.main",
+                                                    color: refs > 0 ? "text.secondary" : "var(--warn-on-wash)",
                                                 }}
                                             >
                                                 <span>{fmtBytes(file.size || 0)}{file.width && file.height ? ` · ${file.width}×${file.height}` : ""}</span>

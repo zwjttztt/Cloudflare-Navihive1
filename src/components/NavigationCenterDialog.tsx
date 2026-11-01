@@ -31,6 +31,7 @@ import { prefetchChunk } from "../utils/lazyPrefetch";
 import { dialogChunks } from "../utils/dialogChunks";
 import {
     findNavItem,
+    navSearchText,
     resolveNavActiveId,
     visibleNavDanger,
     visibleNavGroups,
@@ -190,11 +191,8 @@ export default function NavigationCenterDialog({
                         id: item.id,
                         label: item.label,
                         // 左栏过滤框的搜索面：名称 + 别名 + 一行说明。
-                        // 在中心拼、而不是让左栏认识 NavCenterItem —— 左栏是纯展示件
-                        //（它只做 includes，见 WorkspaceNavItem.searchText 的注释）。
-                        searchText: [item.label, ...(item.keywords ?? []), item.description].join(
-                            " "
-                        ),
+                        // 拼接规矩在 model.ts 的 navSearchText 里（纯函数、有单测守着）。
+                        searchText: navSearchText(item),
                         icon: <item.icon fontSize='small' />,
                     })
                 ),

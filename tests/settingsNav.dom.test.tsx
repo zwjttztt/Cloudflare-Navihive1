@@ -12,9 +12,13 @@
 //   1. 输入即过滤、清空即恢复（含分组分割线的下标必须是过滤后的）；
 //   2. 空态给出两步提示，且**不放**第二颗「清空」按钮（Tab 到一个什么都不做的按钮很差）；
 //   3. ↓ 把焦点交给第一个可见条目（键盘用户不必 Tab 穿过整列）；
-//   4. Esc 有词时只清空搜索、**不冒出去**（冒出去 = 中心被关掉，MUI 不看 defaultPrevented）。
+//   4. Esc 有词时只清空搜索、**不冒出去**（冒出去 = 中心被关掉，MUI 不看 defaultPrevented）；
+//   5. 换成**真实注册表**（model.ts 的 NAV_CENTER_GROUPS）时，搜「主色」真的只剩一条、
+//      清空真的回到 9 条 —— 前面四条用的是自造样本，只能证明算法对，
+//      证明不了「注册表里真的写了那些词、拼出来的那串真的能搜到」。
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createElement } from "react";
 import type { ReactElement } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -23,6 +27,7 @@ import type {
     WorkspaceNavGroup,
     WorkspaceNavItem,
 } from "../src/components/settingsWorkspace/SettingsWorkspaceNav";
+import { NAV_CENTER_GROUPS, navSearchText } from "../src/components/navigationCenter/model";
 
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
@@ -88,6 +93,24 @@ const GROUPS: WorkspaceNavGroup[] = [
 ];
 
 const DANGER: WorkspaceNavItem[] = [{ id: "logout", label: "退出登录", icon: null }];
+
+/**
+ * **真实注册表**映射成的左栏分组：与 NavigationCenterDialog 的拼法逐字一致
+ * （searchText 走 navSearchText，图标也真的渲染出来）。
+ *
+ * 上面那组 GROUPS 是自造样本，只能证明「过滤算法对」；这一组证明的是
+ * 「注册表里真的写了那些词、拼出来的串真的能搜到」—— 也就是用户实际打字时
+ * 走的那条链路。两者不重复。
+ */
+const REAL_GROUPS: WorkspaceNavGroup[] = NAV_CENTER_GROUPS.map(group => ({
+    title: group.title,
+    items: group.items.map(item => ({
+        id: item.id,
+        label: item.label,
+        icon: createElement(item.icon),
+        searchText: navSearchText(item),
+    })),
+}));
 
 const ALL_IDS = ["stats", "audit", "config-appearance", "ai", "shortcuts", "logout"];
 
@@ -217,6 +240,36 @@ test("↓ 把焦点交给第一个可见条目（键盘用户不必 Tab 穿过�
     const first = document.querySelector<HTMLElement>('[data-workspace-nav="shortcuts"]');
     assert.ok(first, "过滤后应只剩「快捷键与操作帮助」");
     assert.equal(document.activeElement, first, "↓ 之后焦点要落在第一个可见条目上");
+});
+
+test("真实注册表：「主色」只剩「外观与搜索」一条，清空回到 9 条", async t => {
+    t.after(cleanup);
+    mount(
+        <SettingsWorkspaceNav
+            groups={REAL_GROUPS}
+            activeId='stats'
+            onSelect={() => {}}
+        />
+    );
+
+    assert.equal(navIds().length, 9, "真实注册表是 9 条设置项（左栏一屏能看全的那个数）");
+
+    // 「主色」只出现在「外观与搜索」的 description 里：能搜到就证明说明参与了过滤
+    setInputValue(searchInput(), "主色");
+    assert.deepEqual(
+        navIds(),
+        ["config-appearance"],
+        "搜「主色」必须只剩「外观与搜索」一条 —— 多出来的条目说明拼接/过滤串了"
+    );
+
+    // 只剩一条时，空分组必须整组不渲染：否则左栏里会多出两个只有 aria-label 的空组
+    const groups = [...document.querySelectorAll('[role="group"]')].map(
+        el => el.getAttribute("aria-label") ?? ""
+    );
+    assert.deepEqual(groups, ["外观与工具"], `不该出现空分组，实际 ${groups.join("/")}`);
+
+    setInputValue(searchInput(), "");
+    assert.equal(navIds().length, 9, "清空后要恢复 9 条");
 });
 
 test("Esc 有词：只清空搜索，不把事件冒出去（冒出去就等于关掉中心）", async t => {

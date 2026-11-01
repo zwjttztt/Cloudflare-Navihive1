@@ -1,7 +1,7 @@
 {
   "name": "navihive",
   "private": true,
-  "version": "24.0.0",
+  "version": "24.1.0",
   "type": "module",
   "engines": {
     "node": ">=22.22.0"

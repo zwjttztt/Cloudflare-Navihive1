@@ -6,7 +6,17 @@
 // 背景色不是简单取父元素：玻璃拟态用了 rgba 半透明层，得把每一层按 alpha
 // 依次混上去，否则量出来的对比度是假的。
 //
-// 覆盖面（三段，每段都亮 / 暗各扫一遍）：首页 → 记事本 → **设置中心**。
+// 覆盖面（每段都亮 / 暗各扫一遍）：首页 → 记事本（**即时渲染 / 源码态各一遍**）
+// → **记事本·附件抽屉** → 设置中心。
+//
+// 2026-11-01 补的两处盲区（同一个病根：缺陷没被审计发现，不是因为界面没问题，
+// 而是审计**没走到那个界面态**）：
+//   · 记事本原来只扫一遍，而编辑器**先以源码态挂载、useEffect 之后才装即时渲染**，
+//     存在一个源码窗口：快机器扫到预览态（绿）、CI 落进源码窗口（红，暗色下
+//     `#`/`-` 标记 1.55:1）。现在两态各自确定性切换 + 各自扫描，谁都不靠运气。
+//   · 附件抽屉（AttachmentManager）从来不在扫描面上，所以它顶栏分段控件
+//     「--accent 压 --accent-wash」的 4.04:1 绿了很久。现在它是独立一段。
+//
 // 设置中心是 2026-10-31 加的第 3 段：它的左栏是「选中态淡强调底 + 强调色字」，
 // 这一对在亮色下曾只到 4.04:1（AA 要 4.5），前两段一直没扫过它，那条不达标在
 // CI 里绿了很久；本轮把 --accent-on-wash 调到 #1565c0 后亮色回到 5.04、暗色 8.04
@@ -183,6 +193,103 @@ async function openNotesAndWait() {
 }
 
 /**
+ * 等**编辑器**真的挂上来（列表渲染出来 ≠ 正文渲染出来）。
+ *
+ * 列表与编辑器是两个 chunk：列表标题一出现就开扫，编辑器那块可能还是空的 ——
+ * 空区域没有文字，扫出来 0 处，又是那种「绿得毫无意义」的假绿。
+ * 判据取三件事同时成立：即时渲染开关在（下面切换两态要用它当把手）、
+ * CodeMirror 的 `.cm-content` 在、且正文里真的有字。
+ */
+const NOTES_EDITOR_READY = `(() => {
+  const sw = document.querySelector('input[aria-label="即时渲染"]');
+  const cm = document.querySelector('.cm-content');
+  return { sw: !!sw, cm: !!cm, len: cm ? (cm.innerText || '').trim().length : 0 };
+})()`;
+
+async function waitNotesEditorReady() {
+    const deadline = Date.now() + 20_000;
+    let st = null;
+    while (Date.now() < deadline) {
+        st = await evaluate(NOTES_EDITOR_READY);
+        if (st && st.sw && st.cm && st.len > 0) return;
+        await sleep(200);
+    }
+    throw new Error(
+        `笔记编辑器 20 秒内没挂上来（即时渲染开关 ${st?.sw ? "有" : "没有"}、` +
+            `.cm-content ${st?.cm ? "有" : "没有"}、正文 ${st?.len ?? 0} 字）—— 这一步没测到`
+    );
+}
+
+/**
+ * 即时渲染的两种状态**必须分别扫**。
+ *
+ * 病根：编辑器先以源码态挂载，`useEffect` 之后才把 livePreview 扩展装进 CodeMirror
+ * （见 `src/components/NoteEditor.tsx` 里 `wantLive ? livePreview(...) : []` 那段）。
+ * 原来的审计只等「笔记列表标题出现」就扫，于是扫到哪个态全看机器快慢 ——
+ * 快机器扫到预览态（绿），CI 落进源码窗口（红，暗色下 `#`/`-` 1.55:1）。
+ * 缺陷本身已经修好（`--notes-mark` + 自定义 CodeMirror HighlightStyle），
+ * 但「到底有没有扫到」这件事没定下来，所以现在不靠运气：两态各切一次、各扫一遍。
+ */
+
+/** 切换开关。⚠️ 不要在 click 之后拿 `sw.checked` 当「已生效」—— */
+const liveToggleExpr = on => `(() => {
+  const sw = document.querySelector('input[aria-label="即时渲染"]');
+  if (!sw) return 'no-switch';
+  const want = ${on ? "true" : "false"};
+  if (sw.checked !== want) sw.click();
+  return sw.checked === want ? 'ok' : 'pending';
+})()`;
+
+/**
+ * 「这一刻到底是预览态还是源码态」。
+ *
+ * ⚠️ 不能只看开关的 `checked`：MUI Switch 的 input 是受控的，`click()` 之后浏览器
+ *    会先把 DOM 的 checked 翻过来，而 React 的状态更新与 CodeMirror 的扩展重配
+ *    都还在后面 —— 那半拍里量到的是「开关翻了、正文还没换」，正是我们要堵的那种
+ *    「看起来扫过了」。真正的判据是**正文里看不看得见 Markdown 标记**：
+ *    源码态段落以 `# 标题` / `- 列表` 的文本形态出现；预览态标记被 widget 替换掉，
+ *    行首一个 `#`/`-` 都不会剩（光标不在正文里时是整篇都替换）。
+ */
+const LIVE_STATE = `(() => {
+  const sw = document.querySelector('input[aria-label="即时渲染"]');
+  const cm = document.querySelector('.cm-content');
+  if (!sw) return { ok: false, why: 'no-switch' };
+  if (!cm) return { ok: false, why: 'no-editor' };
+  const marked = /(^|\\n)\\s*(#{1,6}\\s|[-*+]\\s|\\d+\\.\\s)/.test(cm.innerText || '');
+  return { ok: true, checked: !!sw.checked, sourceVisible: marked };
+})()`;
+
+async function setNotesLivePreview(on) {
+    const name = on ? "即时渲染（预览态）" : "源码态";
+    const r = await evaluate(liveToggleExpr(on));
+    if (r === "no-switch") {
+        throw new Error(
+            '找不到「即时渲染」开关（input[aria-label="即时渲染"]）—— 选择器漂了，' +
+                `${name} 这一阶段没测到`
+        );
+    }
+    // 等的是「可观测条件」而不是固定时长：开关已翻 + 正文标记形态已换，两件事同时成立，
+    // 且连续两次轮询都成立才算稳定（装饰块是异步重建的，一次命中可能正好落在半拍上）。
+    const deadline = Date.now() + 10_000;
+    let st = null;
+    let hits = 0;
+    while (Date.now() < deadline) {
+        st = await evaluate(LIVE_STATE);
+        if (st && st.ok && st.checked === on && st.sourceVisible === !on) {
+            if (++hits >= 2) return;
+        } else {
+            hits = 0;
+        }
+        await sleep(150);
+    }
+    throw new Error(
+        `「即时渲染」切到${name}后 10 秒内没稳定（checked=${st?.checked}、` +
+            `正文可见 Markdown 标记=${st?.sourceVisible}；期望 checked=${on}、标记可见=${!on}）` +
+            " —— 这一阶段没测到"
+    );
+}
+
+/**
  * 打开设置中心（顶栏那颗「设置」）并等它的左栏渲染出来。
  *
  * ⚠️ 选择器必须**精确**：`显示设置`（DisplayControls）与 `网站设置`（站点卡片）都含
@@ -232,6 +339,163 @@ async function openCenterAndWait() {
             `至少要 ${CENTER_MIN_NAV} 条）—— 这一阶段没测到`
     );
 }
+
+/**
+ * 附件抽屉（`src/components/AttachmentManager.tsx`）—— 2026-11-01 加的独立一段。
+ *
+ * 为什么必须单独一段：抽屉顶栏的四档筛选（全部 / 图片 / 文档 / 其他）用的是共用
+ * 分段控件，选中文字曾经是 `var(--accent)` 压在 `var(--accent-wash)` 淡底上
+ * = **4.04:1**（小字线 4.5）。这个缺陷在 24.0.0 里已经换成 `--accent-on-wash`
+ * （亮 5.04 / 暗 8.04），但它**绿了很久**，原因不是界面没问题，而是附件抽屉
+ * 从来不在这个脚本的扫描面上 —— 和记事本源码态是同一个病根。现在把它扫进来。
+ *
+ * ⚠️ 抽屉需要一份**非空**的列表数据才画得出来。`auditEnv.mjs` 的只读桩没实现
+ *    `GET /api/notes/attachments/list`，请求落回通用的 `{ success: true }`，组件
+ *    拿这个对象去 `.slice()` 直接抛 `TypeError: D.slice is not a function` ——
+ *    抽屉连挂都挂不上（分段控件一起没了），那一刻扫出来的「0 处」是彻底的假绿。
+ *    这一轮不动共用的 `auditEnv.mjs`（a11y / site 两个审计也在用），只在**本脚本**
+ *    里给这一个 URL 补一份响应。以后若要收口，正解是在 auditEnv 里加一个
+ *    `/api/notes/attachments/list` 分支，然后把下面这十来行删掉。
+ */
+const ATTACHMENT_ROWS = [
+    { id: "audit-a1", note_id: 1, filename: "白板草图.png", mime: "image/png", size: 184320, width: 800, height: 600, storage: "r2", created_at: "2026-10-05T09:00:00.000Z", ref_count: 2 },
+    { id: "audit-a2", note_id: 1, filename: "会议记录.txt", mime: "text/plain", size: 2048, width: null, height: null, storage: "r2", created_at: "2026-10-04T09:00:00.000Z", ref_count: 0 },
+    { id: "audit-a3", note_id: 2, filename: "归档备份.zip", mime: "application/octet-stream", size: 7340032, width: null, height: null, storage: "r2", created_at: "2026-10-03T09:00:00.000Z", ref_count: 0 },
+];
+
+/** 只补 list 这一个 URL，其余请求照旧走真 fetch（见上面注释里的取舍）。 */
+const STUB_ATTACHMENT_LIST = `(() => {
+  if (window.__auditAttStubbed) return 'already';
+  const real = window.fetch.bind(window);
+  const body = ${JSON.stringify(JSON.stringify(ATTACHMENT_ROWS))};
+  window.fetch = (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (url.includes('/api/notes/attachments/list')) {
+      return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }
+    return real(input, init);
+  };
+  window.__auditAttStubbed = true;
+  return 'patched';
+})()`;
+
+/**
+ * 打开附件抽屉并等它真的渲染出来。
+ *
+ * 选择器用 `[data-nav-attachments]`（NotesNavPanel 里那颗 NavRow 的 data 属性），
+ * **不用可访问名**：那颗按钮没有 aria-label，名字来自内部文字「附件」——
+ * 按文字找会随文案改写而漂。文字只作为 data 属性消失时的兜底。
+ */
+const OPEN_ATTACHMENTS = `(() => {
+  const vis = el => {
+    const s = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+  };
+  const btn = document.querySelector('[data-nav-attachments]')
+      || [...document.querySelectorAll('button,[role="button"]')]
+          .filter(vis)
+          .find(b => (b.textContent || '').trim() === '附件');
+  if (!btn) return 'no-entry';
+  btn.click();
+  return 'clicked';
+})()`;
+
+/** 四档筛选：全部 / 图片 / 文档 / 其他（少一档就说明分段控件没画全）。 */
+const ATT_MIN_OPTIONS = 4;
+
+/**
+ * 抽屉「真的画完了」的判据：分段控件 4 档都在 + 列表已经落地（没有 loading 态）
+ * + 至少有一张卡片。
+ *
+ * ⚠️ 只等分段控件是不够的：它在抽屉头部同步渲染，而**列表是异步拉的** ——
+ *    那一刻网格里是「正在读取附件列表…」的骨架态，卡片 / 文件名 / 引用次数
+ *    一个都还没挂，扫出来 0 处不合格，又是「绿得毫无意义」。加这一段原本就是
+ *    为了量这些控件，等错对象等于白加。
+ * ⚠️ 卡片里的缩略图是**再异步一层**的（带凭据 fetch 字节 → objectURL），
+ *    扫的时候它可能停在「图标 + 文件名」或「无法加载」两种占位态之一；
+ *    这两种态的颜色都已在 2026-11-01 调到达标（text.secondary / --warn-on-wash），
+ *    所以结果不受它影响，不需要为它再加等待条件。
+ */
+const ATTACHMENTS_READY = `(() => {
+  return {
+    options: document.querySelectorAll('[data-att-filter-option]').length,
+    loading: document.querySelectorAll('[data-att-state="loading"]').length,
+    rows: document.querySelectorAll('[data-attachment-row]').length,
+  };
+})()`;
+
+async function openAttachmentsAndWait() {
+    await evaluate(STUB_ATTACHMENT_LIST);
+    const r = await evaluate(OPEN_ATTACHMENTS);
+    if (r !== "clicked") {
+        throw new Error(
+            `记事本里找不到「附件」入口（${r}）—— 选择器漂了，附件抽屉这一阶段没测到`
+        );
+    }
+    const deadline = Date.now() + 20_000;
+    let st = null;
+    while (Date.now() < deadline) {
+        st = await evaluate(ATTACHMENTS_READY);
+        if (
+            st &&
+            st.options >= ATT_MIN_OPTIONS &&
+            st.loading === 0 &&
+            st.rows > 0
+        ) {
+            return st.options;
+        }
+        await sleep(200);
+    }
+    throw new Error(
+        `附件抽屉 20 秒内没画完（筛选 ${st?.options ?? 0} 档 / 至少要 ${ATT_MIN_OPTIONS} 档、` +
+            `加载中 ${st?.loading ?? "?"} 个、卡片 ${st?.rows ?? 0} 张 —— 卡片 0 张说明列表没落地）` +
+            " —— 这一阶段没测到"
+    );
+}
+
+/**
+ * 关抽屉并等它真的消失。
+ *
+ * 用 Esc 而不是点遮罩 / 找关闭键：Drawer（Modal）认 Esc 是 MUI 的固定契约，
+ * 而遮罩与关闭键在不同布局下不是同一个节点 —— 按位置点必然随界面漂，
+ * 一次漂移就是「关不掉、后面全错」。关完必须确认它**没了**再往下扫，
+ * 否则残影会把抽屉里的文字混进下一段（设置中心）的结果里。
+ */
+const CLOSE_ATTACHMENTS = `(() => {
+  const paper = document.querySelector('.MuiDrawer-paper');
+  (paper || document.body).dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+  );
+  return true;
+})()`;
+
+async function closeAttachmentsAndWait() {
+    await evaluate(CLOSE_ATTACHMENTS);
+    const deadline = Date.now() + 10_000;
+    let n = 1;
+    while (Date.now() < deadline) {
+        n = await evaluate(`document.querySelectorAll('[data-att-filter-option]').length`);
+        if (n === 0) return;
+        await sleep(150);
+    }
+    throw new Error(
+        `附件抽屉按 Esc 后 10 秒内没关掉（还剩 ${n} 档筛选）—— 后面的阶段会量到残影，结果不可信`
+    );
+}
+
+/**
+ * 附件抽屉对比度的预算：**0**，与 `NOTES_CONTRAST_BUDGET` 同一个口吻。
+ *
+ * 抽屉在 24.0.0 之前从没被这个脚本量过：顶栏分段控件「--accent 压 --accent-wash」
+ * 只有 4.04:1（小字线 4.5），一直绿着。选中文字换成 `--accent-on-wash` 之后
+ * 亮色 5.04、暗色 8.04 —— 达标，但达标不是重点，「以后不会再绿着」才是。
+ *
+ * 所以这里钉死 0，和首页 / 记事本 / 设置中心同一把尺子：抽屉里任何一处不达 AA
+ * 都直接失败。以后要放宽必须改这个常量，而它就在 CI 日志第一屏 ——
+ * 改不动声色的那种操作。
+ */
+const ATTACHMENTS_CONTRAST_BUDGET = 0;
 
 /**
  * 记事本对比度的预算（2026-10-24 接入记事本时先设 4，同日修完后降到 0）。
@@ -296,6 +560,7 @@ async function assertSameTheme(expected, where) {
 
 let failed = 0;
 let notesFailed = 0;
+let attachmentsFailed = 0;
 let centerFailed = 0;
 let lightBg = null;
 for (const label of ["亮色", "暗色"]) {
@@ -329,14 +594,34 @@ for (const label of ["亮色", "暗色"]) {
     // 本轮的主题背景色，后面每次重载/换界面都要拿它核对一遍（见下面的主题漂移断言）
     const roundBg = await evaluate(`getComputedStyle(document.body).backgroundColor`);
 
-    // ---------- 记事本（2026-10-24 加）----------
+    // ---------- 记事本（2026-10-24 加；2026-11-01 拆成两态 + 附件抽屉）----------
     //
     // 首页全绿只说明首页没问题。记事本是另一套界面（左栏 / 列表 / 编辑器 / 工具栏 /
     // 状态栏），而且它整块是懒加载的独立 chunk —— 从来没被对比度审计看过一眼。
+    //
+    // ⚠️ 两态必须分别扫：编辑器先以源码态挂载，`useEffect` 之后才装即时渲染，
+    //    只扫一遍等于掷骰子（快机器扫到预览态、CI 落进源码窗口）。见 setNotesLivePreview。
     await openNotesAndWait();
-    const notes = await evaluate(SCAN);
-    notesFailed += notes.total;
-    report(`${label}·记事本`, notes);
+    await waitNotesEditorReady();
+
+    await setNotesLivePreview(true);
+    const notesLive = await evaluate(SCAN);
+    notesFailed += notesLive.total;
+    report(`${label}·记事本·即时渲染`, notesLive);
+
+    await setNotesLivePreview(false);
+    const notesSource = await evaluate(SCAN);
+    notesFailed += notesSource.total;
+    report(`${label}·记事本·源码态`, notesSource);
+
+    // 切回默认（预览态）再量抽屉：抽屉盖在记事本上，扫的是「用户日常看到的那个
+    // 记事本 + 一个抽屉」，而不是「源码态 + 抽屉」这种谁都不会同时看到的组合。
+    await setNotesLivePreview(true);
+    const attOptions = await openAttachmentsAndWait();
+    const attachments = await evaluate(SCAN);
+    attachmentsFailed += attachments.total;
+    report(`${label}·记事本·附件抽屉（筛选 ${attOptions} 档）`, attachments);
+    await closeAttachmentsAndWait();
 
     // 回首页：直接重载比「点关闭按钮」稳（关闭入口在不同布局下不是同一个按钮），
     // 而且重载后才能保证下一轮「切主题」是在首页上操作的。
@@ -368,8 +653,18 @@ if (failed > 0) {
 // 记事本：存量预算内放行，但明细已经打印在上面（见 NOTES_CONTRAST_BUDGET 的说明）
 if (notesFailed > NOTES_CONTRAST_BUDGET) {
     console.error(
-        `对比度审计失败：记事本 ${notesFailed} 处不达 WCAG AA，` +
+        `对比度审计失败：记事本（即时渲染 + 源码态）${notesFailed} 处不达 WCAG AA，` +
             `预算 ${NOTES_CONTRAST_BUDGET} 处（2026-10-24 起已清零，记事本与首页同一把尺子）`
+    );
+    site.close();
+    done(1);
+}
+// 附件抽屉：与首页同一把尺子，预算 0 —— 见 ATTACHMENTS_CONTRAST_BUDGET 的说明
+if (attachmentsFailed > ATTACHMENTS_CONTRAST_BUDGET) {
+    console.error(
+        `对比度审计失败：记事本·附件抽屉 ${attachmentsFailed} 处不达 WCAG AA，` +
+            `预算 ${ATTACHMENTS_CONTRAST_BUDGET} 处（这个抽屉 2026-11-01 才第一次被量，` +
+            "预算一开始就钉 0，别为了让绿灯好看去动它）"
     );
     site.close();
     done(1);
@@ -380,6 +675,9 @@ if (centerFailed > 0) {
     site.close();
     done(1);
 }
-console.log(`\n对比度审计通过（首页 / 记事本 / 设置中心，亮暗两态各 0 处不合格）`);
+console.log(
+    "\n对比度审计通过（首页 / 记事本·即时渲染 / 记事本·源码态 / 记事本·附件抽屉 / " +
+        "设置中心，亮暗两态各 0 处不合格）"
+);
 site.close();
 done(0);

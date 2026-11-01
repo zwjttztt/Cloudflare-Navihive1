@@ -9,16 +9,25 @@
 //   · 搜索面退化成只看 label → 「深色」「死链」「WebDAV」这些别名全失效。
 // 这三点都能在纯函数层钉死，不需要挂 React。
 //
+// 后半段用**真实注册表**（model.ts 的 NAV_CENTER_GROUPS，不是自造样本）跑一遍：
+// 左栏那条链路原来只有 tsc 和类型在保，谁也没验过「拼出来的串到底能不能搜到」。
+//
 // 另外两条是**源码守卫**：`aria-label` 挂错层、`Escape` 只写 preventDefault
 // 不写 stopPropagation —— 这两种都是「编译过、单测过、只有读屏/键盘用户发现」
 // 的回归，跑不出运行时症状，只能看源码。
+//
+// 顺带的好处（2026-11 拆文件时拿到）：`filterNavGroups` 搬进 navFilter.ts 之后，
+// 这个用例不必再从组件文件里 import —— 也就不会为了拿一个函数把整套 MUI
+// TextField / InputAdornment 组件树一起拉进纯函数 bundle。
+//（下面 import 的 model.ts 只带图标组件与数据，不挂任何组件树、不需要 DOM。）
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
-import { filterNavGroups } from "../src/components/settingsWorkspace/SettingsWorkspaceNavFilter";
+import { filterNavGroups } from "../src/components/settingsWorkspace/navFilter";
 import type { WorkspaceNavGroup } from "../src/components/settingsWorkspace/SettingsWorkspaceNav";
+import { NAV_CENTER_GROUPS, navSearchText } from "../src/components/navigationCenter/model";
 
 /** 单测会被复制到 script/tmp-tests/ 下再跑，逐级向上找真身 */
 function findProjectDir(): string {
@@ -98,6 +107,62 @@ test("过滤后空掉的分组整组丢弃（不留一个光秃秃的 role=group
 
 test("全部不命中返回空数组（调用方据此渲染空态）", () => {
     assert.deepEqual(filterNavGroups(GROUPS, "绝不可能命中的词"), []);
+});
+
+// ── 真实注册表：左栏那条链路原来只有 tsc 在保 ───────────────────────────────
+//
+// 样本用 model.ts 里**真实的** NAV_CENTER_GROUPS，而不是上面那组自造数据：
+// 自造样本只能证明「算法对」，证明不了「注册表里真的写了那些词」。
+// 映射方式与 NavigationCenterDialog 一致（searchText 走 navSearchText），
+// 所以这组用例同时盯住了「拼接规矩」和「过滤行为」两头。
+const REAL_GROUPS: WorkspaceNavGroup[] = NAV_CENTER_GROUPS.map(group => ({
+    title: group.title,
+    items: group.items.map(item => ({
+        id: item.id,
+        label: item.label,
+        // 纯函数层不渲染图标，null 就够
+        icon: null,
+        searchText: navSearchText(item),
+    })),
+}));
+
+test("真实注册表：搜「主色」命中「外观与搜索」—— 说明（description）也参与过滤", () => {
+    // 「主色」既不在 label 里、也不在 keywords 里，只出现在那句说明
+    // 「站点名称、主色、圆角字号…」中 —— 这一条红了，就是 description
+    // 没被拼进 searchText（用户搜得到功能，搜不到设置项）。
+    assert.deepEqual(idsOf(filterNavGroups(REAL_GROUPS, "主色")), ["config-appearance"]);
+});
+
+test("真实注册表：搜小写「webdav」命中「数据安全」—— 别名 + 大小写不敏感", () => {
+    // 注册表里写的是大写的 "WebDAV"，用户只会打小写。命中同时依赖两件事：
+    // ① keywords 被拼进了 searchText；② norm 把两边都转成小写。
+    assert.deepEqual(idsOf(filterNavGroups(REAL_GROUPS, "webdav")), ["backup"]);
+});
+
+test("真实注册表：搜「退出」不命中任何设置项（刻意不给「账号与安全」加这个别名）", () => {
+    // 🔴 这是**刻意的设计**，不是漏网：用户搜「退出」十有八九在找左栏底部
+    // 那颗「退出登录」，让「账号与安全」命中它就是把用户引到错的一屏。
+    // 谁想「顺手」给 account 补一个「退出」别名，这条会立刻红。
+    assert.deepEqual(idsOf(filterNavGroups(REAL_GROUPS, "退出")), []);
+    // 反向确认这组样本不是空的 —— 否则上面那条恒真，等于没测
+    assert.deepEqual(idsOf(filterNavGroups(REAL_GROUPS, "账号")), ["account"]);
+});
+
+test("真实注册表：必然不存在的词返回空数组", () => {
+    assert.deepEqual(filterNavGroups(REAL_GROUPS, "zzz-不存在的词-zzz"), []);
+});
+
+test("真实注册表：每条 navSearchText 都非空、且含自己的 label", () => {
+    const items = NAV_CENTER_GROUPS.flatMap(group => group.items);
+    assert.equal(items.length, 9, "注册表应是 9 条设置项（左栏「9 条」的说法就指这个数）");
+    for (const item of items) {
+        const text = navSearchText(item);
+        assert.ok(text.trim().length > 0, `${item.id} 的搜索面是空的，搜什么都搜不到它`);
+        assert.ok(
+            text.includes(item.label),
+            `${item.id} 的搜索面里没有自己的名称「${item.label}」—— 说明拼接时把 label 漏了`
+        );
+    }
 });
 
 // ── 源码守卫 ①：aria-label / onKeyDown 必须挂在 slotProps.htmlInput 上 ──────
