@@ -9,11 +9,18 @@
 // 只是在流式布局里高度变为自动、不再各自起滚动 —— 页签随页面一起滚，这是
 // 合并长页的预期行为，不是回归。
 //
+// ⚠️ 「备份 / 恢复」两个页签是 BackupPanel 自己的**功能分区**（同一块数据的两种操作），
+//    不是 B1 要消灭的「目录藏进 Tab」。所以中心里「不许有二级 Tab」那条断言只覆盖
+//    config 两段，不覆盖本面板。
+//
 // ⚠️ 这个文件是**懒加载面板块**：只能被 NavigationCenterDialog 用 lazy(() => import(...))
 //    引入，任何静态 import 都会把它焊进首屏（tests/navigationCenterLazyGuard.test.ts 盯着）。
 import Box from "@mui/material/Box";
-import { BackupPanel as BackupBody } from "../../BackupDialog";
-import { RecyclePanel as RecycleBody } from "../../RecycleBinDialog";
+// 复用中心既有的两个转发件（panels/BackupPanel、panels/RecyclePanel）而不是直接引业务体：
+// 它们本来就是这个中心的面板层，A+B 合并后仍然走它们，「面板 → 业务体」的分层不变，
+// 也避免它们变成没人引用的死文件（覆盖率第 1 层的文件触及率会掉）。
+import BackupBody from "./BackupPanel";
+import RecycleBody from "./RecyclePanel";
 import RetentionPolicySection from "../../RetentionPolicySection";
 import { SectionHeading } from "../../dialogSection";
 import type { BackupCenterPanelProps } from "./BackupPanel";
