@@ -21,12 +21,24 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { pickPort } from "./e2eEnv.mjs";
+
 const here = dirnameOf();
 function dirnameOf() {
     return resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 }
 
-const PORT = 8801 + (process.pid % 100); // 并发跑批时避让
+/**
+ * 端口必须走 `pickPort`，**不要**自己按 pid 算。
+ *
+ * 2026-11-01 的 CI 就是这么红的：这里原本是 `8801 + (pid % 100)`（8801–8900），
+ * 而上一步 `share-e2e.mjs` 用的 `pickPort` 在 **8800–9199** 随机挑 ——
+ * 两条路在同一段端口里各自为政，`e2e:share` 拿到 8883 之后这次的 pid 也算出 8883，
+ * 于是 `EADDRINUSE`，整个 `e2e:share-extra` 连带 30 多条断言全红。
+ * `pickPort` 会真的探一下那个端口通不通（见 e2eEnv.mjs 的 `busy()`），
+ * 撞上了自动换下一个，这类相邻脚本抢端口的假红从此不该再出现。
+ */
+const PORT = await pickPort("SHARE_EXTRA_E2E_PORT");
 const BASE = `http://127.0.0.1:${PORT}`;
 const NOTE_PW = "note-pw-测试123";
 const GROUP_PW = "group-pw-456";
