@@ -17,8 +17,8 @@
 | `server/entry.ts` | Node 入口：HTTP 桥接 + 静态资源（含 `_headers` 规则与 SPA fallback）+ 定时任务 |
 | `server/static.ts` | 静态资源与 `_headers` 解析（从 entry.ts 抽出，单测覆盖） |
 | `script/build-server.mjs` | esbuild 把入口打成自包含单文件 `dist-server/entry.mjs` |
-| `script/selfhost-smoke.mjs` | 26 项端到端冒烟（登录/改密/CRUD/静态头/SPA/附件/cron/404） |
-| `tests/server*.test.ts` | 35 条单测：事务原子性、RETURNING 行、外键、文件 KV、`_headers` 解析 |
+| `script/selfhost-smoke.mjs` | 端到端冒烟（登录/改密/CRUD/静态头/SPA/附件/cron/404）—— 项数由脚本自己统计并打印，**不在此处写死**（写死必然过期） |
+| `tests/server*.test.ts` | 单测：事务原子性、RETURNING 行、外键、文件 KV、`_headers` 解析 |
 | `deploy/nginx/sites-available/navihive-selfhost.conf` | 自托管版 Nginx 配置 |
 | `Dockerfile` / `.dockerignore` / `docker-compose.yml` / `.env.example` | 容器化部署件（第四节 B） |
 | `tests/dockerDeploy.test.ts` | Docker 部署件漂移守卫（17 条） |
@@ -36,7 +36,7 @@ npm ci
 npm run build          # 产出 dist/client（含 _headers）
 npm run build:server   # 产出 dist-server/entry.mjs
 
-# 冒烟（26 项）：**没有常驻实例时走这条** —— 脚本自己起一个临时实例
+# 冒烟：**没有常驻实例时走这条** —— 脚本自己起一个临时实例
 # （端口自动挑空闲的、临时库、跑完收掉并删目录），不需要另开终端
 npm run smoke:selfhost
 
