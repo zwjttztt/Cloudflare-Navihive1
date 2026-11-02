@@ -1501,33 +1501,78 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
    失配，属预期漂移，重新生成 mobile 基线即可（真机行为不受影响）。
    ============================================================ */
 @media (hover: none) and (pointer: coarse) {
-    /* 顶栏 / 设置 / 对话框里的文字按钮：直接撑到 44px */
+    /* 顶栏 / 设置 / 对话框里的文字按钮：直接撑到 44px。
+       ⚠️ 顶栏这条原来是 `header .MuiIconButton-root`，只覆盖图标按钮 ——
+       2026-11-02 的移动端触控测量（docs/mobile-touch-audit-2026-11-02.md）
+       量出顶栏的**文字按钮**「显示设置」「打开记事本」还是 36 高，
+       同一排里两种高度。改成 MuiButtonBase-root 之后，图标按钮照样覆盖
+       （IconButton 也继承 ButtonBase），文字按钮一起进 44。 */
     .MuiDialog-root .MuiButton-root,
     .MuiDialogActions-root .MuiButton-root,
     .nav-bulk-bar .MuiButton-root,
     .nav-mobile-tabbar .MuiButtonBase-root,
-    header .MuiIconButton-root {
+    header .MuiButtonBase-root {
         min-height: var(--touch-min);
     }
     .MuiDialogActions-root .MuiButton-root,
-    .nav-bulk-bar .MuiButton-root {
+    .nav-bulk-bar .MuiButton-root,
+    /* 顶栏「进入多选模式」是方形图标按钮：量出来 36×44 —— 高度够了、**宽不够**。
+       方形目标要 44×44，这里只补 min-width，高度不动（它已经是对的）。 */
+    .nav-display-pill .MuiIconButton-root {
         min-width: var(--touch-min);
     }
 
+    /* 批量操作条左侧那枚「退出多选模式」：36×36。它是 IconButton，
+       吃不到上面 `.nav-bulk-bar .MuiButton-root` 那条（那是文字按钮）。
+       条子本身 44 高，图标撑到 44 不会把行高再顶高 —— 直接给尺寸，不用伪元素。 */
+    .nav-bulk-bar .MuiIconButton-root {
+        min-width: var(--touch-min);
+        min-height: var(--touch-min);
+    }
+
+    /* 弹窗右上角那枚 ×：36×36。它既不在 DialogActions 里、也不在 header 里，
+       两条 44 守卫都盖不到它。用 DialogCloseButton 统一挂的 data-dialog-close 认它
+       —— 不要用 `.MuiDialogTitle-root`：设置中心那套外壳根本没有 DialogTitle，
+       按标题栏归类会让同一颗 × 在不同弹窗里落进不同档（审计侧踩过）。 */
+    .MuiDialog-root [data-dialog-close] {
+        min-width: var(--touch-min);
+        min-height: var(--touch-min);
+    }
+
     /* 卡片上那些小图标：视觉保持 30px，用透明伪元素把可点范围补到 44px。
-       不直接改尺寸是有原因的 —— 卡片高度是按 30px 算好的，撑大就会顶到标题。 */
+       不直接改尺寸是有原因的 —— 卡片高度是按 30px 算好的，撑大就会顶到标题。
+       `.nav-note-btn`（「绑定笔记」）原来漏在这份名单外：它有 `opacity:1` 的
+       常显规则，却没补热区，是移动端触控测量里**唯一完全没有热区**的那颗。 */
     .nav-card-actions .MuiIconButton-root,
     .nav-settings-btn,
-    .nav-star-btn {
+    .nav-star-btn,
+    .nav-note-btn {
         position: relative;
     }
     .nav-card-actions .MuiIconButton-root::after,
     .nav-settings-btn::after,
-    .nav-star-btn::after {
+    .nav-star-btn::after,
+    .nav-note-btn::after {
         content: "";
         position: absolute;
         inset: 50% 0 auto 50%;
         width: var(--touch-min);
+        height: var(--touch-min);
+        transform: translate(-50%, -50%);
+    }
+
+    /* 分组工具条（编辑 / 分享 / 排序 / 添加卡片）：36~96 宽、一律 36 高。
+       这里**只能**走伪元素：直接给它们 min-height 会把分组标题那一行顶高、
+       整块列表往下错。伪元素把可点范围补到 44 高，视觉尺寸一概不动。 */
+    .nav-group-tools .MuiButtonBase-root {
+        position: relative;
+    }
+    .nav-group-tools .MuiButtonBase-root::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: max(100%, var(--touch-min));
         height: var(--touch-min);
         transform: translate(-50%, -50%);
     }

@@ -6,6 +6,42 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-11-02 · 修复 + 工程：移动端触控目标达标，审计加双视口 fail-closed 闸门（28.1.0）
+
+独立审计 D1 项：**移动端触控目标**。这件事之前从没被自动审计量过——`a11y-audit.mjs` 原有四段扫描面全在桌面视口跑（没开 `Emulation.setDeviceMetricsOverride`、没开触控仿真），桌面读数根本推不出真机。
+
+### 先测量，再决定判据（没先定 44 再盲改）
+
+加了 390×844 真仿真（deviceScaleFactor 3、maxTouchPoints 5），重加载让 `matchMedia` / MUI 的 `useMediaQuery` 按小屏重算。实测四个面（首页 / 设置中心 / 底部面板弹窗 / 批量操作条）共 **56 个可点元素**：
+
+- **0 条低于 24px** —— 现有 WCAG 2.5.8 判据在移动端没回归；
+- **35 条低于 44px**，但其中 **12 条已有 44×44 透明 `::after` 热区**（底栏 6 + 卡片设置/加星 6）。
+
+所以结论是：**44px 是体验升级，不是修违规**。判据必须按「有效热区」量，按边框盒会把底栏（55.33×43.19，只差 0.81px）判成假红、逼人改本来没问题的代码。
+
+### 6 处 CSS 修复（`src/index.css`，`(hover:none) and (pointer:coarse)` 守卫内）
+
+- 顶栏 `header .MuiIconButton-root` → `header .MuiButtonBase-root`（文字按钮「显示设置」「打开记事本」一并进 44）；
+- 伪元素热区名单补 `.nav-note-btn::after`（「绑定笔记」是移动端唯一完全没有热区的那颗）；
+- `.nav-group-tools .MuiButtonBase-root::after` 补 44 热区，**走伪元素不撑高容器**（直接给 min-height 会把分组标题顶变形）；
+- 弹窗右上角 × 用 `DialogCloseButton` 挂的 `[data-dialog-close]` 认（不用 `.MuiDialogTitle-root`——设置中心那套外壳没有 DialogTitle，同一颗 × 会落进不同档）；
+- `.nav-bulk-bar .MuiIconButton-root` 补 44×44（「退出多选模式」36×36）；
+- `.nav-display-pill .MuiIconButton-root` 补 min-width（「进入多选模式」36×44 宽不够）。
+
+底栏 `py 0.5→0.6` **没做**——有效热区口径下 43.19 已被 44 伪元素兜住，不必动。
+
+### 审计脚本：report-only → fail-closed 硬判据（双视口）
+
+`script/a11y-audit.mjs` 那段移动端测量翻成真闸门：
+
+- 三档阈值写死 `critical 44 / deco 40 / accept 24`，**按有效热区 = max(边框盒, ::after 伪元素)** 判定；关键/装饰档量伪元素热区、可接受档量边框盒即可。
+- **双视口** `MOBILE_VIEWPORTS = [390×844, 375×844]`（iPhone SE 档），两档都判。
+- **fail-closed**：仿真前提（viewport / matchMedia / maxTouchPoints / nav-touch）任一不成立、或四个面任一打不开 → 该视口/面直接判红，不再只打印「⚠️ 未测到」。末尾并入全局 `failures`，与原有各段共用同一出口。
+- 有效热区口径修正：仅在祖先 `overflow ≠ visible` 时才与祖先求交（`overflow: visible` 的祖先不裁——伪元素溢出后仍真实可点，否则分组工具条会假红）。
+- **反向验证**：临时把 `.nav-group-tools` 热区改成 20px，如期触发 8 条精确失败（装饰档要求≥40，实测 44×36）、审计整体判红；改回后回归 0，`grep` 确认无残留。
+
+报告从「测量」升级为「测量 + 修复」：`docs/mobile-touch-audit-2026-11-02.md` 补了 6 处修复清单、双视口 0 违规结论、fail-closed 说明、复现方式。
+
 ## 2026-11-02 · 重构 + 修复：弹窗正文统一，断点收成一个真源（28.0.0）
 
 审计第 2 批 C5 项。两件事：**给剩下的 19 个弹窗套上公共外壳**，以及**把断点从「5 个小数尾巴」收成一个人能讲清的真源**。
