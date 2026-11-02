@@ -18,7 +18,10 @@ export function resetCspLimitForTest(): void {
 }
 
 export async function handleCspReport(request: Request): Promise<Response> {
-    // 超窗静默丢弃：上报失败不该影响页面，也不该让刷报告的人学到任何东西
+    // 超窗静默丢弃：上报失败不该影响页面，也不该让刷报告的人学到任何东西。
+    // 取默认参数（trustXFF=true、trustXRealIp=false）：这里只做 isolate 内计数，
+    // 而 X-Real-IP 在默认不信任时不会被读 —— 客户端自带的伪造头进不了分桶键
+    // （自托管入口在 TRUST_XFF=0 时也会把 XFF 删掉，只剩 socket 对端那一档）。
     if (!cspLimiter.allow(clientIp(request))) {
         return new Response(null, { status: 204 });
     }

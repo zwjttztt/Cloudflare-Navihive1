@@ -92,6 +92,7 @@ async function call(
         api: makeApi(log, o, endpointBucket(request, 1, false)),
         ip: IP,
         trustXFF: false,
+        trustXRealIp: false,
         secureCookie: true,
         currentJti: "jti-1",
         currentTokenExp: 0,

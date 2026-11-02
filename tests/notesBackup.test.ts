@@ -17,6 +17,7 @@ import {
     notesBackupIntervalMs,
     notesWebDavConfigFrom,
     parseNotesRetention,
+    readBackupAttachmentEntries,
     readNotesBackupRuns,
     shouldRunNotesBackup,
 } from "../worker/notesBackup";
@@ -498,4 +499,134 @@ test("真实 SQLite：运行记录经 configs 读写（含坏 JSON 容错）", a
     // 库里的 JSON 坏了 → 空列表，绝不抛错把备份页/调度带崩
     await api.setConfig(NOTES_BACKUP_RUNS_KEY, "{oops");
     assert.deepEqual(await readNotesBackupRuns(api), []);
+});
+
+// ============ 真实 SQLite：D1 参数上限（附件元数据查询必须切批） ============
+//
+// 背景（2026-11-02）：readBackupAttachmentEntries 原来把「正文里引用到的全部附件 id」
+// 一次塞进 `IN (...)`。D1 单条语句最多 100 个绑定参数，引用超过 99 个附件时线上必抛
+// "too many SQL variables"，整次备份静默失败；而本机 SQLite 的上限是 32766，
+// **这个缺陷在本机永远测不出来** —— 所以这里不靠「跑通了」，靠数每批绑了几个参数。
+
+/** 只实现 readAttachmentObject 用到的 KV 面（与 notesBackupZip.test.ts 同一套） */
+function makeFakeKvEnv(ids: ReadonlyArray<string>) {
+    const objects = new Map<string, ArrayBuffer>();
+    for (const id of ids) objects.set(`attach/1/${id}`, new Uint8Array([1, 2, 3, 4]).buffer);
+    const env = {
+        FILES_KV: {
+            async get(key: string) {
+                return objects.get(key) ?? null;
+            },
+        },
+    };
+    return env as unknown as Parameters<typeof readBackupAttachmentEntries>[1];
+}
+
+/**
+ * 在真实 SQLite 替身上加一层「参数计数」：只统计附件元数据查询
+ * （`FROM attachments` + `IN (...)`），迁移 / 种数据的 SQL 不参与上限断言。
+ */
+function makeCountingD1(inner: ReturnType<typeof makeRealD1>) {
+    /** 每次附件查询绑定的参数个数，按执行顺序 */
+    const boundCounts: number[] = [];
+    const db = {
+        prepare(sql: string) {
+            const prepared = inner.prepare(sql);
+            if (!/FROM\s+attachments/i.test(sql) || !/\bIN\s*\(/i.test(sql)) return prepared;
+            return {
+                bind(...args: unknown[]) {
+                    boundCounts.push(args.length);
+                    return prepared.bind(...args);
+                },
+            };
+        },
+        batch: inner.batch,
+        exec: inner.exec,
+    };
+    return { db, boundCounts };
+}
+
+async function seedAttachments(api: NavigationAPI, ids: ReadonlyArray<string>): Promise<void> {
+    for (const id of ids) {
+        await api.createAttachment({
+            id,
+            note_id: null,
+            filename: `${id}.png`,
+            mime: "image/png",
+            size: 4,
+            storage: "kv",
+            object_key: `attach/1/${id}`,
+        });
+    }
+}
+
+test("真实 SQLite：正文引用 200 个附件时按 D1 上限切批，每批绑定参数 ≤ 100", async () => {
+    resetMigrationCacheForTests();
+    const { db, boundCounts } = makeCountingD1(makeRealD1());
+    const api = makeApi(db as unknown as ReturnType<typeof makeRealD1>);
+    await api.migrate();
+    api.setCurrentUser(1);
+
+    const ids = Array.from({ length: 200 }, (_, i) => `bulk-${String(i).padStart(3, "0")}`);
+    await seedAttachments(api, ids);
+
+    const payload = {
+        notes: [{ content: ids.map(id => `![x](/api/notes/attachments/${id})`).join(" ") }],
+    };
+    const { entries, skipped } = await readBackupAttachmentEntries(api, makeFakeKvEnv(ids), payload);
+
+    // 切批不能丢批：合并后 200 个附件一个不少
+    assert.equal(entries.length, 200, "切批后合并的结果必须覆盖全部引用到的附件");
+    assert.equal(skipped, 0);
+
+    // 回归抓手：若实现退回「一条 SQL 拼 200 个占位符」，boundCounts 就是 [200]，
+    // 下面三条同时失败（本机 SQLite 会照跑成功，只有这里能拦住）
+    assert.ok(
+        boundCounts.length >= 3,
+        `200 个 id + 每批 1 个 user_id 至少要切 3 批，实际 ${boundCounts.length} 条`
+    );
+    assert.ok(
+        boundCounts.every(n => n <= 100),
+        `每批绑定参数必须 ≤ 100（D1 上限），实际 ${JSON.stringify(boundCounts)}`
+    );
+    // 99 个 id + 1 个 user_id 正好用满预算，不该退化成更小的批
+    assert.equal(Math.max(...boundCounts), 100);
+    // 每批都带 user_id：总参数数 = 200 个 id + 批数 × 1
+    assert.equal(
+        boundCounts.reduce((a, b) => a + b, 0),
+        200 + boundCounts.length,
+        "每批都要带 user_id 条件（账号隔离不能在切批时丢掉）"
+    );
+});
+
+test("真实 SQLite：99 个 id 一条查完、100 个 id 必须切两条（user_id 占掉 1 个参数位）", async () => {
+    const measure = async (count: number) => {
+        resetMigrationCacheForTests();
+        const { db, boundCounts } = makeCountingD1(makeRealD1());
+        const api = makeApi(db as unknown as ReturnType<typeof makeRealD1>);
+        await api.migrate();
+        api.setCurrentUser(1);
+
+        const ids = Array.from({ length: count }, (_, i) => `edge-${count}-${String(i).padStart(3, "0")}`);
+        await seedAttachments(api, ids);
+        const payload = {
+            notes: [{ content: ids.map(id => `![x](/api/notes/attachments/${id})`).join(" ") }],
+        };
+        const result = await readBackupAttachmentEntries(api, makeFakeKvEnv(ids), payload);
+        return { entries: result.entries, boundCounts };
+    };
+
+    // 边界：99 个 id + 1 个 user_id = 100，正好卡在上限上 —— 多预留就会白切一批，
+    // 少预留就会在 100 个 id 时越界，所以这条必须钉死
+    const edge99 = await measure(99);
+    assert.deepEqual(edge99.boundCounts, [100], "99 个 id 刚好一条查完（不切批）");
+    assert.equal(edge99.entries.length, 99);
+
+    const edge100 = await measure(100);
+    assert.deepEqual(
+        edge100.boundCounts,
+        [100, 2],
+        "100 个 id 必须切两条：99 + user_id，剩 1 个 + user_id（每条都带账号条件）"
+    );
+    assert.equal(edge100.entries.length, 100);
 });

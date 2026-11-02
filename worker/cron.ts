@@ -130,10 +130,11 @@ async function clearCronError(api: SchedulerDB, task: string): Promise<void> {
  * 导出的也是它自己的分组与卡片 —— 不会把 A 的数据传进 B 的网盘。
  * 没配 WebDAV 或关了自动备份的账号直接跳过。
  *
- * 备份口令从库里的配置读（webdav.backupPassword），不用 AUTH_SECRET：
- * 定时任务无人值守，用不了页面上的临时输入；而轮换 AUTH_SECRET 不该让备份解不开。
+ * 备份口令优先从库里的配置读（webdav.backupPassword）；没设时由 runWebDavBackup
+ * 用 AUTH_SECRET 派生的自动密钥兜底加密（见 worker/webdav/autoKey.ts）——
+ * 定时任务无人值守，用不了页面上的临时输入，而「不加密就上传」是不可接受的默认。
  */
-export async function runWeeklyBackup(api: SchedulerDB): Promise<void> {
+export async function runWeeklyBackup(api: SchedulerDB, env?: Env): Promise<void> {
     const nav = api as unknown as Partial<NavigationAPI> & SchedulerDB;
 
     // 失败原因攒到最后统一留痕：一次都没失败就顺手把上一次的失败提示撤掉
@@ -143,7 +144,7 @@ export async function runWeeklyBackup(api: SchedulerDB): Promise<void> {
     // 直接调会 TypeError 把整个备份任务带崩 —— 与 runLinkSweep 同一套路，探测到就退回
     // 「按全局配置备份一次」的旧行为（那时也确实只有一个账号）。
     if (typeof nav.listUsers !== "function" || typeof nav.setCurrentUser !== "function") {
-        const reason = await backupOneAccount(api, null);
+        const reason = await backupOneAccount(api, null, env);
         if (reason) failures.push(reason);
     } else {
         const users = await withD1Retry(() => nav.listUsers!());
@@ -158,7 +159,7 @@ export async function runWeeklyBackup(api: SchedulerDB): Promise<void> {
 
         for (const uid of targets) {
             // 某个账号备份失败不影响其它账号
-            const reason = await backupOneAccount(api, uid);
+            const reason = await backupOneAccount(api, uid, env);
             if (reason) failures.push(reason);
         }
     }
@@ -176,7 +177,7 @@ export async function runWeeklyBackup(api: SchedulerDB): Promise<void> {
  * 抽出来是因为「多账号逐个备份」和「老库 / 假实现退回单账号」走的是同一段逻辑；
  * 异常在这里就地兜住，一个账号出问题不该让后面几个跟着不备份。
  */
-async function backupOneAccount(api: SchedulerDB, uid: number | null): Promise<string | null> {
+async function backupOneAccount(api: SchedulerDB, uid: number | null, env?: Env): Promise<string | null> {
     const nav = api as unknown as Partial<NavigationAPI> & SchedulerDB;
     const label = `账号 ${uid ?? "全局"}`;
 
@@ -228,6 +229,9 @@ async function backupOneAccount(api: SchedulerDB, uid: number | null): Promise<s
             mode: "auto",
             stored,
             password: config.backupPassword,
+            // env 传下去：没设备份口令时用 AUTH_SECRET 派生自动密钥（见 worker/webdav/autoKey.ts）。
+            // 口令候选**不在这里算** —— 只有 runWebDavBackup 知道当前账号 id。
+            env,
         });
         console.log(
             result.success
@@ -641,7 +645,7 @@ export async function runScheduledTasks(
             "backup",
             async () => {
                 backupApi = makeApi(env);
-                await runWeeklyBackup(backupApi);
+                await runWeeklyBackup(backupApi, env);
             },
             backupDeadlineMs(accounts)
         );

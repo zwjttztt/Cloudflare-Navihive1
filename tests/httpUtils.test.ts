@@ -248,12 +248,18 @@ test("withSecurityHeaders 不覆盖已经设过的头（图标代理那条 CSP s
     assert.equal(out.headers.get("Referrer-Policy"), "strict-origin");
 });
 
-test("clientIp：trustXFF 时 X-Real-IP（反代覆盖头）优先于 XFF 首段（2026-11-01 加固）", () => {
+test("clientIp：两个信任开关都开时 X-Real-IP（反代覆盖头）优先于 XFF 首段（11-02 拆开关）", () => {
     const req = (headers: Record<string, string>) => new Request("https://nav.example.com/", { headers });
-    // Nginx 覆盖写的 X-Real-IP 伪造不了，必须赢过追加式 XFF 的可伪造首段
+    // Nginx 覆盖写的 X-Real-IP 伪造不了，必须赢过追加式 XFF 的可伪造首段；
+    // 但它需要独立的第二个开关（NAVIHIVE_TRUST_X_REAL_IP）显式授权
     assert.equal(
-        clientIp(req({ "X-Real-IP": "8.8.8.8", "X-Forwarded-For": "6.6.6.6, 10.0.0.1" })),
+        clientIp(req({ "X-Real-IP": "8.8.8.8", "X-Forwarded-For": "6.6.6.6, 10.0.0.1" }), true, true),
         "8.8.8.8"
+    );
+    // 只开 TRUST_XFF：不读 X-Real-IP，回退 XFF 首段（客户端伪造的 X-Real-IP 不该被采纳）
+    assert.equal(
+        clientIp(req({ "X-Real-IP": "8.8.8.8", "X-Forwarded-For": "6.6.6.6, 10.0.0.1" }), true, false),
+        "6.6.6.6"
     );
     // 反代没配 X-Real-IP 的老部署：回退 XFF 首段，与旧行为一致
     assert.equal(clientIp(req({ "X-Forwarded-For": "6.6.6.6" })), "6.6.6.6");

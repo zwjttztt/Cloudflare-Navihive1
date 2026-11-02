@@ -39,6 +39,11 @@ import { isBlockedHost } from "../worker/util";
 import { REAL_IP_HEADER } from "../worker/httpUtils";
 import { REQUEST_ID_HEADER, REQUEST_ID_LEN } from "../shared/requestId";
 import type { Env } from "../worker/types";
+// 透传白名单的唯一真源在 shared/env.ts（worker 侧也要能读到同一份约束）。
+// 这份清单由那边的**编译期断言**守着：`Env` 里新增一个非绑定键却忘了加进去，
+// `tsc -b` 会直接红 —— 不然就是「自托管设了变量、代码读不到、日志一行不报」
+// 的那种静默失效（ALLOW_PLAINTEXT_SECRETS 就是这么漏掉的）。
+import { PASSTHROUGH_KEYS } from "../shared/env";
 
 // ============ CONFIG ============
 
@@ -60,9 +65,18 @@ const CRON_EXPR = "0 * * * *";
  * 默认**关**（"0"）：裸跑 / 端口直接暴露公网时，客户端随手改 XFF 就能换一个限速桶，
  * 把登录爆破限速绕过去（worker/loginGuard.ts 的 clientBucket 注释有完整说明）。
  * 前面确实挡了一层 Nginx（由它老实覆盖这两个头）时才设 "1" —— docker-compose.yml
- * 已显式写死 1，所以走 compose 的标准自托管部署不受影响（P2-19）。
+ * 的默认值也是 0，部署前请按 deploy/selfhost.md 确认（P2-19）。
  */
 const TRUST_XFF = env("NAVIHIVE_TRUST_XFF", "0");
+/**
+ * 是否信任反代**覆盖写入**的 `X-Real-IP`。
+ * 默认**关**（"0"），与 TRUST_XFF 独立：TRUST_XFF=1 只说明这层反代老实写 XFF，
+ * 不代表它写了 X-Real-IP（Caddy / Traefik 默认不写）。那种部署里客户端自带的
+ * `X-Real-IP` 会原样透传，每请求换一个就是一个全新限速桶 —— 登录 / 注册 / 找回 /
+ * 分享口令 / 写操作五类限速同时失效，且每次尝试仍要跑一遍 PBKDF2。
+ * 用本仓 deploy/nginx 模板（覆盖写 X-Real-IP $remote_addr）时把它和 TRUST_XFF 都设 1。
+ */
+const TRUST_X_REAL_IP = env("NAVIHIVE_TRUST_X_REAL_IP", "0");
 
 // ============ 出站解析复核（自托管 SSRF 闭环，2026-10-24） ============
 //
@@ -113,19 +127,11 @@ setEgressResolver(async (hostname: string): Promise<boolean> => {
 
 // 环境变量白名单透传。只放 worker/src 真正会读的键，避免把 PATH 之类无关变量
 // 泄进 env 对象（worker 侧只认这些名字，多给了也不会用，但白名单更好查）。
-const PASSTHROUGH_KEYS = [
-    "AUTH_USERNAME",
-    "AUTH_PASSWORD",
-    "AUTH_SECRET",
-    "AUTH_RECOVERY_PUBLIC_KEY",
-    "DATA_ENCRYPTION_KEY",
-    "JWT_SECRET",
-    "JWT_SECRET_OLD",
-    "NAVIHIVE_COOKIE_SECURE",
-    "NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR",
-] as const;
-
-// worker/types.ts 的 Env 没带这三个（那边是 Cloudflare 部署视角），自托管要能配
+// ⚠️ 清单本身在 shared/env.ts：那边有编译期断言钉住「Env 里的配置键一个不漏」，
+// 这里只负责逐条照搬（见文件顶部的 import 注释）。
+// worker/types.ts 的 Env 现在已带上 DATA_ENCRYPTION_KEY / JWT_SECRET / JWT_SECRET_OLD，
+// 下面这个交叉类型因此**冗余但无害**（保留是为了让 ServerEnv 这个名字继续指代
+// 「自托管侧补过东西的 Env」，以后真需要放宽/收窄时改这一处）。
 type ServerEnv = Env & {
     DATA_ENCRYPTION_KEY?: string;
     JWT_SECRET?: string;
@@ -153,6 +159,7 @@ const serverEnv: ServerEnv = {
     // wrangler.jsonc 的 vars 里只有这一项，默认值与它对齐
     AUTH_ENABLED: env("AUTH_ENABLED", "true"),
     NAVIHIVE_TRUST_XFF: TRUST_XFF,
+    NAVIHIVE_TRUST_X_REAL_IP: TRUST_X_REAL_IP,
     ...passthrough,
 };
 
@@ -206,6 +213,8 @@ function toHeaders(req: IncomingMessage): Headers {
 async function proxyToWorker(req: IncomingMessage, res: ServerResponse, rid: string): Promise<void> {
     const method = req.method ?? "GET";
     const trustXFF = serverEnv.NAVIHIVE_TRUST_XFF === "1";
+    /** 读取覆盖写入的 X-Real-IP 需要**第二个**独立开关（理由见下面那段信任模型） */
+    const trustXRealIp = serverEnv.NAVIHIVE_TRUST_X_REAL_IP === "1";
 
     const headers = new Headers();
     for (const [name, value] of Object.entries(req.headers)) {
@@ -229,19 +238,23 @@ async function proxyToWorker(req: IncomingMessage, res: ServerResponse, rid: str
     // 一层会老实填头的可信反代」时才保留 X-Forwarded-*，否则一律删掉，
     // 真实地址由下面的 socket 对端提供。
     //
-    // 信任模型（2026-11-01 XFF 绕过加固后）：TRUST_XFF=1 时， worker 侧的
-    // clientIp / clientBucket 会依次读 X-Real-IP（部署模板要求 Nginx 以覆盖模式
-    // 写入，客户端带来的值到不了应用）与 XFF 首段。这里**原样保留**客户端的
-    // X-Forwarded-For 是有意为之：XFF 可能是一条更长的反代链（Nginx 前面还有
-    // CDN / WAF），只有最外层知道完整链路；应用侧已经把可伪造的追加式首段
-    // 降级为次优先级，且 Nginx 覆盖写的 X-Real-IP 恒赢它，所以保留 XFF 已无害。
-    // TRUST_XFF=0 时连 X-Real-IP 也要删：worker 新增了对它的读取，而直暴部署下
-    // 它同样来自客户端，不删的话伪造它就能污染审计 IP / 换限速桶。
+    // 信任模型（2026-11-02 拆开关后）：X-Real-IP 与 XFF 各有一个开关，互不背书。
+    //   - TRUST_X_REAL_IP=1 且 TRUST_XFF=1 时，worker 侧才读 X-Real-IP 这一档
+    //     （部署模板要求 Nginx 以覆盖模式写它，客户端带来的值到不了应用）；
+    //   - TRUST_XFF=1 时保留 X-Forwarded-For / -Proto。**原样保留**客户端的 XFF 是
+    //     有意为之：XFF 可能是一条更长的反代链（Nginx 前面还有 CDN / WAF），
+    //     只有最外层知道完整链路；应用侧已经把可伪造的追加式首段降为次优先级。
+    //   - 两个开关**任一为假**就删 x-real-ip：它是一个普通的客户端可填头，
+    //     无法从请求本身判断是反代覆盖写的还是客户端自带的 —— 只跟着 TRUST_XFF
+    //     放行的话，Caddy / Traefik（默认不写这条）后面客户端带来的值会原样透传，
+    //     每请求换一个就是全新限速桶。漏删就等于伪造它能污染审计 IP、绕过五类限速。
     headers.delete("cf-connecting-ip");
     headers.delete("cf-visitor");
     if (!trustXFF) {
         headers.delete("x-forwarded-for");
         headers.delete("x-forwarded-proto");
+    }
+    if (!trustXFF || !trustXRealIp) {
         headers.delete("x-real-ip");
     }
 
@@ -1346,6 +1359,10 @@ server.listen(PORT, HOST, () => {
     console.log(`  静态目录   ${STATIC_DIR}`);
     console.log(`  定时任务   ${CRON_IN_PROCESS ? "进程内每小时（NAVIHIVE_CRON=0 关闭，改用 POST /__cron）" : "关闭（用 POST /__cron 外部触发）"}`);
     console.log(`  XFF 信任   ${TRUST_XFF === "1" ? "开（取 X-Forwarded-For 作为真实 IP）" : "关（限速共用一个 unknown 桶）"}`);
+    console.log(`  X-Real-IP 信任 ${TRUST_X_REAL_IP === "1" ? "开（需反代覆盖写入）" : "关（只按 XFF / socket 对端分桶）"}`);
+    if (TRUST_X_REAL_IP === "1" && TRUST_XFF !== "1") {
+        console.warn("⚠️ 设了 NAVIHIVE_TRUST_X_REAL_IP=1 但 NAVIHIVE_TRUST_XFF=0：X-Real-IP 只在两个开关都开时才读，当前设置无效（入口也会把该头删掉）。");
+    }
     // 「配置本身能跑但跑错了」的两类情况，不报错、不阻断启动，只在这里说一句：
     // 它们的共同点是**现象离原因很远**（定时任务悄悄不跑 / 一个人输错密码全站被锁），
     // 等发现时往往已经过了很久。

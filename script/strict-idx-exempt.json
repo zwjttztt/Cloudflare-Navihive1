@@ -367,12 +367,6 @@
             "due": "2027-06-30"
         },
         {
-            "path": "worker/loginGuard.ts",
-            "reason": "待收敛（分批 #3）",
-            "owner": "tbd",
-            "due": "2027-06-30"
-        },
-        {
             "path": "worker/util.ts",
             "reason": "待收敛（分批 #3）",
             "owner": "tbd",

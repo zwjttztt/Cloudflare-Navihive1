@@ -299,26 +299,36 @@ test("存储层不支持 CAS 时退回普通写入（老的行为不变）", asy
     assert.equal(buckets["1.2.3.4"].count, 4);
 });
 
-// ---------------- X-Real-IP 优先级（2026-11-01 XFF 绕过加固） ----------------
+// ---------------- X-Real-IP 优先级（2026-11-01 XFF 绕过加固 / 11-02 拆开关） ----------------
 
-test("clientBucket：TRUST_XFF=1 时 X-Real-IP（反代覆盖头）优先于 XFF 首段", () => {
+test("clientBucket：两个开关都开时 X-Real-IP（反代覆盖头）优先于 XFF 首段", () => {
     const req = (headers: Record<string, string>) =>
         new Request("https://nav.example.com/api/login", { headers });
     // 反代同时给两条：X-Real-IP 是覆盖写入的真实地址，XFF 首段（追加模式下）
     // 是客户端自己填的 —— 桶必须取前者，否则攻击者随机换 XFF 首段就能换新桶
     assert.equal(
-        clientBucket(req({ "X-Real-IP": "8.8.8.8", "X-Forwarded-For": "6.6.6.6, 10.0.0.1" }), true),
+        clientBucket(
+            req({ "X-Real-IP": "8.8.8.8", "X-Forwarded-For": "6.6.6.6, 10.0.0.1" }),
+            true,
+            true
+        ),
         "8.8.8.8",
-        "X-Real-IP 必须赢过可伪造的 XFF 首段"
+        "X-Real-IP 必须赢过可伪造的 XFF 首段（但需要第二个开关显式开启）"
     );
-    // 反代还没配 X-Real-IP 的老部署：回退 XFF 首段，与旧行为一致
+    // 只开 TRUST_XFF（反代没配 X-Real-IP 的部署 / Caddy 默认行为）：
+    // 回退 XFF 首段，且**不读**客户端自带的 X-Real-IP
+    assert.equal(
+        clientBucket(req({ "X-Real-IP": "8.8.8.8", "X-Forwarded-For": "6.6.6.6, 10.0.0.1" }), true),
+        "6.6.6.6",
+        "X-Real-IP 需要独立开关，只开 TRUST_XFF 时不能被客户端伪造值劫持"
+    );
     assert.equal(
         clientBucket(req({ "X-Forwarded-For": "6.6.6.6, 10.0.0.1" }), true),
         "6.6.6.6"
     );
     // 不信任 XFF 时两条头都不该影响分桶（防止端口直暴时伪造换桶）
     assert.equal(
-        clientBucket(req({ "X-Real-IP": "6.6.6.6", "X-Forwarded-For": "7.7.7.7" }), false),
+        clientBucket(req({ "X-Real-IP": "6.6.6.6", "X-Forwarded-For": "7.7.7.7" }), false, false),
         "unknown"
     );
 });

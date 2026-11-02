@@ -17,6 +17,7 @@ export async function handleConfigRoutes(ctx: RouteCtx): Promise<Response | null
         method,
         api,
         trustXFF,
+        trustXRealIp,
     } = ctx;
 
     // 写配置先过一道闸门。
@@ -28,7 +29,7 @@ export async function handleConfigRoutes(ctx: RouteCtx): Promise<Response | null
     if (WRITE_METHODS.has(method)) {
         const limited = await enforceConfigGuard(
             api,
-            endpointBucket(request, api.getCurrentUserId(), trustXFF)
+            endpointBucket(request, api.getCurrentUserId(), trustXFF, trustXRealIp)
         );
         if (limited) return limited;
     }

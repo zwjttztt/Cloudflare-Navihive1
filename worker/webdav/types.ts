@@ -1,9 +1,9 @@
 // WebDAV 备份（worker/webdav/ 这一组文件）
 //
 // WebDAV 服务大多不返回 CORS 头，浏览器直连会被拦截，因此所有 WebDAV 请求都由 Worker 代发。
-// 备份加密用的是用户自己设的「备份密码」（backupPassword），与 AUTH_SECRET 无关：
-// AUTH_SECRET 是服务端 JWT 签名密钥，轮换它会让所有旧备份瞬间解不开；
-// 备份文件飞出服务端落到网盘上，本就不该由服务端密钥护着。
+// 备份加密优先用用户自己设的「备份密码」（backupPassword）；没设时用 AUTH_SECRET 派生的
+// 自动口令兜底（见 ./autoKey.ts）—— 上传永远是密文。显式口令与 AUTH_SECRET 解耦，
+// 换密钥也不会让「设过口令」的旧备份失效；只有自动加密的那批会受影响。
 //
 // 按职责分成几份：types（数据结构）/ config（配置从哪来）/ naming（文件名与保留策略）/
 // transport（出网那层：URL 校验 + 请求 + 错误翻译），index 里是五个对外操作。
@@ -18,10 +18,11 @@ export interface WebDavConfig {
     /**
      * 备份文件的加密口令（可选）。
      *
-     * 刻意与 AUTH_SECRET 无关：AUTH_SECRET 是服务端 JWT 签名密钥，轮换一次就把此前
-     * 所有备份变成废文件。备份一旦传到网盘就不在服务端的保护范围内了，该由用户
-     * 自己的口令护着（和本地加密备份同一套 NAVIHIVE-ENC1 格式）。
-     * 留空 = 不加密，仍然是 gzip 压缩后上传（能备份，只是文件里是明文）。
+     * 与 AUTH_SECRET 解耦：设了就用它，换 AUTH_SECRET 也照样解；没设则由
+     * AUTH_SECRET 派生的自动口令兜底（见 ./autoKey.ts），**不再有「不加密」这个选项**
+     * —— 导出的备份里含解密后的站点密码，明文上传等于把凭据交出去。
+     * 代价：换 AUTH_SECRET / DATA_ENCRYPTION_KEY 会让旧的自动加密备份解不开，
+     * 想跨实例可移植就显式设一个口令。两把根密钥都拿不到时备份直接失败。
      */
     backupPassword?: string;
     /**

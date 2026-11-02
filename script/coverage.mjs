@@ -131,10 +131,14 @@ const EXCLUDE = new Set([
     //（里面的字段类型是 tsc 从 NotesPage 真实代码导出来的）。硬算进门禁只会逼出
     // 无意义的测试 —— 但「它必须保持纯类型」由 tests/pureTypeFiles.test.ts 守着。
     "src/components/notes/notesPageCtx.ts",
-    // 自托管 Node 进程入口：它由「起真实例 + 走 HTTP」的 smoke:selfhost 覆盖，
-    // 不是 jsdom 单测能引入的东西（硬塞会把浏览器侧打包拖进 node:sqlite / fs）。
-    // 以前它连统计都不进 —— 现在进统计但显式排除，免得它 1165 行永远挂在
-    // 「未触及名单」第一名、把真正该补测的小文件挤出视野。
+    // 自托管生产入口（node:sqlite + 静态服务 + 升级 spool）：jsdom 单测 import 不了它 ——
+    // 硬塞会把 node:sqlite / fs 拖进浏览器侧环境。
+    // 它**没有行覆盖**：此前只有 e2e:share-extra 与 probe:edge 通过 spawn
+    // dist-server/entry.mjs 间接执行到其中的「非入口功能」（路由、静态守卫、附件），
+    // 入口自身那部分（装配 env、选端口、读 spool 目录、优雅退出）一直无人执行。
+    // 显式排除的真实理由是它 1400+ 行、永远挂在「未触及名单」第一名，把真正该补测的
+    // 小文件挤出视野；**不是**「已经有人守着」。
+    // 自本次改动起由 CI 的「自托管冒烟（smoke:selfhost）」一步真起实例守护入口本身。
     "server/entry.ts",
 ]);
 

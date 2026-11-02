@@ -7,9 +7,13 @@
 // 看起来像个正常响应体，只是 success 是假的，客户端只能把 message 显示出来，
 // 照样拿不到机器可读的 code。
 //
-// 2026-10-13 清点的结果：worker/ 下一共 **98** 处 `{ success: false }`，但不是全都该迁：
-//   - 26 处根本不是 HTTP 出口，是**内部辅助函数的返回值**（webdav/index.ts 22 处、
+// 2026-10-13 清点的结果：worker/ 下一共 **98** 处 `{ success: false }`，但不是全都该迁
+// （2026-11「备份默认加密」又在白名单文件里新增 2 处，即下面的 24 而非 22；总数随之变 100）：
+//   - 28 处根本不是 HTTP 出口，是**内部辅助函数的返回值**（webdav/index.ts 24 处、
 //     notesBackup.ts 2 处）或 SSE/进度载荷，迁了反而破坏调用方的 `.success` 判断；
+//     其中 webdav/index.ts 的 22→24 是 2026-11「备份默认加密」带出来的：
+//     拿不到根密钥时那两个 helper 直接返回 `{ success:false, message: NO_BACKUP_KEY_MESSAGE }`，
+//     调用方（routes/backup.ts、cron.ts）自己挑状态码 / 记失败留痕，与其余 22 处同性质；
 //   - 4 处是**结果对象**而非错误：ai.ts 那处带 done/total 是「部分成功」，
 //     backup.ts 那 3 处是 HTTP 200 + `{ success:false }`（webdav/notes 的
 //     list/download，调用方查 `.success` / `.code` 分流），迁成 4xx 会改状态码；
@@ -74,7 +78,9 @@ const FILES = walk(WORKER).map(f => ({
 const EXPECTED_INTERNAL: Record<string, number> = {
     // 上传 / 列表 / 下载 / 删除四个 helper 的返回值：调用方（backup.ts）拿它决定
     // 下一步，并且**自己**挑状态码。迁成 ApiError 就把两层揉成一层了。
-    "worker/webdav/index.ts": 22,
+    // 24 = 22 + 2：runWebDavBackup 与 webdavUpload 在「一把备份密钥都拿不到」时的
+    // 提前返回（2026-11 备份默认加密），同样是 helper 返回值而不是 HTTP 出口。
+    "worker/webdav/index.ts": 24,
     // 记事本备份任务的内部结果（status/trigger/keepFilename 等）。
     "worker/notesBackup.ts": 2,
 };

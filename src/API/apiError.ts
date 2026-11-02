@@ -8,7 +8,10 @@
 //
 // 有了 code，UI 分流就不再拿 message 做 includes 匹配：
 // 409 + conflict → 弹冲突框（而不是「保存失败」）；
-// 401 + unauthenticated → 跳登录；429 → 提示「太频繁」并给重试按钮。
+// 401 + unauthenticated → 跳登录；
+// 429 + rate_limited → **目前只弹通用 toast「操作太频繁」**。服务端多处 429 都回了
+//   `Retry-After`，但 src/ 侧没有任何消费者（响应头读完即丢），按剩余秒数倒计时的
+//   重试按钮还没实现 —— 别照着这行注释去找它。
 
 // 错误码收敛到 shared/（前后端共用一份，见 shared/apiErrorCodes.ts 的说明）。
 // 这里 import 引入本地作用域（isAuthError 要用），再 re-export 保持既有 import 路径不变。

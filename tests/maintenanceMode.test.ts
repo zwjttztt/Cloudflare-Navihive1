@@ -36,6 +36,7 @@ function ctxOf(opts: {
         api: api as never,
         ip: "127.0.0.1",
         trustXFF: false,
+        trustXRealIp: false,
         secureCookie: true,
         currentJti: "",
         currentTokenExp: 0,

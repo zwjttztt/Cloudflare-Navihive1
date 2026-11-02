@@ -79,6 +79,8 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         api,
         ip,
         trustXFF,
+        // X-Real-IP 必须独立授权（默认 false）：TRUST_XFF=1 不代表反代写了这条头
+        trustXRealIp,
         secureCookie,
         
     } = ctx;
@@ -128,7 +130,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         // 分享口令是全站唯一还能被反复试的密码入口（登录/注册/找回都有限速），
         // 且校验是 PBKDF2（Workers 侧 10 万次迭代）—— 不限速就是一条免费的
         // CPU 放大器。分桶按「IP + token」，锁定期内连哈希都不跑。
-        const sBucket = shareBucket(request, token, trustXFF);
+        const sBucket = shareBucket(request, token, trustXFF, trustXRealIp);
         const locked = await shareGuardLocked(api, sBucket);
         if (locked) return locked;
 
@@ -165,7 +167,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
     if (path.startsWith("note-shares/") && (method === "GET" || method === "POST")) {
         const token = path.slice("note-shares/".length);
         // 与分组分享同一套口令限速（见上面 group-shares 分支的说明）。
-        const sBucket = shareBucket(request, token, trustXFF);
+        const sBucket = shareBucket(request, token, trustXFF, trustXRealIp);
         const locked = await shareGuardLocked(api, sBucket);
         if (locked) return locked;
 
@@ -266,7 +268,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
 
         // 还在锁定期就直接回绝，并告诉还要等多久。
         // 锁是按来源 IP 分的桶：陌生人乱猜不该把站点主人自己也挡在门外。
-        const guard = await readLoginGuard(api, clientBucket(request, trustXFF));
+        const guard = await readLoginGuard(api, clientBucket(request, trustXFF, trustXRealIp));
         const now = Date.now();
         if (guard.until > now) {
             const waitSec = Math.ceil((guard.until - now) / 1000);
@@ -277,7 +279,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         if (result.success) {
             // 登录成功就清零，别让之前的手滑一直累积
             if (guard.count > 0)
-                await writeLoginGuard(api, { count: 0, until: 0 }, clientBucket(request, trustXFF));
+                await writeLoginGuard(api, { count: 0, until: 0 }, clientBucket(request, trustXFF, trustXRealIp));
             await api.writeAudit("login.success", loginData.username || "", ip);
 
             // 登记这台设备：之后才好在「账号管理 → 登录设备」里把它单独踢下线。
@@ -324,7 +326,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         const bumped = await bumpGuard(
             api,
             LOGIN_GUARD_KEY,
-            clientBucket(request, trustXFF),
+            clientBucket(request, trustXFF, trustXRealIp),
             prev => {
                 const count = prev.count + 1;
                 const lockMs = computeLockAfterFailure(
@@ -384,7 +386,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         // 注册是唯一「不用任何凭据就能写库」的入口，必须限频：
         // 失败要写审计日志，成功要跑一次十万次 PBKDF2，两头都是资源。
         // 按来源 IP 分桶，跟登录那把锁互不影响。
-        const rBucket = clientBucket(request, trustXFF);
+        const rBucket = clientBucket(request, trustXFF, trustXRealIp);
         const regGuard = await readRegisterGuard(api, rBucket);
         const regNow = Date.now();
         if (regGuard.until > regNow) {
@@ -448,7 +450,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         if (!token) {
             return errorResponse(ApiError.badRequest("请提供恢复令牌"));
         }
-        const rBucket = clientBucket(request, trustXFF);
+        const rBucket = clientBucket(request, trustXFF, trustXRealIp);
         const rGuard = await readRecoverGuard(api, rBucket);
         const rNow = Date.now();
         if (rGuard.until > rNow) {
@@ -506,7 +508,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
     if (path === "init" && method === "GET") {
         // 未鉴权接口，先过一道限速：挡掉反复打接口探测的扫描。
         // 已初始化的请求（正常回源探测）不计次，避免锁正常用户。
-        const initGuard = await readInitGuard(api, clientBucket(request, trustXFF));
+        const initGuard = await readInitGuard(api, clientBucket(request, trustXFF, trustXRealIp));
         const initNow = Date.now();
         if (initGuard.until > initNow) {
             const waitSec = Math.ceil((initGuard.until - initNow) / 1000);
@@ -522,7 +524,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         // 与「已初始化部署」，枚举失败。限速仍然生效（首次计次仍要走完整分支）
         if (!initResult.alreadyInitialized) {
             // 仅「首次真正初始化」才计次（已初始化分支不计次，避免误锁正常用户）
-            await bumpGuard(api, INIT_GUARD_KEY, clientBucket(request, trustXFF), prev => {
+            await bumpGuard(api, INIT_GUARD_KEY, clientBucket(request, trustXFF, trustXRealIp), prev => {
                 const count = prev.count + 1;
                 const lockMs = computeLockAfterFailure(
                     count,

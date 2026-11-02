@@ -12,12 +12,12 @@ import { enforceWriteGuard, writeBucket } from "../loginGuard";
 const ENTRIES_PREFIX = "vault/entries/";
 
 export async function handleVaultRoutes(ctx: RouteCtx): Promise<Response | null> {
-    const { path, method, api, request, trustXFF } = ctx;
+    const { path, method, api, request, trustXFF, trustXRealIp } = ctx;
 
     // 写操作限速（与 data.ts 同一把 writeGate）：改主密码 / 建改删条目都走它。
     // 必须在任何写分支落库前拦一道 —— 否则一个泄露的令牌能反复改写保险库。
     const writeGate = (): Promise<Response | null> =>
-        enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF));
+        enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF, trustXRealIp));
 
     // ---- vault/keys：读 KDF 参数 + 两份包好的 DEK；写 = 建库 / 改主密码（upsert 一行）----
     if (path === "vault/keys" && method === "GET") {

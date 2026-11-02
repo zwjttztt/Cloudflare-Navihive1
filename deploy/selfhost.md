@@ -36,12 +36,17 @@ npm ci
 npm run build          # 产出 dist/client（含 _headers）
 npm run build:server   # 产出 dist-server/entry.mjs
 
+# 冒烟（26 项）：**没有常驻实例时走这条** —— 脚本自己起一个临时实例
+# （端口自动挑空闲的、临时库、跑完收掉并删目录），不需要另开终端
+npm run smoke:selfhost
+
 # 起服务（密钥随便给一个，仅本地验证用）
 AUTH_SECRET=$(openssl rand -hex 32) npm run start:selfhost
 # → 监听 http://127.0.0.1:8787
 
-# 另开一个终端跑冒烟（26 项）
-npm run smoke:selfhost http://127.0.0.1:8787
+# 想对着这个常驻实例打点（改完代码手测最常用）就给它 URL
+# ⚠️ `--` 不能省：npm 只有见到 `--` 才会把后面的位置参数转发给脚本
+npm run smoke:selfhost -- http://127.0.0.1:8787
 ```
 
 首次启动会自动建库建表（`NavigationAPI.migrate()` 补到当前 `SCHEMA_VERSION`），
@@ -83,7 +88,8 @@ npm run smoke:selfhost http://127.0.0.1:8787
 | `NAVIHIVE_DB` | `./data/navihive.db` | SQLite 库文件路径（目录会自动建） |
 | `NAVIHIVE_FILES` | `./data/files` | 附件根目录 |
 | `NAVIHIVE_STATIC_DIR` | `./dist/client` | 构建产物目录 |
-| `NAVIHIVE_TRUST_XFF` | `0` | 是否信任 `X-Forwarded-For`（限速分桶用）。**默认 0（安全）**：端口直接暴露公网时保持 0，否则改个请求头就能换限速桶、绕开爆破防护。前面确实挡了 Nginx（由它**覆盖** XFF 为 `$remote_addr`、并同样覆盖 `X-Real-IP`，见 `navihive-selfhost.conf`）才设 `1` —— `docker-compose.yml` 默认已写 1。2026-11-01 起应用侧分桶优先读 `X-Real-IP`，XFF 作为回退；两者都必须由反代覆盖写入，客户端伪造的头进不来 |
+| `NAVIHIVE_TRUST_XFF` | `0` | 是否信任 `X-Forwarded-For`（限速分桶用）。**默认 0（安全）**：端口直接暴露公网时保持 0，否则改个请求头就能换限速桶、绕开爆破防护。前面确实挡了 Nginx（由它**覆盖** XFF 为 `$remote_addr`，见 `navihive-selfhost.conf`）才设 `1` —— `docker-compose.yml` 默认也是 `0`；用本仓 Nginx 模板时把 `NAVIHIVE_TRUST_XFF` 与 `NAVIHIVE_TRUST_X_REAL_IP` **两个开关都设 1** |
+| `NAVIHIVE_TRUST_X_REAL_IP` | `0` | 是否信任反代**覆盖写入**的 `X-Real-IP`（限速分桶优先读它）。**默认 0**，与上一个开关独立：`TRUST_XFF=1` 只说明反代老实写 XFF，不代表它写了 `X-Real-IP`（Caddy / Traefik 默认不写），那种部署里客户端自带的 `X-Real-IP` 会原样透传、每请求换一个就是全新空桶。只有反代确实写了 `proxy_set_header X-Real-IP $remote_addr`（本仓 Nginx 模板）才与 `TRUST_XFF` 一起设 `1`；两个开关都为真时才会读这个头 |
 | `NAVIHIVE_CRON` | `1` | 进程内每小时跑一次定时任务。多副本部署必须设 `0`（否则每个副本各跑一遍），改用 `POST /__cron` |
 | `NAVIHIVE_CRON_TOKEN` | 空 | `POST /__cron` 的 bearer token。**不配 = 该端点 404** |
 
@@ -125,7 +131,10 @@ AUTH_ENABLED=true
 AUTH_SECRET=换成 64 位十六进制
 DATA_ENCRYPTION_KEY=与线上一致
 JWT_SECRET=与线上一致
+# 反代模板部署的**成对**配置：本仓 Nginx 模板同时覆盖写 XFF 与 X-Real-IP，
+# 所以这两个开关一起设 1；反代没写 X-Real-IP（Caddy / Traefik 默认）时别开第二个。
 NAVIHIVE_TRUST_XFF=1
+NAVIHIVE_TRUST_X_REAL_IP=1
 NAVIHIVE_CRON=1
 EOF
 sudo chmod 600 /etc/navihive/env
@@ -416,13 +425,25 @@ D1 托管版自带时间点恢复，搬到 VPS 后**全没了**，必须自己�
 ⚠️ **这一层的前提是「你已经配了」**：没配 WebDAV 就完全没有这一层，而且界面不会报错 ——
 它只是不出现。**别把「设置里有备份页」当成「备份在跑」。**
 
-⚠️ **安全提示（重要）**：设备份密码时，备份包是**未加密的 zip 直接传网盘**
-（`worker/notesBackup.ts`：`body = password ? await encryptBackup(zip, password) : zip`）。
-而这个包里含**站点账号密码**（导航页备份）与全部笔记正文。所以：
+##### 备份加密：默认就是加密的（2026-11 起）
 
-- 要么在设置里设一个备份密码（AES 加密后才上传）；
-- 要么确认你那个网盘本身可信、且开了二次验证；
-- ⚠️ 备份密码丢了 = 那个包永久打不开，它不会存在任何地方可以找回。
+- **默认行为**：哪怕一个口令都没设，备份也是**加密后**才上传的 —— 口令由 `AUTH_SECRET`
+  派生（HMAC-SHA256，派生输入里带账号 id，所以多账号共用同一个网盘目录也不会互相串）。
+  既没有 `AUTH_SECRET` 也没有 `DATA_ENCRYPTION_KEY` 时，备份会**直接失败并提示去配置**，
+  不会再静默传明文。
+- **为什么**：导出的备份里含**解密后的站点密码**（`src/API/methods/transfer.ts` 打包前先把
+  密文解开了），明文上传等于把全站凭据交出去。此前的「有口令才加密、没口令就明文 gzip」
+  是一条已确认的数据安全缺陷。
+- **代价（务必看清）**：自动密钥是从 `AUTH_SECRET` 派生的，**换了 `AUTH_SECRET` 或
+  `DATA_ENCRYPTION_KEY` 之后，旧的自动加密备份就解不开了**。要跨实例迁移、长期存档，
+  或者预计会轮换密钥，请另外设一个独立的**备份密码**（`webdav.backupPassword`）——
+  它和 `AUTH_SECRET` 无关，换密钥也照样能解。
+- **升级兼容**：本次升级前上传的**明文**备份仍可正常恢复 —— 服务端先看文件头，
+  没有 `NAVIHIVE-ENC` 魔数就按 gzip / JSON 原样读。
+- **恢复页的「请输入备份密码」行为不变**：真遇到加密文件而本地没有可用口令时，
+  仍然是就地弹框让用户输一次，不会因为这次改动多出新的操作。
+- ⚠️ 显式设置的备份密码丢了 = 那个包永久打不开，它不存在任何地方可以找回；
+  而自动派生口令则在 `AUTH_SECRET` 不变的前提下随时可以重新算出来。
 
 #### 层次二：宿主 crontab 的本地兜底（不依赖任何配置）
 

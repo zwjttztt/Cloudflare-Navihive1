@@ -26,6 +26,7 @@ import { isBodyTooLarge, safeJson } from "../util";
 import {
     gunzipToString,
     readAllConfigs,
+    resolveBackupPasswords,
     resolveWebDavConfig,
     runWebDavBackup,
     webdavDelete,
@@ -198,6 +199,7 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         method,
         api,
         trustXFF,
+        trustXRealIp,
         
     } = ctx;
 
@@ -205,7 +207,7 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
     if (path === "export" && method === "GET") {
         // 一次导出 = 整站数据 + 解密后的站点密码，是拿到会话后收益最大的接口。
         // 先过一道限速（按账号 + 来源 IP 分桶），别让一个令牌把全站反复拖走
-        const eBucket = exportBucket(request, api.getCurrentUserId(), trustXFF);
+        const eBucket = exportBucket(request, api.getCurrentUserId(), trustXFF, trustXRealIp);
         const exportGuard = await readExportGuard(api, eBucket);
         const nowMs = Date.now();
 
@@ -276,7 +278,7 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
     else if (path === "import" && method === "POST") {
         // 导入是全局最贵的一次写：整批 INSERT 再整批 DELETE，中途失败还要回滚。
         // 先过写操作限速 —— 令牌泄露后被人反复丢大文件进来是最现实的打法。
-        const limited = await enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF));
+        const limited = await enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF, trustXRealIp));
         if (limited) return limited;
 
         // 超大备份会拖垮 Worker：先用 Content-Length 拦一道（见 util.isBodyTooLarge）
@@ -330,7 +332,7 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
     if (path.startsWith("webdav/") && method === "POST") {
         const limited = await enforceDavGuard(
             api,
-            endpointBucket(request, api.getCurrentUserId(), trustXFF)
+            endpointBucket(request, api.getCurrentUserId(), trustXFF, trustXRealIp)
         );
         if (limited) return limited;
     }
@@ -355,12 +357,16 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         const config = await resolveWebDavConfig(api, request, body);
         // 手动备份：不删任何已有备份（自动备份才滚动清理自己那一份）
         const stored = await readAllConfigs(api);
-        // 备份口令来自配置（请求体优先，其次库里存的），与 AUTH_SECRET 无关
+        // 备份口令来自配置（请求体优先，其次库里存的）。留空也没关系：
+        // 上传侧会退回 AUTH_SECRET 派生的自动密钥，绝不会明文上传
         const result = await runWebDavBackup(api, config, {
             mode: "manual",
             stored,
             data: body.data,
             password: config.backupPassword,
+            // env 传下去：没设备份口令时用 AUTH_SECRET 派生的自动密钥加密，
+            // 拿不到密钥就失败 —— 绝不再把含明文站点密码的 gzip 传上网盘
+            env: ctx.env,
         });
         if (result.success) {
             // 手动备份成功 = 备份链路是好的，自动备份的失败留痕已经过时。
@@ -377,8 +383,16 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         return Response.json(result);
     } else if (path === "webdav/download" && method === "POST") {
         const body = (await safeJson(request)) as { filename?: string };
+        // config.backupPassword 已经合并了「恢复页就地输入的一次性口令」（见 resolveWebDavConfig）
         const config = await resolveWebDavConfig(api, request, body);
-        const result = await webdavDownload(config, body.filename || "", config.backupPassword);
+        // 候选列表：显式口令 → AUTH_SECRET 派生的自动口令。用户先没设口令、后来设了，
+        // 旧备份仍是自动口令加密的 —— 只试一个口令会把「自己的备份」误报成 badPassword。
+        const { candidates } = await resolveBackupPasswords(
+            ctx.env,
+            api.currentUserId,
+            config.backupPassword ?? ""
+        );
+        const result = await webdavDownload(config, body.filename || "", candidates);
         return Response.json(result);
     } else if (path === "webdav/delete" && method === "POST") {
         const body = (await safeJson(request)) as { filename?: string };
@@ -444,14 +458,22 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         if (!config.url) {
             return errorResponse(ApiError.badRequest(NOTES_BACKUP_NOT_CONFIGURED_MESSAGE));
         }
-        // 口优先级：本次输入 > 记事本备份口令 > 导航备份口令（与上传侧同源）
+        // 口令优先级：本次输入 > 记事本备份口令 > 导航备份口令（与上传侧同源）
         const password = body.password || config.backupPassword || "";
+        // 再补上自动派生口令做兜底：没设口令时上传的那份是自动密钥加密的，
+        // 后来设了口令也不能让旧备份打不开
+        const { candidates } = await resolveBackupPasswords(ctx.env, api.currentUserId, password);
         // 取回 + 解密（如有）拿原始字节：ZIP 备份（2026-10-11 起，含附件）不再由
         // 服务端解包 —— 附件回传要走前端的 uploadAttachment，服务端解了也用不上。
         // 体积闸比纯 JSON 的 32MB 宽一档（附件是图片本来就压过，但量可能多），
         // 仍留在 Worker 内存可承受的范围。
         const NOTES_BACKUP_ZIP_MAX_BYTES = 64 * 1024 * 1024;
-        const raw = await webdavDownloadBytes(config, filename, password, NOTES_BACKUP_ZIP_MAX_BYTES);
+        const raw = await webdavDownloadBytes(
+            config,
+            filename,
+            candidates,
+            NOTES_BACKUP_ZIP_MAX_BYTES
+        );
         if (!raw.success || !raw.data) {
             return Response.json(
                 { success: false, code: raw.code, message: raw.message || "下载备份失败" }

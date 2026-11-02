@@ -49,9 +49,16 @@ type GuardStore = Record<string, GuardState>;
  * 就换一个新桶，登录 / 注册 / 分享口令的爆破锁等于没有。所以信任链里插一档
  * `X-Real-IP`（见 X_REAL_IP_HEADER）：部署模板让 Nginx 用覆盖模式写它，
  * 客户端带来的值进不了应用，伪造不了。取值顺序变为：
- *   CF-Connecting-IP → X-Real-IP（TRUST_XFF=1 时）→ XFF 首段 → 入口 socket 对端
+ *   CF-Connecting-IP → X-Real-IP（两个开关都为真时）→ XFF 首段 → 入口 socket 对端
  * 反代没配 X-Real-IP 的老部署自动回退 XFF 首段（与旧行为一致），
  * 部署侧把 XFF 改成覆盖模式（见 deploy/nginx 模板）后彻底封死。
+ *
+ * ⚠️ 2026-11-02：`X-Real-IP` **也不过是客户端可填的头**，必须有独立开关
+ * `NAVIHIVE_TRUST_X_REAL_IP`。只跟着 TRUST_XFF 放行是不够的：TRUST_XFF=1 只说明
+ * 「这层反代老实写 XFF」，不代表它写了 X-Real-IP（Caddy / Traefik 默认就不写），
+ * 那种部署里客户端自带的 `X-Real-IP` 会原样透传，每请求换一个就是全新空桶 ——
+ * 五类限速同时失效，且每次尝试仍要跑一遍 PBKDF2（CPU 放大）。所以只有
+ * trustXForwardedFor 与 trustXRealIp 同时为真才读这一档。
  *
  * 不信任且又拿不到真实 IP 时所有来源共用一个 `unknown` 桶 —— 最多只是限速粒度变粗，
  * 不会失守。
@@ -62,13 +69,20 @@ type GuardStore = Record<string, GuardState>;
  * 从 socket 对端地址写进去的，且一律覆盖客户端带过来的值，伪造不了。
  * Workers 部署下 CF-Connecting-IP 永远命中第一档，这条链路不受影响。
  */
-export function clientBucket(request: Request, trustXForwardedFor = false): string {
+export function clientBucket(
+    request: Request,
+    trustXForwardedFor = false,
+    trustXRealIp = false
+): string {
     const cf = request.headers.get("CF-Connecting-IP");
     if (cf) return cf.slice(0, 64);
     if (trustXForwardedFor) {
-        // 先问 Nginx 覆盖写入的 X-Real-IP（伪造不了），再回退 XFF 首段（追加模式下可伪造）
-        const real = request.headers.get(X_REAL_IP_HEADER);
-        if (real && real.trim()) return real.trim().slice(0, 64);
+        // 先问 Nginx 覆盖写入的 X-Real-IP（伪造不了），再回退 XFF 首段（追加模式下可伪造）。
+        // ⚠️ X-Real-IP 必须第二个开关也开着才读：它是客户端可填的头，见函数头注释。
+        if (trustXRealIp) {
+            const real = request.headers.get(X_REAL_IP_HEADER);
+            if (real && real.trim()) return real.trim().slice(0, 64);
+        }
         const xff = (request.headers.get("X-Forwarded-For") || "").split(",")[0]?.trim();
         if (xff) return xff.slice(0, 64);
     }
@@ -376,8 +390,13 @@ export const EXPORT_BASE_LOCK_MS = 5 * 60_000; // 第 11 次起锁 5 分钟
 export const EXPORT_MAX_LOCK_MS = 30 * 60_000; // 最多 30 分钟
 
 /** 导出限速的桶：账号 + 来源 IP（未登录 / 取不到 uid 时按匿名算） */
-export function exportBucket(request: Request, uid: number | null, trustXFF = false): string {
-    return `u${uid ?? "anon"}:${clientBucket(request, trustXFF)}`;
+export function exportBucket(
+    request: Request,
+    uid: number | null,
+    trustXFF = false,
+    trustXRealIp = false
+): string {
+    return `u${uid ?? "anon"}:${clientBucket(request, trustXFF, trustXRealIp)}`;
 }
 
 /** 导出限速的状态：比 LoginGuard 多一个「上次动它的时刻」，用来判断计数该不该重置 */
@@ -457,8 +476,13 @@ export const WRITE_MAX_LOCK_MS = 10 * 60_000; // 最多 10 分钟
 export const WRITE_COUNT_RESET_MS = 60 * 1000;
 
 /** 写操作限速的桶：账号 + 来源 IP（未登录 / 取不到 uid 时按匿名算） */
-export function writeBucket(request: Request, uid: number | null, trustXFF = false): string {
-    return `u${uid ?? "anon"}:${clientBucket(request, trustXFF)}`;
+export function writeBucket(
+    request: Request,
+    uid: number | null,
+    trustXFF = false,
+    trustXRealIp = false
+): string {
+    return `u${uid ?? "anon"}:${clientBucket(request, trustXFF, trustXRealIp)}`;
 }
 
 export async function readWriteGuard(
@@ -579,8 +603,13 @@ export const DAV_MAX_LOCK_MS = 30 * 60_000;
 export const DAV_COUNT_RESET_MS = 60 * 1000;
 
 /** 这两类端点的桶：账号 + 来源 IP，与写操作同构（互不影响） */
-export function endpointBucket(request: Request, uid: number | null, trustXFF = false): string {
-    return `u${uid ?? "anon"}:${clientBucket(request, trustXFF)}`;
+export function endpointBucket(
+    request: Request,
+    uid: number | null,
+    trustXFF = false,
+    trustXRealIp = false
+): string {
+    return `u${uid ?? "anon"}:${clientBucket(request, trustXFF, trustXRealIp)}`;
 }
 
 /**
@@ -689,8 +718,13 @@ export const SHARE_COUNT_RESET_MS = 15 * 60_000; // 15 分钟没动静就重新�
  * token 是 64 位 hex，截 16 位（64 bit）做桶名足够区分，也避免把完整 token
  * 写进 configs 表 —— 那份记录虽然带 `auth.` 前缀不外泄，但没必要留可用的凭据。
  */
-export function shareBucket(request: Request, token: string, trustXFF = false): string {
-    return `${clientBucket(request, trustXFF)}:s${token.slice(0, 16)}`;
+export function shareBucket(
+    request: Request,
+    token: string,
+    trustXFF = false,
+    trustXRealIp = false
+): string {
+    return `${clientBucket(request, trustXFF, trustXRealIp)}:s${token.slice(0, 16)}`;
 }
 
 export async function readShareGuard(

@@ -1,9 +1,137 @@
 // 自托管链路冒烟：登录 → 改密 → 重登 → CRUD → 静态资源 → SPA → 附件 → 定时任务口
-// 用法：node script/selfhost-smoke.mjs [baseUrl]
-const BASE = process.argv[2] ?? "http://127.0.0.1:8791";
+//
+// 两种用法：
+//   node script/selfhost-smoke.mjs               自举 —— 自己起一个临时实例（随机端口 + 临时库），
+//                                                跑完 SIGTERM 收掉、删临时目录。CI 与 `npm run ci` 走这条。
+//   node script/selfhost-smoke.mjs <baseUrl>     只打点 —— 对着**已经起着**的实例跑（改代码后手测用）。
+//                                                给参数时不起进程、不建临时目录，行为与以前完全一致。
+//
+// 为什么不干脆也在脚本里 build:server：CI 的构建顺序要看得见（谁漏了 build 应该当场报错，
+// 而不是被这里顺手补上、掩盖掉顺序依赖）。dist-server/ 不存在就直接退出并提示先构建。
+
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { pickPort } from "./e2eEnv.mjs";
+
+const ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const ADMIN = "root";
 const OLD_PW = "seed-password";
 const NEW_PW = "smoke-new-password-2";
+
+/** 自举出来的子进程与临时目录；只打点模式下两者都保持空 */
+let child = null;
+let scratch = "";
+let childLog = "";
+const appendLog = d => {
+    childLog += d.toString();
+    // 只留尾部：留着全量会在失败时把 CI 日志淹掉，本来要看的就是最后那几十行
+    if (childLog.length > 20000) childLog = childLog.slice(-20000);
+};
+
+/**
+ * 起一个临时自托管实例，返回它监听的端口（就绪由调用方轮询，出错细节留在 childLog 里）。
+ *
+ * env 逐键照抄 script/share-e2e-extra.mjs 的那一组（同一套 dist-server 入口，两处不能各写一份
+ * 不同的初始化方式）；`NAVIHIVE_CRON=0` 必须显式带上 —— 默认是 1，临时实例不该跑定时任务
+ * （会去写备份、还会和本进程抢同一个 data 目录的假设）。
+ */
+async function bootSelfhost() {
+    const entry = join(ROOT, "dist-server", "entry.mjs");
+    if (!existsSync(entry)) {
+        console.error("找不到 dist-server/entry.mjs —— 先跑 npm run build:server（本脚本不替你构建）。");
+        process.exit(1);
+    }
+
+    const port = await pickPort("SELFHOST_SMOKE_PORT");
+    scratch = mkdtempSync(join(tmpdir(), "navihive-smoke-"));
+    child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "dist-server/entry.mjs"], {
+        cwd: ROOT,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+            ...process.env,
+            NAVIHIVE_PORT: String(port),
+            NAVIHIVE_HOST: "127.0.0.1",
+            NAVIHIVE_DB: join(scratch, "navihive.db"),
+            NAVIHIVE_FILES: join(scratch, "files"),
+            NAVIHIVE_CRON: "0",
+            AUTH_ENABLED: "true",
+            AUTH_USERNAME: ADMIN,
+            AUTH_PASSWORD: OLD_PW,
+            AUTH_SECRET: "selfhost-smoke-secret",
+        },
+    });
+    child.stdout.on("data", appendLog);
+    child.stderr.on("data", appendLog);
+
+    // 崩溃路径兜底：断言里任何一处抛异常都会让顶层 await 直接退出，走不到 shutdown()
+    process.on("exit", () => {
+        try {
+            if (child && child.exitCode === null) child.kill("SIGKILL");
+        } catch {
+            /* 已经退了 */
+        }
+        try {
+            if (scratch) rmSync(scratch, { recursive: true, force: true });
+        } catch {
+            /* Windows 句柄延迟，忽略 */
+        }
+    });
+
+    return port;
+}
+
+/** SIGTERM → 最多等 3s → SIGKILL，然后删临时目录（删不掉不掩盖原来的失败） */
+async function shutdown() {
+    if (child && child.exitCode === null) {
+        child.kill("SIGTERM");
+        await Promise.race([
+            new Promise(r => child.once("exit", r)),
+            new Promise(r => setTimeout(r, 3000)),
+        ]);
+        if (child.exitCode === null) {
+            try {
+                child.kill("SIGKILL");
+            } catch {
+                /* 已经退了 */
+            }
+        }
+    }
+    if (scratch) {
+        try {
+            rmSync(scratch, { recursive: true, force: true });
+        } catch {
+            /* Windows 句柄延迟，忽略 */
+        }
+    }
+}
+
+let BASE = process.argv[2] ?? "";
+if (!BASE) {
+    const port = await bootSelfhost();
+    BASE = `http://127.0.0.1:${port}`;
+    // 就绪轮询：上限 20s、间隔 250ms；子进程提前退出就别干等满
+    const deadline = Date.now() + 20000;
+    let ready = false;
+    while (Date.now() < deadline && !ready) {
+        if (child.exitCode !== null) break;
+        try {
+            const res = await fetch(`${BASE}/api/init`);
+            ready = res.ok;
+        } catch {
+            /* 还没起来 */
+        }
+        if (!ready) await new Promise(r => setTimeout(r, 250));
+    }
+    if (!ready) {
+        console.error(`自托管实例 20 秒内没起来（${BASE}）。子进程输出：\n${childLog}`);
+        await shutdown();
+        process.exit(1);
+    }
+}
 
 let pass = 0;
 let fail = 0;
@@ -208,4 +336,7 @@ if (shareGroupId) {
 }
 
 console.log(`\n通过 ${pass} 项，失败 ${fail} 项`);
+// 断言失败时把实例自己的话倒出来：服务端 5xx 的根因只在它的日志里，不在断言备注里
+if (fail > 0 && childLog) console.error(`\n自托管实例输出（尾部）：\n${childLog}`);
+await shutdown();
 process.exit(fail === 0 ? 0 : 1);

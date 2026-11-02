@@ -95,13 +95,17 @@ async function call(
     });
     const ctx = {
         request,
-        env: {},
+        // 备份现在默认加密：没设口令时用 AUTH_SECRET 派生的自动密钥，
+        // 一把根密钥都没有会直接失败（见 worker/webdav/autoKey.ts）。
+        // 这些路由用例只关心限速 / 留痕，给一把测试密钥让上传能走到网盘那一层。
+        env: { AUTH_SECRET: "test-secret-for-dav-routes" },
         url: new URL(request.url),
         path: barePath,
         method,
         api: makeApi(log, guards, o.auditFails ?? false),
         ip: IP,
         trustXFF: false,
+        trustXRealIp: false,
         secureCookie: true,
         currentJti: "jti-1",
         currentTokenExp: 0,

@@ -176,6 +176,7 @@ async function call(
         api: makeApi(log, o, bucket),
         ip: IP,
         trustXFF: false,
+        trustXRealIp: false,
         secureCookie: true,
         currentJti: "",
         currentTokenExp: 0,

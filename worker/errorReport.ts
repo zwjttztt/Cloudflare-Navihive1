@@ -168,7 +168,9 @@ export interface ErrorReport {
 }
 
 export async function reportError(request: Request, env: Env): Promise<Response> {
-    // 超窗直接丢弃（静默成功）：刷接口的人不该再从响应里学到任何东西
+    // 超窗直接丢弃（静默成功）：刷接口的人不该再从响应里学到任何东西。
+    // 取默认参数（trustXFF=true、trustXRealIp=false）：这是 isolate 内的宽松计数，
+    // 不值得跟着部署开关漂移；关键是 X-Real-IP 默认不读，客户端伪造它换不了桶。
     if (!reportLimiter.allow(clientIp(request))) {
         return Response.json(
             { ok: true, dropped: true },

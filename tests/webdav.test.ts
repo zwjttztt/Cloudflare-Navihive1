@@ -11,12 +11,14 @@ import {
     configFromStored,
     resolveWebDavConfig,
     isAutoBackupFileName,
+    NO_BACKUP_KEY_MESSAGE,
     selectAutoBackupsToPrune,
     describeWebDavStatus,
     describeWebDavError,
     runWebDavBackup,
     davFetch,
 } from "../worker/webdav";
+import { isEncryptedBackup } from "../src/API/crypto";
 import { setEgressResolver } from "../worker/safeFetch";
 
 /** 造一份配置：默认关内网豁免，path 走默认值 */
@@ -408,11 +410,11 @@ test("内网拦截等校验类错误原样透传，不被改写成泛泛的『�
 });
 
 // ---- 备份口令与 AUTH_SECRET 解耦 ----
-// 备份加密用的是用户自己的口令，不是服务端 AUTH_SECRET：
-// 轮换 AUTH_SECRET 不该让此前所有备份变成解不开的废文件；
-// 没设口令也只是「不加密」，照样能备份（原来是直接拒绝上传，等于没配密钥就备份不了）。
+// 备份加密用的是用户自己的口令；没设口令时用 AUTH_SECRET 派生的自动密钥兜底
+// （见 worker/webdav/autoKey.ts）。一把根密钥都没有时**必须失败**，绝不退回明文：
+// 导出内容里含解密后的站点密码，明文上传等于把全站凭据交到网盘上。
 
-test("没设备份口令：照常上传（明文 gzip），不再拦着不让备份", async () => {
+test("没设口令但实例有 AUTH_SECRET：上传的字节必须是密文（本轮核心行为）", async () => {
     let fetchCalls = 0;
     let sentBody: Uint8Array | undefined;
     const realFetch = globalThis.fetch;
@@ -434,16 +436,58 @@ test("没设备份口令：照常上传（明文 gzip），不再拦着不让备
                 },
             } as never,
             cfg("https://dav.example.com/dav/"),
-            { mode: "manual", stored: {} }
+            { mode: "manual", stored: {}, env: { AUTH_SECRET: "test-secret" } as never }
         );
-        assert.equal(result.success, true, "没口令也要能备份");
+        assert.equal(result.success, true, "有 AUTH_SECRET 时应当照常备份（只是会自动加密）");
         assert.ok(written["webdav.lastBackup"], "备份成功必须把文件名记下来（前端「上次备份」要用）");
         const info = JSON.parse(written["webdav.lastBackupInfo"] ?? "{}");
         assert.equal(info.mode, "manual");
         assert.ok(typeof info.durationMs === "number", "详情里要有耗时");
-        assert.ok(fetchCalls > 0, "没口令也该真的发出上传请求");
-        // 明文 gzip：以 1f 8b 开头，绝不能是口令加密头
-        assert.deepEqual([...(sentBody as Uint8Array).subarray(0, 2)], [0x1f, 0x8b]);
+        assert.equal(info.encrypted, true, "网盘上那份必须是密文");
+        assert.equal(info.encryptedWith, "auto", "来源要标成自动派生");
+        assert.ok(fetchCalls > 0, "应当真的发出上传请求");
+
+        // 核心断言：抓下来的字节本身就是密文，不是「success 了就算数」
+        assert.equal(
+            isEncryptedBackup(sentBody as Uint8Array),
+            true,
+            "没设口令也必须以 NAVIHIVE-ENC* 开头"
+        );
+        assert.notDeepEqual(
+            [...(sentBody as Uint8Array).subarray(0, 2)],
+            [0x1f, 0x8b],
+            "明文 gzip 的魔数绝不能出现"
+        );
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});
+
+test("没设口令且实例也没有 AUTH_SECRET：直接失败，且一次 PUT 都没发", async () => {
+    // 「失败但已经传出去了」是最坏情况：所以既要断言失败文案，也要断言 fetch 调用次数为 0
+    let fetchCalls = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+        fetchCalls++;
+        return new Response("{}", { status: 201 });
+    }) as typeof fetch;
+    try {
+        const written: Record<string, string> = {};
+        const result = await runWebDavBackup(
+            {
+                exportData: async () => ({ groups: [], sites: [], configs: {} }),
+                setConfig: async (k: string, v: string) => {
+                    written[k] = v;
+                    return true;
+                },
+            } as never,
+            cfg("https://dav.example.com/dav/"),
+            { mode: "manual", stored: {}, env: {} as never }
+        );
+        assert.equal(result.success, false, "拿不到密钥就必须失败");
+        assert.equal(result.message, NO_BACKUP_KEY_MESSAGE);
+        assert.equal(fetchCalls, 0, "绝不能把任何字节发出去");
+        assert.equal(written["webdav.lastBackup"], undefined, "失败不该记「上次备份」");
     } finally {
         globalThis.fetch = realFetch;
     }
@@ -573,7 +617,8 @@ test("备份状态写不进去：备份本身仍算成功（这点必须显式�
                 },
             } as never,
             cfg("https://dav.example.com/dav/"),
-            { mode: "manual", stored: {} }
+            // 本条只验「状态写失败不影响备份成功」，与加密无关；补一把根密钥让它走到上传那一步
+            { mode: "manual", stored: {}, env: { AUTH_SECRET: "test-secret" } as never }
         );
         assert.equal(result.success, true, "文件传上去了就该算备份成功");
         assert.ok(

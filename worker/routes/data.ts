@@ -379,6 +379,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         api,
         ip,
         trustXFF,
+        trustXRealIp,
     } = ctx;
 
     /**
@@ -387,7 +388,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
      * GET 一律不过闸 —— 读不消耗 D1 写入配额，也不该因为「翻了几页」就把人锁住。
      */
     const writeGate = (): Promise<Response | null> =>
-        enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF));
+        enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF, trustXRealIp));
 
     // 路由匹配
     if (path === "bootstrap" && method === "GET") {

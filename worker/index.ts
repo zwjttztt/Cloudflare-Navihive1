@@ -112,7 +112,8 @@ async function recordServerError(
     request: Request,
     pathname: string,
     error: unknown,
-    trustXFF: boolean
+    trustXFF: boolean,
+    trustXRealIp: boolean
 ): Promise<void> {
     if (!serverErrorLimiter.allow(pathname)) return;
     try {
@@ -125,8 +126,9 @@ async function recordServerError(
         });
         const api = new NavigationAPI(env);
         // actor 用 "system"：这不是某个用户做的动作，是服务端自己出错（与 cron 事件同一条链）
-        // trustXFF 透传：与登录限速桶的取 IP 逻辑保持一致，NAVIHIVE_TRUST_XFF=1 时读 X-Real-IP / XFF 首段
-        await api.writeAudit("server-error", "system", clientIp(request, trustXFF), detail);
+        // trustXFF / trustXRealIp 透传：与登录限速桶的取 IP 逻辑保持一致，
+        // 两个开关同时为真时才读 X-Real-IP，否则读 XFF 首段
+        await api.writeAudit("server-error", "system", clientIp(request, trustXFF, trustXRealIp), detail);
     } catch (logError) {
         console.warn("[api] server-error 落库失败", rid, logError);
     }
@@ -139,6 +141,10 @@ async function handleRequest(request: Request, env: Env, rid: string): Promise<R
     // 反代会老实填 XFF 时才打开，否则攻击者随便改 XFF 就能绕过爆破限速）。
     // 默认关闭：Cloudflare 部署走 CF-Connecting-IP（不可伪造），不受此开关影响。
     const trustXFF = env && env.NAVIHIVE_TRUST_XFF === "1";
+    // 是否信任反代**覆盖写入**的 X-Real-IP。与 trustXFF 独立：一个头是不是反代覆盖写的
+    // 无法从请求本身判断（Caddy / Traefik 默认不写这条），TRUST_XFF=1 不代表它可信。
+    // 只有用本仓 Nginx 模板（X-Real-IP $remote_addr 覆盖写）时才把两个都设 1。
+    const trustXRealIp = env && env.NAVIHIVE_TRUST_X_REAL_IP === "1";
     // cookie 是否带 Secure：按浏览器真实 scheme 判断（见 requestIsSecure）。
     // NAVIHIVE_COOKIE_SECURE=0 是逃生舱 —— 反代连 X-Forwarded-Proto 都不传、
     // 又确实只能用 http 访问时，用它强制去掉 Secure，否则令牌 cookie 存不上、登录必掉线。
@@ -243,10 +249,11 @@ async function handleRequest(request: Request, env: Env, rid: string): Promise<R
             path: url.pathname.replace("/api/", ""),
             method: request.method,
             api,
-            // trustXFF=false（自托管端口直暴）时不读 X-Real-IP / XFF：
+            // TRUST_XFF=0 / TRUST_X_REAL_IP=0（自托管端口直暴）时对应档位不读：
             // 那两条都是客户端自己填的，取了反而污染审计与限速桶
-            ip: clientIp(request, trustXFF),
+            ip: clientIp(request, trustXFF, trustXRealIp),
             trustXFF,
+            trustXRealIp,
             secureCookie,
             // 下面两个要等鉴权中间件验完令牌才知道，先占位
             currentJti: "",
@@ -318,7 +325,7 @@ async function handleRequest(request: Request, env: Env, rid: string): Promise<R
         // 并且按 rid 落一条审计，能和客户端上报里的 requestId 对上同一次请求。
         if (!(error instanceof ApiError)) {
             console.error("[api]", rid, request.method, url.pathname, error);
-            await recordServerError(env, rid, request, url.pathname, error, trustXFF);
+            await recordServerError(env, rid, request, url.pathname, error, trustXFF, trustXRealIp);
         }
         // logged: true —— 上面已经带上下文打过了，别再让统一出口重复打一行没有上下文的
         return errorResponse(error, { logged: true });

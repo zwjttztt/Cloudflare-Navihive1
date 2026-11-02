@@ -6,6 +6,49 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-11-02 · 安全 + 工程：独立审计的第 0 / 1 批（26.0.0）
+
+对全仓做了一次**从零、不采信历史结论**的 16 维度独立审计（产出 27 项问题），本版落地第 0 批（零/极低代码）与第 1 批（1 个 P0 + 4 个 P1）。
+
+### ⚠️ 升级必做（两条，必须都看）
+
+1. **反代部署要显式打开两个信任开关**。`NAVIHIVE_TRUST_XFF` 的默认值从 `1` 改成 `0`（`docker-compose.yml` 同步），并新增独立开关 `NAVIHIVE_TRUST_X_REAL_IP`（默认 `0`）。前面挡了反代的部署，请在 `.env` 里**两个都设 1**：
+   ```
+   NAVIHIVE_TRUST_XFF=1
+   NAVIHIVE_TRUST_X_REAL_IP=1
+   ```
+   漏设的后果不是「限速变严」而是**限速全部塌缩成一个全站共享桶**：反代后 socket 恒为 `127.0.0.1`，`clientIp()` 拿不到真实来源，一个人连错 5 次密码就把所有人（含站长自己）锁在门外。用本仓 Nginx 模板时两个开关都要开；反代是 Caddy / Traefik（默认不写 `X-Real-IP`）时**只开第一个**，第二个开了等于把客户端自带的头当真。
+2. **WebDAV 备份现在默认加密，且无法降级为明文**。没设 `webdav.backupPassword` 时，口令由 `AUTH_SECRET` 派生（HMAC-SHA256，派生输入带账号 id）。代价是：**换 `AUTH_SECRET` / `DATA_ENCRYPTION_KEY` 之后，旧的自动加密备份就解不开了**。要跨实例迁移、长期存档或预计轮换密钥，请另设一个独立的备份密码。既没有 `AUTH_SECRET` 也没有 `DATA_ENCRYPTION_KEY` 的实例，自动备份会**直接失败并提示去配置**（此前是静默明文上传）。升级前上传的明文备份仍能正常恢复（服务端先看文件头）。
+
+### 安全
+
+- **备份默认加密（P0）**：`worker/webdav/autoKey.ts` 新增 `deriveAutoBackupKey` / `resolveBackupPasswords`。此前「有口令才加密、没口令就明文 gzip」，而导出的备份里含**解密后的站点密码**（`src/API/methods/transfer.ts`），等于每周把全站凭据交到网盘上。现在上传侧一律 `encryptBackup`，一把根密钥都拿不到时**先于 `exportData()`** 就失败（不在内存里先摆一份明文）；记事本备份同样改成**无条件 fail-closed**，删掉了「调用方没传 env 就退回明文」的静默路径；
+- **恢复侧同改**：`webdavDownloadBytes` 第三参放宽为 `string | readonly string[]`，**只下载一次**、在同一份字节上依次试「用户口令 → 自动口令」。否则「先没设口令、后来设了」的用户会把自己的备份误报成密码错误；失败文案会写明试过几个候选；
+- **拆开 `TRUST_XFF` 与 `X-Real-IP` 的信任（P1）**：`clientIp` / `clientBucket` 增加独立开关。原来只开 `TRUST_XFF` 就会读 `X-Real-IP`，而反代若没**覆盖写**这个头，客户端自带的头每请求换一个就是全新空桶，登录 / 注册 / 分享口令的爆破锁全部失效。自托管入口在非双开时会主动 `delete("x-real-ip")`，启动日志打印两个开关状态并对「只开一个」的组合告警；
+- `exportBucket` / `writeBucket` / `endpointBucket` / `shareBucket` 四个派生桶函数同步加参透传。
+
+### 修复
+
+- **`notesBackup` 的 `IN (...)` 无上限（P1）**：附件 id 来自对全部笔记正文的正则提取，没有任何上限，超过 99 个时会在 D1 上抛 `too many SQL variables` 让整次备份静默失败 —— 而本机 SQLite 的参数上限是 32766，这个缺陷在本地**永远测不出来**。改用已有的 `chunkByParamBudget` 切批，并显式预留 `user_id` 那一位；
+- **`ALLOW_PLAINTEXT_SECRETS` 静默不生效（P1）**：`navigationApi.ts` 一直在读它，但它从来不在自托管的透传白名单里 —— 设了等于没设、还没有任何报错。已补入，并加了编译期断言防止复发；
+- `package.json` 的 `check:whitedot` 指向一个不存在的文件，改为 `script/probe-white-dot.mjs`；
+- `script/coverage.mjs` 里「由 `smoke:selfhost` 覆盖」是条假注释（该脚本只做 HTTP 断言、不起服务），改为如实描述；`src/API/apiError.ts` 里 429 的注释宣称「有重试按钮」，实际只有通用 toast、`Retry-After` 无消费者，一并改正。
+
+### 重构
+
+- **`Env` / `D1*` 契约收进 `shared/`（P1）**：新建 `shared/env.ts`，把原先 `worker/types.ts` 与 `src/API/schema.ts` 两份**各自漂移**的声明合成一份（17 个键取并集，注释逐条合并；顺带修正 `AUTH_RECOVERY_PUBLIC_KEY` 两处说法矛盾 —— 实测 `crypto.ts` 是 SPKI 优先、32 字节裸公钥兜底）。两个原文件改成纯再导出，既有 import 路径不变；
+- **编译期断言焊死透传清单**：`Env` 里新增配置键却忘了投递，`tsc -b` 直接红（反向也钉：清单里出现 `Env` 没有的键同样红，堵住「拼错一个字母 → 永远投递不出去也不报错」）。`EXPLICIT_ENV_KEYS` 单独列出 `AUTH_ENABLED` / 两个信任开关 —— 它们由入口显式赋值、不走照搬循环。
+
+### 工程
+
+- **`smoke:selfhost` 接进 CI（P1）**：这个入口此前**没有任何门禁**。脚本原来只做 HTTP 断言、不起服务，直接接进 CI 必红，所以先给它加了自举分支（缺 `dist-server/entry.mjs` 时提示先 `npm run build:server`，自动挑空闲端口 + 临时库 + 跑完收掉并删目录），`argv[2]` 旧行为保留；`build_and_e2e` 新增一步，README 与 `deploy/selfhost.md` 的用法补上 `--`（npm 只有见到 `--` 才转发位置参数）；
+- 严格层棘轮收紧：`worker/loginGuard.ts` 本轮已零报错，从 `script/strict-idx-exempt.json` 豁免清单删除（63 → 62 条）；
+- CI 里「六条 e2e」「26 个步骤」两处写死的计数已失真，改为不写死数字（步骤总数随门禁增长，写死必然过期）。
+
+### 测试
+
+新增 4 个用例文件、净增 22 条：`clientBucketTrust`（9 条，覆盖双开关的真值表与伪造头）、`envContract`（4 条，含源码文本反向断言）、`webdavBackupEncryption`（6 条，断言上传字节真是密文、无根密钥时**一次 PUT 都不发**）、`notesBackup` 补 200-id 切批与 99/100 边界。另改写 5 个既有用例文件里编码了旧语义的断言（「没口令就明文上传」「只开 TRUST_XFF 就读 X-Real-IP」）。
+
 ## 2026-11-02 · 性能 + 修复：记事本 / 设置打开加速（25.2.2）
 
 记事本与设置本来就是懒加载、且有三层预取，但打开仍偏慢——排查定位到两处真缺口 + 一处体验债，三条一起修掉：

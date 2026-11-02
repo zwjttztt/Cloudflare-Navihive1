@@ -19,6 +19,8 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
         // ⚠️ 必须解构出来传给 writeBucket：第三参默认 false，
         // 不传的话自托管（反代后面）所有用户共用一个桶 → 限速变成随机误伤。
         trustXFF,
+        // 第四参（X-Real-IP 独立开关）同理，漏传会掉回 unknown 桶
+        trustXRealIp,
         
     } = ctx;
 
@@ -31,7 +33,7 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
      * 读路由（audit / stats / client-errors / recycle 列表）不过闸。
      */
     const writeGate = (): Promise<Response | null> =>
-        enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF));
+        enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF, trustXRealIp));
 
     // 审计日志只读视图（仅 owner）。谁在何时从哪 IP 做了什么，事后能溯源。
     if (path === "audit" && method === "GET") {

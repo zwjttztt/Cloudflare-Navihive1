@@ -12,6 +12,7 @@
 //
 // 纯逻辑（调度判定 / 保留清理 / 运行记录合并）都导出成纯函数，单测直接断言。
 import type { NavigationAPI } from "../src/API/navigationApi";
+import { chunkByParamBudget } from "../src/API/d1Limits";
 import type { NotesBackupRun } from "../src/API/types";
 import { encryptBackup } from "../src/API/crypto";
 import { createZip, readZip, type ZipEntry } from "../src/utils/zip";
@@ -24,6 +25,8 @@ import {
 } from "./webdav/naming";
 import { gzipBytes } from "./webdav/transport";
 import {
+    NO_BACKUP_KEY_MESSAGE,
+    resolveBackupPasswords,
     webdavDelete,
     webdavList,
     webdavPutBytes,
@@ -98,18 +101,33 @@ export async function readBackupAttachmentEntries(
     const referenced = collectReferencedAttachmentIds(payload.notes ?? []);
     if (referenced.size === 0) return { entries, skipped: 0, bytes: 0 };
 
-    // 只查引用到的那批：附件表可能远大于正文引用数，全量拉元数据纯属浪费
+    // 只查引用到的那批：附件表可能远大于正文引用数，全量拉元数据纯属浪费。
+    //
+    // ⚠️ 必须切批：D1 单条语句最多绑定 100 个参数（src/API/d1Limits.ts 的
+    // D1_MAX_BOUND_PARAMS）。这里的 ids 来自对**全部笔记正文**的正则提取，没有任何
+    // 上限 —— 引用超过 99 个附件时，一条 `IN (...)` 就会在线上抛
+    // "too many SQL variables"，让整次备份静默失败。而本机 SQLite 的参数上限是
+    // 32766，这个缺陷在本机永远测不出来，只能靠切批实现 + 单测钉住。
     const ids = [...referenced];
-    const placeholders = ids.map(() => "?").join(",");
     const uid = api.currentUserId;
-    const rowsResult = await api.db
-        .prepare(
-            `SELECT id, filename, storage, object_key FROM attachments
+    // reserved 是「这条 SQL 里除 id 之外还占几个参数」：uid 非空时末尾多一个 `user_id = ?`，
+    // 所以预留 1；uid 为空时条件是 `user_id IS NULL`，不占参数位，预留 0。
+    // 不预留的话 99 个 id + uid 刚好绑满 100，100 个 id 就会直接越界。
+    const reservedParams = uid === null ? 0 : 1;
+    const rows: BackupAttachmentRows[] = [];
+    for (const batch of chunkByParamBudget(ids, reservedParams)) {
+        const placeholders = batch.map(() => "?").join(",");
+        const rowsResult = await api.db
+            .prepare(
+                `SELECT id, filename, storage, object_key FROM attachments
              WHERE id IN (${placeholders})${uid === null ? " AND user_id IS NULL" : " AND user_id = ?"}`
-        )
-        .bind(...(uid === null ? ids : [...ids, uid]))
-        .all<BackupAttachmentRows>();
-    const rows = rowsResult.results || [];
+            )
+            .bind(...(uid === null ? batch : [...batch, uid]))
+            .all<BackupAttachmentRows>();
+        // 按批顺序拼接：ids 的顺序确定，批 → 批的相对次序也就确定
+        // （批内次序由 SQLite 决定，与原来的单条 IN 查询行为一致，不额外排序）
+        rows.push(...(rowsResult.results || []));
+    }
 
     let used = 0;
     let skipped = 0;
@@ -306,8 +324,9 @@ async function writeNotesBackupRuns(api: NavigationAPI, runs: NotesBackupRun[]):
 }
 
 /**
- * 执行一次记事本备份：服务端自取笔记数据 → gzip →（可选）口令加密 → 上传 →
+ * 执行一次记事本备份：服务端自取笔记数据 → gzip → 加密 → 上传 →
  * （仅 auto）按保留份数清旧 → 记运行记录。
+ * 加密是**默认行为**：没设备份口令时用 AUTH_SECRET 派生的自动密钥（见 webdav/autoKey.ts）。
  * 任何失败也记一条 failure 运行记录（inkstone 的 RunRow 同语义），再原样返回结果。
  */
 export async function runNotesWebDavBackup(
@@ -317,7 +336,7 @@ export async function runNotesWebDavBackup(
         mode: WebDavBackupMode;
         /** 已读出的配置（cron 里已经拿过一次，免得重复查） */
         stored?: Record<string, string>;
-        /** 备份口令；不传时用 config.backupPassword */
+        /** 备份口令；不传时用 config.backupPassword。两者都空则退回 AUTH_SECRET 派生的自动口令 */
         password?: string;
         /**
          * Worker env（2026-10-11）：传了且配置了附件存储时，备份升级为
@@ -343,7 +362,7 @@ export async function runNotesWebDavBackup(
     ).bind(leaseKey, leaseValue, Date.now()).run();
     if (!(acquired.meta as { changes?: number }).changes) return { success: false, message: "已有笔记备份正在进行，请稍后再试" };
     const { mode, stored = {} } = options;
-    const password = options.password ?? config.backupPassword ?? "";
+    const explicitPassword = options.password ?? config.backupPassword ?? "";
     const startedMs = Date.now();
     const run: NotesBackupRun = {
         id: crypto.randomUUID(),
@@ -353,6 +372,19 @@ export async function runNotesWebDavBackup(
     };
 
     try {
+        // 口令候选：显式口令 → 由 AUTH_SECRET 派生的自动口令（见 ./webdav/autoKey.ts）。
+        // **无条件 fail-closed**：一把都拿不到就抛错，绝不退回明文上传。
+        // 不传 env 的调用方也走这条路（resolveBackupPasswords 会返回空候选），
+        // 否则将来谁新加一个忘了传 env 的调用点，全量笔记正文就会明文传网盘，而且毫无报错。
+        const resolved = await resolveBackupPasswords(
+            options.env,
+            api.currentUserId,
+            explicitPassword
+        );
+        if (resolved.candidates.length === 0) {
+            throw new Error(NO_BACKUP_KEY_MESSAGE);
+        }
+        const password = resolved.candidates[0] ?? "";
         const payload = await api.exportNotesData();
         // ZIP 条件：传了 env 且配置了附件存储。没配存储的部署保持旧 gzip JSON 格式，
         // 行为与历史版本完全一致（旧格式恢复链路继续有效）。

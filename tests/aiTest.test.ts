@@ -51,6 +51,7 @@ function ctxFor(payload: unknown): RouteCtx {
         url: new URL("https://nav.example/api/ai/test"),
         ip: "1.2.3.4",
         trustXFF: false,
+        trustXRealIp: false,
         secureCookie: true,
         currentJti: "jti",
         currentTokenExp: 0,

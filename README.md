@@ -218,7 +218,7 @@ npm run audit:a11y && npm run audit:contrast   # 可访问性 / 对比度审计
 > 这种偏差事后完全查不出来 —— 出问题的人复现不了 CI 的环境。锁文件因此**故意不被 gitignore**：
 > 真有人用 pnpm，多出来的 `pnpm-lock.yaml` 会立刻在 `git status` 里露出来。
 
-> 仓库的合入门禁：`tsc -b --force` + ESLint + 全量测试 + build + smoke + e2e + 双审计全绿才允许推送；CHANGELOG 随版本更新（`script/bump-version.mjs` 按变更规模自动跳 patch/minor/major）。
+> 仓库的合入门禁：`npm run ci` 一条命令跑完全部门禁（约 20 步，清单以 `package.json` 的 `ci` 字段为唯一来源，含视觉回归 `audit:visual` 与自托管冒烟 `smoke:selfhost`）；CHANGELOG 随版本更新（`script/bump-version.mjs` 按变更规模自动跳 patch/minor/major）。
 
 ## 🗂️ 项目结构
 
@@ -242,6 +242,8 @@ npm run audit:a11y && npm run audit:contrast   # 可访问性 / 对比度审计
 ├── Dockerfile / docker-compose.yml
 └── wrangler.jsonc          # Cloudflare 配置（D1 / KV / assets / cron）
 ```
+
+完整文档索引见 [`docs/README.md`](docs/README.md)（长期文档 / 运维手册 / 历史报告三态分类）。
 
 ## 📄 许可证与致谢
 

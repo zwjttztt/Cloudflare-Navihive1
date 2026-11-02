@@ -42,6 +42,8 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
         // 不传的话自托管（反代后面）所有用户会共用 `unknown` 一个桶 ——
         // 限速会从「防爆破」变成「随机误伤一整片人」。
         trustXFF,
+        // 第四参同理：X-Real-IP 必须单独授权（默认 false），两个都不传就会掉回 unknown 桶
+        trustXRealIp,
         secureCookie,
         currentJti,
         currentTokenExp,
@@ -57,7 +59,7 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
      * GET 一律不过闸（读不消耗写入配额，也不该因为「多刷了几次页面」就锁人）。
      */
     const writeGate = (): Promise<Response | null> =>
-        enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF));
+        enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF, trustXRealIp));
 
     // 退出登录：把这张令牌拉黑（服务端真正失效）+ 清掉浏览器 cookie
     if (path === "logout" && method === "POST") {

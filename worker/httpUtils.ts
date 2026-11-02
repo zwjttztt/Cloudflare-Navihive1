@@ -32,11 +32,15 @@ export const REAL_IP_HEADER = "x-navihive-client-ip";
 /**
  * 受信任反代（Nginx）**覆盖写入**的客户端真实 IP 头（2026-11-01 XFF 绕过加固）。
  *
- * 自托管且 `NAVIHIVE_TRUST_XFF=1` 时，限速分桶优先读它，其次才回退 XFF 首段。
- * 为什么它能防伪造：反代必须写成覆盖模式（`proxy_set_header X-Real-IP $remote_addr`），
- * 客户端带来的值在 Nginx 那一层就被顶掉了 —— 与「追加式 XFF 首段可以被攻击者
- * 每次随机换新」有本质区别。它排在 XFF 之前，正是为了让「Nginx 覆盖头」赢过
- * 「链上任何一环都可能被污染的 XFF」。
+ * 反代按 `proxy_set_header X-Real-IP $remote_addr` 覆盖写时，客户端带来的值在
+ * 那一层就被顶掉了，与「追加式 XFF 首段可以被攻击者每次随机换新」有本质区别，
+ * 所以它排在 XFF 之前。
+ *
+ * ⚠️ 但「这层反代到底有没有覆盖写它」**无法从请求本身判断**：本仓 Nginx 模板写了，
+ * Caddy / Traefik 默认不写，直暴部署下它更是纯客户端输入。因此读它必须由
+ * 独立开关 `NAVIHIVE_TRUST_X_REAL_IP` 显式授权 —— `TRUST_XFF=1` 只说明 XFF 可信，
+ * 不能顺带把这条也放行（否则客户端自带的 `X-Real-IP` 原样透传进来，每请求换一个
+ * 就是一个全新限速桶）。
  */
 export const X_REAL_IP_HEADER = "x-real-ip";
 
@@ -49,23 +53,30 @@ export const TEXT_HEADERS = () => securityHeaders({ "Content-Type": "text/plain;
 /**
  * 取客户端 IP（审计日志 / 登录设备显示用）。
  *
- * 优先级：CF-Connecting-IP（Cloudflare 边缘注入）→ X-Real-IP（可信反代覆盖写入，
- * 仅 trustXFF 时读）→ X-Forwarded-For（代理链首段）→ 自托管入口注入的真实地址
- * → unknown。
- * X-Real-IP 排在 XFF 之前（2026-11-01）：Nginx 用覆盖模式写它（见部署模板），
- * 伪造不了；而 XFF 若是追加模式（$proxy_add_x_forwarded_for），首段永远来自
- * 客户端自己 —— 有覆盖头可用时不能让可伪造的 XFF 抢在前面。
+ * 优先级：CF-Connecting-IP（Cloudflare 边缘注入）→ X-Real-IP（需 trustXFF 与
+ * trustXRealIp **两个**开关同时为真）→ X-Forwarded-For（仅 trustXFF 时取首段）
+ * → 自托管入口注入的真实地址 → unknown。
+ * X-Real-IP 排在 XFF 之前：反代覆盖写它时伪造不了，而 XFF 若是追加模式
+ * （$proxy_add_x_forwarded_for），首段永远来自客户端自己 —— 有覆盖头可用时
+ * 不能让可伪造的 XFF 抢在前面。
+ * ⚠️ 2026-11-02：X-Real-IP 需要**显式第二个开关**（NAVIHIVE_TRUST_X_REAL_IP）。
+ * 理由是「无法从请求本身判断这个头是反代覆盖写的还是客户端自带的」：本仓 Nginx
+ * 模板是覆盖写，但 Caddy / Traefik 默认不写这条头，只需要 TRUST_XFF=1 的话
+ * 客户端自带的值会原样透传到应用 —— 每请求换一个就是全新分桶键。
  * 前两条之外的档位都可能被客户端伪造（自托管部署下没有 Cloudflare 在前面），
  * 那条「入口注入」的是最后一档：由 server/entry.ts 从 socket 对端地址写进来，
  * 客户端带的一律被它盖掉；Workers 部署下这条头不存在。
  */
-export function clientIp(request: Request, trustXFF = true): string {
+export function clientIp(request: Request, trustXFF = true, trustXRealIp = false): string {
     const cf = request.headers.get("CF-Connecting-IP");
     if (cf) return cf;
     if (trustXFF) {
         // 可信反代覆盖写入的真实地址，伪造不了，优先于可被污染的 XFF
-        const real = request.headers.get(X_REAL_IP_HEADER);
-        if (real) return real.trim().slice(0, 64);
+        // ⚠️ 必须第二个开关也开着才读：见函数头注释
+        if (trustXRealIp) {
+            const real = request.headers.get(X_REAL_IP_HEADER);
+            if (real) return real.trim().slice(0, 64);
+        }
         const xff = request.headers.get("X-Forwarded-For");
         if (xff) {
             // XFF 是链式头：「客户端, 代理1, 代理2」—— 第一个才是真实客户端。

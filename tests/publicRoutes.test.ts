@@ -253,6 +253,7 @@ function makeCtx(
         api,
         ip: IP,
         trustXFF: false,
+        trustXRealIp: false,
         secureCookie: true,
         currentJti: "",
         currentTokenExp: 0,

@@ -12,14 +12,15 @@
 #   ① lint_and_types  静态检查（密钥 / 依赖漏洞 / 类型 / 严格下标 / 代码规范）   ~130s
 #   ② unit            单元测试（含组件）                                    ~205s
 #   ③ coverage        覆盖率两层门禁（拆分后的关键路径）                       ~330s
-#   ④ build_and_e2e   需要构建产物的一切（构建 → 体积 → 六条 e2e → 五条审计）   ~195s
+#   ④ build_and_e2e   需要构建产物的一切（构建 → 体积 → 六条 e2e + 自托管冒烟 → 五条审计）   ~195s
 #   ⑤ verify          只汇总判定，不跑检查（**沿用原 job 名**，别改）
 #
 # job id 一律用下划线：`needs.<id>.<prop>` 里的连字符在 GitHub Actions 表达式里
 # 有被当成减号解析的风险，一旦不被接受就是整份工作流解析失败、一个 job 都不跑。
 # 可读性由各 job 的中文 `name:` 承担（Actions 页面显示的是 name，不是 id）。
 #
-# 拆分不改语义：26 个步骤一步不少，命令 / env / continue-on-error 全部照抄。特别注意：
+# 拆分不改语义：原有的命令 / env / continue-on-error 一律照抄原有写法（步骤总数随新增门禁增长，
+# 不在此处写死数字 —— 那必然过期）。特别注意：
 #   · gitleaks 仍在 npm ci **之前**（理由见那一步的注释）；
 #   · NAVIHIVE_STRICT_D1 仍**逐步骤**声明，不提到 job 级 —— 提到 job 级会让本来没声明它的
 #     步骤（构建 / 冒烟 / 各审计）也吃上这个开关，那就是语义变化。2026-11-01 起声明它的
@@ -280,6 +281,21 @@ jobs:
         env:
           NAVIHIVE_STRICT_D1: "1"
         run: npm run e2e:share-extra
+
+      # 自托管冒烟：真起一个临时实例（脚本自己 spawn dist-server/entry.mjs、自己挑空闲端口、
+      # 临时库 + 临时文件目录、跑完 SIGTERM 收掉并删目录），按人手顺序走一遍：
+      # 登录 → 强制改密 → 重登 → CRUD → 静态响应头 → SPA fallback → 附件上传读回
+      # → 定时任务口 → 结构化 404 → 无 body 的 DELETE → 撤销分组分享不连坐删组。
+      # 其中 4 条是线上事故的回归钉（带 cookie 的写操作 403、发版后白屏的 MIME 事故、
+      # undici 空体 DELETE 500、撤销分享把整个分组删掉）。
+      # ⚠️ 这是 server/entry.ts 唯一的执行入口：1400+ 行、jsdom 单测 import 不进来，
+      # 覆盖率那边显式排除（见 script/coverage.mjs 的 EXCLUDE）—— 入口本身只靠这一步守着。
+      # 不需要再 build:server：上一步 e2e:share-extra 已经产出 dist-server/，脚本只消费不构建。
+      - name: 自托管冒烟（smoke:selfhost）
+        # NAVIHIVE_STRICT_D1=1：同上，这个实例跑的就是 server/ 那一套 sqlite-d1 适配层。
+        env:
+          NAVIHIVE_STRICT_D1: "1"
+        run: npm run smoke:selfhost
 
       # 接口边界探针：往自托管服务打一批畸形 / 超限 / 异常输入，**只找 5xx**。
       # 5xx 是服务端自己崩了，与 4xx（正确地拒绝）性质完全不同 —— 500 会触发告警、

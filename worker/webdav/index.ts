@@ -7,7 +7,13 @@ import { decryptBackup, encryptBackup, isEncryptedBackup, type Bytes } from "../
 import type { ExportData } from "../../src/API/http";
 import type { NavigationAPI } from "../../src/API/navigationApi";
 import { withBackupIntegrity } from "../../src/utils/backupIntegrity";
+import type { Env } from "../types";
 import { BodyLimitError, errorMessage, readBoundedBytes } from "../util";
+import {
+    NO_BACKUP_KEY_MESSAGE,
+    normalizePasswordCandidates,
+    resolveBackupPasswords,
+} from "./autoKey";
 import { buildBackupFileName, selectAutoBackupsToPrune } from "./naming";
 import {
     davFetch,
@@ -50,13 +56,31 @@ export async function runWebDavBackup(
         mode: WebDavBackupMode;
         stored?: Record<string, string>;
         data?: ExportData;
-        /** 备份口令；不传时回落到 config.backupPassword。留空 = 不加密上传 */
+        /**
+         * 备份口令；不传时回落到 config.backupPassword。
+         *
+         * 留空**不等于**明文上传了（2026-11 起）：会改用从 AUTH_SECRET 派生的
+         * 自动密钥加密（见 ./autoKey.ts）。连根密钥都没有时直接失败，
+         * 绝不再把明文凭据传到网盘上。
+         */
         password?: string;
+        /** Worker env：自动密钥的根密钥从这里取。缺了就只能靠显式口令 */
+        env?: Env;
     }
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
     const { mode, data } = options;
-    // 备份口令与 AUTH_SECRET 无关：没设口令只是「不加密」，照样能备份，不再拦着不让传
-    const password = options.password ?? config.backupPassword ?? "";
+
+    // 口令候选：显式口令 → 自动派生口令。上传只取第一个，但「一个都没有」必须
+    // 一路传到 webdavUpload 那里变成失败 —— 见 NO_BACKUP_KEY_MESSAGE 的注释。
+    const { candidates, source } = await resolveBackupPasswords(
+        options.env,
+        api.currentUserId,
+        options.password ?? config.backupPassword ?? ""
+    );
+    const password = candidates[0] ?? "";
+    // 一把口令都拿不到：先于 exportData 就失败 —— 导出会把站点密码解密成明文，
+    // 既然注定传不出去，就没必要在内存里先摆一份明文。
+    if (!password) return { success: false, message: NO_BACKUP_KEY_MESSAGE };
 
     // 从「开始导出」记到「上传完成」：备份详情要能回答「上次备份多大、花了多久」，
     // 只记一个文件名的话，用户看到「备份失败」时不知道该改配置还是该换网盘
@@ -107,6 +131,10 @@ export async function runWebDavBackup(
                 // 所以「当前设没设口令」在前端根本无从判断。而这个字段回答的是
                 // 另一个更要紧的问题：网盘上躺着的那一份，是不是明文。
                 encrypted: Boolean(password),
+                // 加密用的是哪来的口令：password = 用户设的（可跨实例解）；
+                // auto = 由 AUTH_SECRET 派生（换 AUTH_SECRET 后旧备份解不开）；
+                // none = 没加密（现在只可能是上传被上面拦下了，不会写到这里）
+                encryptedWith: source,
             })
         );
     } catch (error) {
@@ -228,13 +256,22 @@ export async function webdavUpload(
     data: ExportData,
     password: string = config.backupPassword ?? ""
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
+    // 没有口令就**不传**。
+    //
+    // 曾经的写法是 `password ? 加密 : 明文 gzip`，理由是「没设口令也能备份」——
+    // 但导出的 data 里含解密后的站点密码（src/API/methods/transfer.ts），
+    // 明文上传等于把全站凭据交到网盘上，而这一步没人会察觉。
+    // 现在由 runWebDavBackup 用 AUTH_SECRET 派生的自动密钥填进来；真的一把密钥
+    // 都拿不到时只能失败并让人去配，不能静默降级成明文。
+    if (!password) {
+        return { success: false, message: NO_BACKUP_KEY_MESSAGE };
+    }
     try {
-        // 不缩进 + gzip：比原来的「带缩进明文 JSON」小一个数量级，上传快得多。
-        // 设了备份口令再套一层口令加密（NAVIHIVE-ENC1，PBKDF2 随机盐），备份文件
-        // 落到网盘上也是密文。没设口令就退化为明文 gzip —— 能备份，只是不加密。
+        // 不缩进 + gzip：比原来的「带缩进明文 JSON」小一个数量级，上传快得多，
+        // 再套一层口令加密（NAVIHIVE-ENC2，PBKDF2 随机盐）。落到网盘上的永远是密文。
         const gz = await gzipBytes(JSON.stringify(data));
-        const body = password ? await encryptBackup(gz, password) : gz;
-        return await webdavPutBytes(config, filename, body, Boolean(password));
+        const body = await encryptBackup(gz, password);
+        return await webdavPutBytes(config, filename, body, true);
     } catch (error) {
         return { success: false, message: errorMessage(error, "备份失败") };
     }
@@ -292,7 +329,7 @@ export async function webdavList(config: WebDavConfig): Promise<WebDavResult<Web
 export async function webdavDownloadBytes(
     config: WebDavConfig,
     filename: string,
-    password: string = config.backupPassword ?? "",
+    password: string | readonly string[] = config.backupPassword ?? "",
     maxBytes: number = MAX_BACKUP_DOWNLOAD_BYTES
 ): Promise<WebDavResult<{ bytes: Bytes; encrypted: boolean }>> {
     try {
@@ -316,9 +353,13 @@ export async function webdavDownloadBytes(
             await readBoundedBytes(response.body, maxBytes, 60_000)
         );
 
-        // 按文件头判断是否口令加密（NAVIHIVE-ENC1/2）。没加密就原样返回。
+        // 候选口令：单个字符串（老形状）或列表（调用方用 resolveBackupPasswords 算好的）
+        const candidates = normalizePasswordCandidates(password);
+
+        // 按文件头判断是否口令加密（NAVIHIVE-ENC1/2）。没加密就原样返回
+        // —— 升级前上传的明文备份走的就是这条路，必须继续能恢复。
         if (isEncryptedBackup(rawBytes)) {
-            if (!password) {
+            if (candidates.length === 0) {
                 return {
                     success: false,
                     code: "encrypted",
@@ -327,19 +368,27 @@ export async function webdavDownloadBytes(
                     message: "这份备份是口令加密的，请输入备份密码后再恢复",
                 };
             }
-            try {
-                return {
-                    success: true,
-                    data: { bytes: await decryptBackup(rawBytes, password), encrypted: true },
-                    message: filename,
-                };
-            } catch (error) {
-                return {
-                    success: false,
-                    code: "badPassword",
-                    message: errorMessage(error, "备份密码不正确，或备份文件已损坏"),
-                };
+            // 只下载一次，同一份字节上挨个试：候选里既有用户口令也有自动密钥，
+            // 重复 GET 一份几十 MB 的备份纯属浪费。
+            let lastError: unknown;
+            for (const candidate of candidates) {
+                try {
+                    return {
+                        success: true,
+                        data: { bytes: await decryptBackup(rawBytes, candidate), encrypted: true },
+                        message: filename,
+                    };
+                } catch (error) {
+                    lastError = error;
+                }
             }
+            // 全部候选都解不开：说清试过几个，免得用户以为系统只试了他刚输的那一个
+            const reason = errorMessage(lastError, "备份密码不正确，或备份文件已损坏");
+            return {
+                success: false,
+                code: "badPassword",
+                message: `${reason}（已尝试 ${candidates.length} 个口令候选）`,
+            };
         }
         return { success: true, data: { bytes: rawBytes, encrypted: false }, message: filename };
     } catch (error) {
@@ -360,7 +409,7 @@ export async function webdavDownloadBytes(
 export async function webdavDownload(
     config: WebDavConfig,
     filename: string,
-    password: string = config.backupPassword ?? ""
+    password: string | readonly string[] = config.backupPassword ?? ""
 ): Promise<WebDavResult<ExportData>> {
     // 取回 + 解密这一段共用 webdavDownloadBytes；这里只负责「解开 JSON」。
     const raw = await webdavDownloadBytes(config, filename, password);
@@ -369,6 +418,7 @@ export async function webdavDownload(
         return { success: false, code: raw.code, message: raw.message };
     }
     const rawBytes = raw.data.bytes;
+    const hasPassword = normalizePasswordCandidates(password).length > 0;
 
     // 按文件头判断格式，兼容历史备份：
     // - 1f 8b 开头：gzip 备份（加密备份解开之后也是 gzip），直接解压；
@@ -396,7 +446,7 @@ export async function webdavDownload(
         // 已经和备份解耦，服务端不再用它解密，只能请用户重新备份一份。
         return {
             success: false,
-            message: password
+            message: hasPassword
                 ? "备份文件已损坏或口令不匹配，无法解析"
                 : "这份备份是用旧版服务端密钥（AUTH_SECRET）加密的，现已与备份解耦：请用备份密码重新备份一次",
         };
@@ -425,6 +475,7 @@ export async function webdavDelete(config: WebDavConfig, filename: string): Prom
 }
 
 // 子模块的导出原样转出去：老代码 import from "../worker/webdav" 不用改
+export * from "./autoKey";
 export * from "./config";
 export * from "./naming";
 export * from "./transport";

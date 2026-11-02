@@ -214,11 +214,22 @@ test("写闸门必须拿到 trustXFF（否则反代后面所有人共用一个�
                 /trustXFF/.test(call),
                 `${file} 的 ${call} 没传 trustXFF —— 反代后面所有用户会共用一个限速桶`
             );
+            // 第四参（X-Real-IP 的独立开关）同样不能漏：漏传时它默认 false，
+            // 只配了本仓 Nginx 模板（覆盖写 X-Real-IP）的部署会退化成按 XFF 首段分桶，
+            // 而 XFF 若是追加模式就等于把分桶键交回给攻击者。
+            assert.ok(
+                /trustXRealIp/.test(call),
+                `${file} 的 ${call} 没传 trustXRealIp —— 覆盖写入的 X-Real-IP 读不到`
+            );
         }
         // 解构里也得有，否则变量根本取不到（tsc 会报，但报错信息不直观）
         assert.ok(
             /^\s*trustXFF,\s*$/m.test(src),
             `${file} 的 ctx 解构里没有 trustXFF —— writeBucket 拿不到真实来源 IP`
+        );
+        assert.ok(
+            /^\s*trustXRealIp,\s*$/m.test(src),
+            `${file} 的 ctx 解构里没有 trustXRealIp —— 第二个信任开关拿不到`
         );
     }
 });

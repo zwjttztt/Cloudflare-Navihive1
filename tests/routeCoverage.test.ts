@@ -46,6 +46,7 @@ async function tryHandle(fn: Handler, path: string, method: string): Promise<boo
         api: fakeApi(),
         ip: "203.0.113.1",
         trustXFF: false,
+        trustXRealIp: false,
         secureCookie: true,
         currentJti: "",
         currentTokenExp: 0,

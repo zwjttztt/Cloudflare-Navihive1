@@ -22,6 +22,12 @@ export interface RouteCtx {
     ip: string;
     /** 是否信任 X-Forwarded-For 作为限速分桶依据（见 NAVIHIVE_TRUST_XFF） */
     trustXFF: boolean;
+    /**
+     * 是否信任反代覆盖写入的 `X-Real-IP`（见 NAVIHIVE_TRUST_X_REAL_IP）。
+     * 与 trustXFF 分开：TRUST_XFF=1 只说明这层反代老实写 XFF，不代表它写了 X-Real-IP
+     * （Caddy / Traefik 默认不写），那种部署里客户端自带的 X-Real-IP 会透传进来。
+     */
+    trustXRealIp: boolean;
     /** cookie 是否带 Secure（按浏览器真实 scheme 判断，见 requestIsSecure） */
     secureCookie: boolean;
     /** 当前令牌的 jti —— 退出登录 / 注销账号时按它拉黑 */
