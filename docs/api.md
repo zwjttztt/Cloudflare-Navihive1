@@ -30,6 +30,8 @@
 
 | 方法 | 路径 | 用途 | 鉴权 | 备注 |
 | --- | --- | --- | --- | --- |
+| GET | `/api/healthz` | 存活探针（liveness） | 公开 | 恒回 `{ ok: true }`，**不碰数据库**；`no-store`、无限速（探活每 30 秒一次，限速会把自己锁死） |
+| GET | `/api/readyz` | 就绪探针（readiness） | 公开 | 跑一条 `SELECT 1`：通 → 200 `{ ok: true }`，不通 → **503** `{ ok: false }`；`Dockerfile` 的 `HEALTHCHECK` 打的就是它（打 healthz 会让「库打不开」的镜像被判健康、自动回滚失效） |
 | GET | `/api/init` | 初始化探测 / 容器探活 | 公开 | 恒回 `{ ok, initialized: true, maintenance }`，不暴露是否首次初始化；按 IP 限速 |
 | POST | `/api/login` | 登录 | 公开 | 令牌只写 cookie，响应体不含 token；失败按 IP 递增锁定 |
 | POST | `/api/auth/register` | 注册（唯一门槛是邀请码） | 公开 | 未启用鉴权时直接 400；成功即签发 cookie |
@@ -243,7 +245,7 @@
 
 ## 12. 未在本仓库中定义的
 
-- **健康检查专用端点**：没有 `/api/health` 或 `/health`。容器探活与外部探测都用 `GET /api/init`（`Dockerfile` 的 `HEALTHCHECK` 就是这么写的）。
+- **健康检查**：只有 `/api/healthz`（liveness，零 DB）与 `/api/readyz`（readiness，一条 `SELECT 1`）两个，**没有** `/api/health` 或 `/health`。容器 `HEALTHCHECK` 打 `readyz`（库打不开 → 503 → unhealthy → upgrader 自动回滚）；外部拨测脚本仍打 `/api/init`（那条顺带确认迁移能跑通）。两个探针的响应体都只有 `ok` 一个键：公开未鉴权端点带任何细节都是白送指纹。
 - **OpenAPI / Swagger 规范文件**：仓库里没有找到，本清单是逐条读分发代码整理的。
 - **`/api` 本身**（不带尾斜杠）：既不是 `/api/...` 也不命中静态资源路由，两条链路都回 404。
 - **版本号端点**：前端版本号是构建期烘进产物的常量（`__NAVIHIVE_APP_VERSION__`），不是接口。
@@ -252,5 +254,6 @@
 
 ## 13. 端点总数
 
-`/api` 端点共 **122 条**（`vault/keys` 的 `PUT|POST` 合并记为一条），另有 1 条非 `/api` 的 `POST /__cron`。
+`/api` 端点共 **124 条**（`vault/keys` 的 `PUT|POST` 合并记为一条），另有 1 条非 `/api` 的 `POST /__cron`。
+（这个数字是人工计数的快照，容易漂；**以上面的表为准**，数字只用来快速判断「有没有整类端点被漏掉」。）
 按分组：公开 14、账号 12、运维 9、导航数据 19、记事本 37、保险库 5、配置 5、备份 12、AI 6、自托管专属 3。

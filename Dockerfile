@@ -50,10 +50,18 @@ USER node
 EXPOSE 8787
 VOLUME /app/data
 
-# 探活打 /api/init：公开路由、无需登录、回 {"ok":true,...}，且会真读一次库 ——
-# 比「TCP 端口通」强，worker 或数据库挂了它会是 5xx。任何 2xx/3xx 算健康。
+# 探活打 /api/readyz：公开路由、无需登录、库通就 200 + {"ok":true}、库不通就 503。
+#
+# ⚠️ 刻意**不**打 /api/healthz（那是 liveness：零 DB，只要进程活着就 200）。
+#    理由是 upgrader 的自动回滚判据就是这里的 `State.Health.Status`
+#    （见 server/upgradeHealth.ts 与 docker-compose.yml 的 upgrader）：
+#    如果健康检查打 healthz，那么「数据库打不开」的新镜像会被判 healthy，
+#    自动回滚**永远不触发** —— 而那正是最需要回滚的情形（迁移失败 / 库文件损坏 /
+#    磁盘满）。代价是每次探活的 DB 读取从 3 次（/api/init 要迁移检查 + 读配置）
+#    降到 1 次（一条 SELECT 1），而不是 0 次。
+#    任何 2xx/3xx 算健康。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.NAVIHIVE_PORT||8787)+'/api/init').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.NAVIHIVE_PORT||8787)+'/api/readyz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 
 # node:sqlite 在 Node 22/24 都会打 ExperimentalWarning，与 npm run start:selfhost 一致地静音。
 # SIGTERM 由 entry.ts 接住：清 timer → 关库 checkpoint WAL → 退出，容器停止不会丢 WAL 尾段。

@@ -20,7 +20,7 @@ import type { AccountSessionState } from "./types";
 import { createKeyring } from "./crypto";
 import type { Keyring } from "./crypto";
 import type { MigrationApi } from "./methods/migration";
-import type { AuthApi } from "./methods/auth";
+import type { AuthApi, AuthProbeResult } from "./methods/auth";
 import type { RecoveryApi } from "./methods/recovery";
 import type { AccountsApi } from "./methods/accounts";
 import type { AuditApi } from "./methods/audit";
@@ -124,6 +124,16 @@ export class NavigationAPI {
      * 停用 / 清除 / 重新启用这些会翻转结论的操作会主动把缓存清掉。
      */
     sessionStateCache = new Map<number, { state: AccountSessionState; at: number }>();
+    /**
+     * 本请求 verifyToken 那次 `authProbe` 的结果 —— **内部通道**，由 takeAuthProbe 取走。
+     *
+     * 为什么要有它：三读合一（见 auth.ts 的 AUTH_PROBE_SQL）在验签时就把账号态一起
+     * 读回来了，中间件不该为同一件事再打一次库。但结论不能塞进 JWT payload（那会把
+     * 一次性判据变成长期声明），所以留在实例上，只给同一个请求的中间件取用。
+     *
+     * 约束：uid + jti 都要对得上才认（见 takeAuthProbe）；取走即清空。
+     */
+    authProbeCache: { uid: number | null; jti: string; result: AuthProbeResult } | null = null;
     /**
      * 当前请求所属账号。由 Worker 在验签之后 setCurrentUser(id) 注入。
      * 为 null 表示「系统级调用」（未启用鉴权、或定时备份这类没有用户上下文的任务），

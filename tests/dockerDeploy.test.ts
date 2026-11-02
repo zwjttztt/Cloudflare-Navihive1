@@ -97,10 +97,14 @@ test("Dockerfile 静音 node:sqlite 的 ExperimentalWarning", () => {
     assert.match(read("Dockerfile"), /--disable-warning=ExperimentalWarning/, "CMD 没带 --disable-warning=ExperimentalWarning");
 });
 
-test("Dockerfile 的 HEALTHCHECK 打 /api/init（公开、真读库）", () => {
+test("Dockerfile 的 HEALTHCHECK 打 /api/readyz（公开、且真读一次库）", () => {
     const rt = runtimeStage(read("Dockerfile"));
     assert.match(rt, /HEALTHCHECK/, "runtime 没有 HEALTHCHECK");
-    assert.match(rt, /\/api\/init/, "探活没打 /api/init");
+    // ⚠️ 必须是 readyz，不能是 healthz：upgrader 拿 `State.Health.Status` 当自动回滚判据
+    // （见 server/upgradeHealth.ts）。探活若打 healthz（零 DB），「数据库打不开」的新镜像
+    // 会被判 healthy，自动回滚永远不触发 —— 而那正是最需要回滚的情形。
+    // 换掉 /api/init 的收益是探活的 DB 读取从 3 次（迁移检查 + 读配置）降到 1 次（SELECT 1）。
+    assert.match(rt, /\/api\/readyz/, "探活没打 /api/readyz");
     // 必须打 127.0.0.1：容器内自测，走外面映射等于把探活暴露成公网入口
     assert.match(rt, /http:\/\/127\.0\.0\.1:/, "探活地址不是 127.0.0.1");
 });

@@ -45,10 +45,13 @@ export function tagPreviousBeforeRecreate(containerName: string): string {
 /**
  * 升级后：探活 → 不健康就回滚到 previous。
  *
- * 探活用 `docker inspect` 的 Health.Status（Dockerfile 自带 HEALTHCHECK 探 /api/init），
+ * 探活用 `docker inspect` 的 Health.Status（Dockerfile 自带 HEALTHCHECK 探 /api/readyz），
  * 不依赖容器内有没有 curl/wget —— 那正是 upgrade 链路最容易踩的坑（轻量镜像根本没这些工具）。
  * 决策交给 shouldRollback：明确 unhealthy 立刻回滚，超时（一直 starting）也回滚，
  * 只有 healthy 才算过门禁。
+ *
+ * ⚠️ 探针**故意**打 readyz（会跑一条 SELECT 1）而不是 healthz（零 DB）：库打不开的
+ * 新镜像在 healthz 下会被判 healthy，自动回滚就永远不触发 —— 而那正是最需要回滚的情形。
  *
  * ⚠️ 回滚也要走 compose（不是直接 docker create）：保持与重建一致的坐标解析，
  * 否则下一轮 upgrade 会读歪 working_dir 标签（v4.3.0 的已知坑）。

@@ -18,12 +18,67 @@ import { ApiError, errorResponse } from "../lib/apiError";
 import { MAINTENANCE_ENABLED_KEY } from "../../shared/maintenance";
 import {TOKEN_COOKIE, isSameOrigin, readCookie} from "../httpUtils";
 import { securityHeaders } from "../util";
+import type { AccountSessionState } from "../../src/API/types";
 import type { RouteCtx } from "./types";
 
 /** 当前令牌的身份信息，拉黑时要用 */
 export interface TokenSession {
     jti: string;
     exp: number;
+}
+
+/**
+ * 取账号态：优先用 verifyToken 那次 `authProbe` 已经顺手读到的结论
+ * （三读合一的结果走内部通道，见 src/API/methods/auth.ts 的 authProbe），
+ * 拿不到再退回 `getAccountSessionState`。
+ *
+ * 什么时候会拿不到（三种，全部走退回路径，判定与改造前逐字一致）：
+ *   1. 合并读那条 SQL 在这台库上炸了（缺表 / 缺列 / 抖动）→ verifyToken 走了降级路径，
+ *      没有留下结论；accountVersion 那边的 fail-closed 语义在 verifyToken 里已经复现。
+ *   2. 传进来的 api 没有这两个方法（路由层手写的 api 替身、老的注入形状）。
+ *   3. 探测结论是 `unknown`（老令牌没有 uid，库里没有它那一行可查）—— 那种情况
+ *      今天也不会查账号态（下面的分支只在 uid 是数字时才走），所以不会漏判。
+ *
+ * ⚠️ 这里刻意不把 `unknown` 当 active 用：宁可多打一次库，也不拿一个「不适用」的结论放行。
+ */
+async function resolveAccountState(
+    ctx: RouteCtx,
+    uid: number,
+    jti: string
+): Promise<AccountSessionState> {
+    const { api } = ctx;
+    const takeProbe = api.takeAuthProbe;
+    if (typeof takeProbe === "function") {
+        const probe = takeProbe.call(api, uid, jti);
+        if (probe && probe.accountStatus !== "unknown") {
+            const fromProbe = api.accountStateFromProbe;
+            if (typeof fromProbe === "function") {
+                // 与 getAccountSessionState 共用同一套 SESSION_STATE_TTL_MS 缓存
+                return fromProbe.call(api, uid, probe.accountStatus);
+            }
+        }
+    }
+    return api.getAccountSessionState(uid);
+}
+
+/**
+ * 刷新活跃时间（两写合一）：账号活跃 + 会话最后活跃一次 batch 写完。
+ *
+ * 拿不到 `touchActivity`（手写的 api 替身 / 老注入形状）时退回原来的两次独立写，
+ * 行为与顺序都不变 —— 这两条本来也只影响「沉睡治理」与「设备列表」的显示。
+ */
+async function touchActivity(ctx: RouteCtx, uid: number | null, jti: string): Promise<void> {
+    const { api } = ctx;
+    const merged = api.touchActivity;
+    if (typeof merged === "function") {
+        await merged.call(api, uid, jti);
+        return;
+    }
+    // 降级：两次独立写，与改造前逐字一致（uid 为 null 时不写 users 表）
+    if (uid !== null) {
+        await api.touchLastActive(uid);
+    }
+    await api.touchSession(jti);
 }
 
 export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise<Response | null> {
@@ -86,8 +141,12 @@ export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise
         // 写库、留下挂在不存在 user_id 上的孤儿数据。退出登录要留着：被挡住的人至少
         // 能把自己登出去。这是本请求唯一一次账号态查询（另一次 hasAnyUser 查询只在
         // 缺 uid 的遗留令牌上才跑，已登录请求不再重复查）。
+        //
+        // 这一问现在**不再单独打库**：验签时那次三读合一（auth.ts 的 authProbe）
+        // 已经把 users."status" 一起读回来了，resolveAccountState 取的就是那份结论
+        // （拿不到才退回 getAccountSessionState，见该函数的注释）。判定分支一行没改。
         if (path !== "logout") {
-            const state = await api.getAccountSessionState(uid);
+            const state = await resolveAccountState(ctx, uid, session.jti);
             if (state === "missing") {
                 // 用 401：客户端见到 401 会清掉登录标记并退回登录页
                 return errorResponse(ApiError.unauthenticated("账号已不存在，请重新登录"));
@@ -104,17 +163,13 @@ export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise
         api.setCurrentUser(null);
     }
 
-    // 活跃时间：令牌一验过就算在用 —— 「记住我」的人每次回来只是静默恢复，
-    // 根本不经过登录页。刷它是沉睡治理的判定依据（扫描对普通账号生效，
-    // owner 在后端就被排除，见 cron.ts 的 runInactiveSweep）。
-    // 内部限频为每天最多写一次，不会每个请求都往 D1 落一行。
-    if (typeof uid === "number") {
-        await api.touchLastActive(uid);
-    }
-
-    // 会话「最后活跃」：让设备列表能显示哪几台最近还用过。
-    // 同样限频（内部按小时写在 SQL 里），不会每个请求都往 D1 落一行。
-    await api.touchSession(session.jti);
+    // 活跃时间 + 会话「最后活跃」，两写合一（一次 batch = 1 次往返）。
+    //
+    // 令牌一验过就算在用 —— 「记住我」的人每次回来只是静默恢复，根本不经过登录页。
+    // 刷它是沉睡治理的判定依据（扫描对普通账号生效，owner 在后端就被排除，见 cron.ts
+    // 的 runInactiveSweep）；会话那一条让设备列表能显示哪几台最近还用过。
+    // 两边的限频（每天 / 每小时各最多写一次）都写在 SQL 里，所以不是每个请求都落一行。
+    await touchActivity(ctx, typeof uid === "number" ? uid : null, session.jti);
 
     // CSRF：令牌改成 cookie 后跨站请求会自动带上它，
     // 所以写操作必须确认是本站发起的（判据见 isSameOrigin 注释）。

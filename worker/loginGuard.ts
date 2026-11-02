@@ -6,7 +6,14 @@ import { REAL_IP_HEADER, X_REAL_IP_HEADER } from "./httpUtils";
 
 // ============ 登录失败限速 ============
 // 连续输错会越等越久，避免密码被无限次猜。
-// 计数存在 configs 表的 auth.loginGuard 里 —— auth. 前缀既不返回给前端、也不进备份文件。
+//
+// ⚠️ 存储从 configs 里的「一整块 JSON」搬到了 **rate_limit_bucket 表（一桶一行）**
+// （C1，schema 29）。原来十把锁各自把**所有来源**的计数塞进一条 configs 记录
+// （单份上限 2000 桶 ≈ 220 KB），每次「输错一次密码」都要读 220 KB → 全量 JSON.parse
+// → 改一个桶 → 排序裁剪 → serialize → CAS 写回 220 KB，并发撞上 CAS 还要整套重跑。
+// 现在一次失败 = 一条 upsert（`count = count + 1`）。为什么不双写 / 不惰性回查旧 JSON，
+// 见 src/API/methods/internals.ts 里 RATE_LIMIT_BUCKET_TABLE_SQL 的注释。
+// 旧键（auth.*Guard）**保留不动、不再写入**，那是回滚用的冷冻快照。
 export const LOGIN_GUARD_KEY = "auth.loginGuard";
 // 前 5 次给手滑留余地，之后每次等待时间翻倍
 export const LOGIN_FREE_ATTEMPTS = 5;
@@ -17,10 +24,10 @@ export const LOGIN_MAX_LOCK_MS = 30 * 60_000; // 最多 30 分钟
 // 任何人只要连着输错 5 次，站点主人自己也登不进去了（最长 30 分钟）。
 // 多账号上线后这条从「防爆破」变成了「DoS 入口」：陌生人动动手指就能把所有人挡在门外。
 // 现在按来源 IP 分桶：A 乱猜只会锁住 A 自己。
-// 桶数设上限 + 清理长时间不活动的桶，避免有人用一堆代理 IP 把这条 configs 记录撑爆。
-const MAX_BUCKETS = 2_000;
+// 桶数设上限 + 清理长时间不活动的桶，避免有人用一堆代理 IP 把这张表撑爆。
+export const MAX_BUCKETS = 2_000;
 /** 桶多久没动静就丢掉（24 小时）。注意：处于锁定期的桶不在此列，必须留到解锁。 */
-const BUCKET_IDLE_MS = 24 * 60 * 60 * 1000;
+export const BUCKET_IDLE_MS = 24 * 60 * 60 * 1000;
 
 export interface LoginGuard {
     count: number;
@@ -29,11 +36,11 @@ export interface LoginGuard {
 }
 
 /** 存储结构：扁平的 {count, until} 是旧格式（全站一把锁），新格式按桶名索引 */
-interface GuardState extends LoginGuard {
+export interface GuardState extends LoginGuard {
     /** 该桶最后一次被写入的时刻（毫秒），用于清理长期不活动的桶 */
     seen?: number;
 }
-type GuardStore = Record<string, GuardState>;
+export type GuardStore = Record<string, GuardState>;
 
 /**
  * 取客户端标识（限速分桶用）。
@@ -106,8 +113,14 @@ export function computeLockAfterFailure(
     return Math.min(baseLockMs * Math.pow(2, over - 1), maxLockMs);
 }
 
-/** 解析存储内容；读不出来 / 格式不对都当「没有限制」（不能因为存储异常把正常用户挡在门外） */
-function parseGuardStore(raw: string | null): GuardStore {
+/**
+ * 解析存储内容；读不出来 / 格式不对都当「没有限制」（不能因为存储异常把正常用户挡在门外）。
+ *
+ * 导出只为两件事：迁移步骤 `rate-limit-bucket-rows` 要把旧 JSON 搬进新表，
+ * 以及单测要直接核对解析规则。**新代码不再往这份 JSON 写任何东西**
+ * （见文件头那条「不双写 / 不惰性回查」的说明）。
+ */
+export function parseGuardStore(raw: string | null): GuardStore {
     if (!raw) return {};
     try {
         const parsed = JSON.parse(raw) as unknown;
@@ -149,6 +162,11 @@ function serializeGuardStore(buckets: GuardStore): string {
 /**
  * CAS 重试次数。真撞上一次并发概率不高，重试 3 次足够；
  * 写不进去也只是「这次没能记上数」，绝不能因此把登录请求本身打回去。
+ *
+ * ⚠️ 现在只在两条路上还会用到它：
+ *   · 新表路径里 `next` 不是「计数 +1」的那种写入（锁定期续 seen、按窗口衰减重置）；
+ *   · 没有 `db` 的存储层（测试桩）走的那条 JSON 老路。
+ * 热路径（新 IP 第一次、额度内多一次失败）走的是**单条原子 upsert**，不需要重试。
  */
 const CAS_MAX_ATTEMPTS = 3;
 /** 重试前的退避（毫秒），给抢先那一方留出写完的时间 */
@@ -159,13 +177,13 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * 条件写入：只有存储值还是 expected 时才写 next。
+ * 条件写入（**只有 JSON 老路径用**）：只有存储值还是 expected 时才写 next。
  *
  * 早先是「读整条 → 改 → 整条写回」：两个请求同时读到旧值，各自算完再写，
  * 后写的那份会把前一份**整个盖掉**。放在限速上就是「别人的写入把攻击者积累的
  * 失败次数冲回小值」，爆破可以一直续杯 —— 这是真实的防护失效，不是洁癖。
  * 现在比较和写入合为一条 SQL（`configs.compareAndSetConfig`），抢不到就重算一次。
- * 没有 CAS 能力的存储层（测试桩）退回普通写入，行为与改动前一致。
+ * 没有 CAS 能力的存储层退回普通写入。
  */
 async function casWrite(
     api: NavigationAPI,
@@ -183,14 +201,336 @@ async function casWrite(
     }
 }
 
+// ============ 桶行存储（rate_limit_bucket：一桶一行） ============
+//
+// 十把锁的计数全部落在这张表上（DDL 见 src/API/methods/internals.ts）。
+// 主键是 (bucket_key, bucket)：bucket_key 就是原来的 configs 键（auth.loginGuard 等），
+// bucket 是来源标识（IP / 账号+IP / IP+分享 token）。十把锁共表不共用行，互不影响。
+//
+// 三条硬约束（改这里之前先读一遍）：
+//   1. **fail-open**：读不到 / 写不进 = 当作「没有限制」放行。这是既有设计，
+//      库都读不出来时后面真正干活的那一步自己会失败，不该在这里把错误码盖成 503。
+//   2. `computeLockAfterFailure` / `FREE_ATTEMPTS` / `BASE_LOCK_MS` / `MAX_LOCK_MS`
+//      一个都不许动 —— 它们决定「锁多久」，与「计数存在哪」无关。
+//   3. **锁定中的桶永远不许被裁掉**（`until > now` 的行裁桶 SQL 必须跳过）。
+
+/** 一行桶的完整状态 */
+interface BucketRow {
+    count: number;
+    until: number;
+    seen: number;
+}
+
+/** 空的桶（相当于「这个来源从没失败过」） */
+function emptyBucketRow(): BucketRow {
+    return { count: 0, until: 0, seen: 0 };
+}
+
+/** 把任意来源的数字收成一个安全的非负整数 */
+function toSafeCount(value: unknown): number {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
 /**
- * 读-改-写单个限速桶。
+ * 这个存储层有没有表（真 D1 / 自托管适配器都有 `prepare`）。
+ *
+ * 返回 null 的只有一种情况：测试里的极简假 api（只实现 getConfig / setConfig）。
+ * 那种存储连 `db` 都没有，只能退回 configs 里的 JSON 老路 —— 这不是「双写」，
+ * 同一个 api 实例永远只会走其中一条路，绝不会两边都写、也不会回查另一边。
+ */
+function bucketStoreOf(api: NavigationAPI): NavigationAPI["db"] | null {
+    const db = (api as { db?: NavigationAPI["db"] }).db;
+    if (!db || typeof db.prepare !== "function") return null;
+    return db;
+}
+
+/** 读一行桶。读不到（含表不存在 / SQL 炸了）一律当作「没有限制」 */
+async function readBucketRow(
+    api: NavigationAPI,
+    key: string,
+    bucket: string
+): Promise<BucketRow> {
+    const db = bucketStoreOf(api);
+    if (!db) return emptyBucketRow();
+    try {
+        const row = await db
+            .prepare("SELECT count, until, seen FROM rate_limit_bucket WHERE bucket_key = ? AND bucket = ?")
+            .bind(key, bucket)
+            .first<{ count?: unknown; until?: unknown; seen?: unknown }>();
+        if (!row) return emptyBucketRow();
+        return {
+            count: toSafeCount(row.count),
+            until: Number(row.until) > 0 && Number.isFinite(Number(row.until)) ? Number(row.until) : 0,
+            seen: toSafeCount(row.seen),
+        };
+    } catch {
+        return emptyBucketRow();
+    }
+}
+
+/**
+ * 原子 +1：一条 upsert 拿回「加完之后」的 count / until。
+ *
+ * 这是整个 C1 的收益所在 —— 一次失败尝试只需要这一条语句（+ 需要锁定时一条 UPDATE），
+ * 不再读整块 JSON、不再 serialize、不再 CAS 重试。`count = rate_limit_bucket.count + 1`
+ * 在 SQL 里是原子的，所以并发请求各算各的，一次都不会丢。
+ *
+ * 返回 null 表示「这个存储层给不出这一行」（表不存在 / 驱动不认识 RETURNING / 写失败）——
+ * 调用方按 fail-open 处理，绝不因此把请求打回去。
+ */
+async function bumpBucketRow(
+    api: NavigationAPI,
+    key: string,
+    bucket: string,
+    nowMs: number
+): Promise<BucketRow | null> {
+    const db = bucketStoreOf(api);
+    if (!db) return null;
+    try {
+        const row = await db
+            .prepare(
+                `INSERT INTO rate_limit_bucket (bucket_key, bucket, count, until, seen)
+                 VALUES (?, ?, 1, 0, ?)
+                 ON CONFLICT(bucket_key, bucket) DO UPDATE SET
+                     count = rate_limit_bucket.count + 1,
+                     seen  = excluded.seen
+                 RETURNING count, until`
+            )
+            .bind(key, bucket, nowMs)
+            .first<{ count?: unknown; until?: unknown }>();
+        if (!row) return null;
+        const count = toSafeCount(row.count);
+        // count 为 0 说明 driver 没按 RETURNING 回行（形状不对），当作写失败更安全
+        if (count <= 0) return null;
+        const until = Number(row.until);
+        return { count, until: Number.isFinite(until) && until > 0 ? until : 0, seen: nowMs };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * 把一行桶的 `until` 抬起来（锁定）。
+ *
+ * 只有 `lockMs > 0` 时才发这一条 —— 正常（未超额）的失败尝试只有一条 upsert，
+ * 不会多花一次往返。并发下谁先写谁生效，都是同一个 `now + lockMs`，
+ * 差异只有几毫秒，对「等多久」没有意义。
+ */
+async function lockBucketRow(
+    api: NavigationAPI,
+    key: string,
+    bucket: string,
+    untilMs: number
+): Promise<boolean> {
+    const db = bucketStoreOf(api);
+    if (!db) return false;
+    try {
+        await db
+            .prepare("UPDATE rate_limit_bucket SET until = ? WHERE bucket_key = ? AND bucket = ?")
+            .bind(untilMs, key, bucket)
+            .run();
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * 绝对写回一行（count / until / seen 全给）。`writeXxxGuard` 那条路用它 ——
+ * 那些调用方本来就有确定的终值，不需要读-改-写。
+ */
+async function writeBucketRow(
+    api: NavigationAPI,
+    key: string,
+    bucket: string,
+    state: BucketRow
+): Promise<boolean> {
+    const db = bucketStoreOf(api);
+    if (!db) return false;
+    try {
+        await db
+            .prepare(
+                `INSERT INTO rate_limit_bucket (bucket_key, bucket, count, until, seen)
+                 VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT(bucket_key, bucket) DO UPDATE SET
+                     count = excluded.count,
+                     until = excluded.until,
+                     seen  = excluded.seen`
+            )
+            .bind(key, bucket, state.count, state.until, state.seen)
+            .run();
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * 行的「值等 CAS」写入：只有这一行还是我们读到的样子才写。
+ *
+ * 只给「`next` 不是简单 +1」的场景用（锁定期续 seen / 按窗口衰减重置）。
+ * `WHERE` 里带上旧的 count/until/seen 三个值 —— 等于把原来「整块 JSON 的 CAS」
+ * 缩小到这一行：别人改的是**别的桶**时不会把我们挤掉，只有同桶并发才会重试。
+ */
+async function casWriteBucketRow(
+    api: NavigationAPI,
+    key: string,
+    bucket: string,
+    prev: BucketRow,
+    next: BucketRow
+): Promise<boolean> {
+    const db = bucketStoreOf(api);
+    if (!db) return false;
+    try {
+        const updated = await db
+            .prepare(
+                `UPDATE rate_limit_bucket SET count = ?, until = ?, seen = ?
+                  WHERE bucket_key = ? AND bucket = ? AND count = ? AND until = ? AND seen = ?
+                  RETURNING count`
+            )
+            .bind(next.count, next.until, next.seen, key, bucket, prev.count, prev.until, prev.seen)
+            .first();
+        if (updated) return true;
+        // 行还不存在（第一次见到这个来源）→ 插入。并发插入由主键冲突兜住：
+        // DO NOTHING 之后拿不到 RETURNING 行 = 别人抢先建了 → 交给外层重试。
+        const inserted = await db
+            .prepare(
+                `INSERT INTO rate_limit_bucket (bucket_key, bucket, count, until, seen)
+                 VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT(bucket_key, bucket) DO NOTHING
+                 RETURNING count`
+            )
+            .bind(key, bucket, next.count, next.until, next.seen)
+            .first();
+        return inserted != null;
+    } catch {
+        return false;
+    }
+}
+
+/** 清零一行（分享口令「猜对了」用）。删行比写 0 更省，读出来的语义完全一样 */
+async function resetBucketRow(api: NavigationAPI, key: string, bucket: string): Promise<void> {
+    const db = bucketStoreOf(api);
+    if (!db) {
+        // 极简假 api：退回 JSON 老路，写一个清零的桶（而不是删键，语义一致）
+        await legacyMutateGuard(api, key, bucket, () => ({ count: 0, until: 0, seen: Date.now() }));
+        return;
+    }
+    try {
+        await db
+            .prepare("DELETE FROM rate_limit_bucket WHERE bucket_key = ? AND bucket = ?")
+            .bind(key, bucket)
+            .run();
+    } catch {
+        // 清不掉不影响放行：下一次读取拿到的还是旧计数，最多让「猜对了」之后
+        // 多留一会儿额度，不会把人锁死
+    }
+}
+
+/**
+ * 裁桶：把「太久没动静」的和「超出上限最久没动静」的桶删掉。
+ *
+ * 两条 SQL 都是**锁定中的桶一律跳过**（`until <= now` 这个条件）：
+ * 裁掉一个正在锁定期里的桶 = 把正在等解锁的人提前放出来，比不裁危险得多。
+ *
+ * ⚠️ 只能在**非热路径**调它（见 `pruneBucketRowsIfDue` 与 worker/cron.ts）：
+ * 它对本键做一次索引范围扫，跟「记一次失败」不是一回事。
+ */
+async function pruneBucketRows(api: NavigationAPI, key: string, nowMs: number): Promise<void> {
+    const db = bucketStoreOf(api);
+    if (!db) return;
+    try {
+        // ① 空闲超时：24 小时没动静、且不在锁定期
+        await db
+            .prepare(
+                "DELETE FROM rate_limit_bucket WHERE bucket_key = ? AND until <= ? AND seen <= ?"
+            )
+            .bind(key, nowMs, nowMs - BUCKET_IDLE_MS)
+            .run();
+        // ② 桶太多时丢掉最久没动静的那些，始终给新来的来源留位置（MAX_BUCKETS 语义不变）。
+        //    「最新的 MAX_BUCKETS 个」之外的行才删 —— 锁定中的桶靠 until <= ? 兜住。
+        await db
+            .prepare(
+                `DELETE FROM rate_limit_bucket
+                  WHERE bucket_key = ? AND until <= ?
+                    AND bucket NOT IN (
+                        SELECT bucket FROM rate_limit_bucket
+                         WHERE bucket_key = ?
+                         ORDER BY seen DESC
+                         LIMIT ?
+                    )`
+            )
+            .bind(key, nowMs, key, MAX_BUCKETS)
+            .run();
+    } catch {
+        // 裁桶失败无害（下次再裁）：它只是控制表的体积，不参与任何放行判断
+    }
+}
+
+/** 本 isolate 上一次裁桶的时刻（模块级：Workers 每个 isolate 各自一份，正是想要的粒度） */
+let lastBucketPruneAt = 0;
+/** 热路径上最多每小时裁一次 */
+const BUCKET_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * 热路径上的「到点才裁」：距上次裁桶不足一小时就直接返回。
+ *
+ * 放在这里而不是每次 bump 都裁，是因为裁剪的代价（两次 DELETE）跟「记一次失败」
+ * 完全不是一个量级，而桶的增长速度是「每次登录失败一行」，一小时裁一次足够。
+ */
+async function pruneBucketRowsIfDue(api: NavigationAPI, key: string): Promise<void> {
+    const now = Date.now();
+    if (now - lastBucketPruneAt < BUCKET_PRUNE_INTERVAL_MS) return;
+    lastBucketPruneAt = now;
+    await pruneBucketRows(api, key, now);
+}
+
+/**
+ * 仅供测试：把「上次裁桶时刻」清零，让下一次 bump 必定走到裁剪。
+ * （与 resetMigrationCacheForTests 同一个套路：模块级状态在同一个测试进程里会跨用例存活）
+ */
+export function resetRateLimitPruneThrottleForTests(): void {
+    lastBucketPruneAt = 0;
+}
+
+/**
+ * 把十把锁的所有桶各裁一遍（worker/cron.ts 的清理任务调用）。
+ *
+ * 热路径上的裁剪是「每 isolate 每小时、且只裁当前这把锁」—— 没人登录的那几把锁
+ * 就永远轮不到。cron 每天扫全量，兜住这一块。
+ */
+export async function pruneAllRateLimitBuckets(api: NavigationAPI): Promise<void> {
+    const now = Date.now();
+    for (const key of RATE_LIMIT_GUARD_KEYS) {
+        await pruneBucketRows(api, key, now);
+    }
+    lastBucketPruneAt = now;
+}
+
+// ---------------- JSON 老路径（没有 db 的存储层） ----------------
+//
+// 线上走不到这里：真 D1 与自托管适配器都有 db。留着它是为了
+// `api.getConfig/setConfig` 这种最小存储桩（测试里大量使用）还能照旧工作，
+// 以及万一有个把部署把 db 摘掉了也不至于让登录直接崩。
+
+/** 取某个限速键的全部桶。取不到就当「没有限制」—— 存储异常不该把正常用户挡在门外 */
+async function legacyReadGuardStore(api: NavigationAPI, key: string): Promise<GuardStore> {
+    try {
+        return parseGuardStore(await api.getConfig(key));
+    } catch {
+        return {};
+    }
+}
+
+/**
+ * 读-改-写单个限速桶（JSON 老路径）。
  *
  * 基于「读到的原始字符串」做 CAS：重算出新值后发现底层已被别人改过，就丢弃这次
  * 结果重新读一次（`parseGuardStore` → `mutate`），最多重试 CAS_MAX_ATTEMPTS 次。
  * 因为 mutate 只动目标桶，别人的桶在重读时会被完整捡回来，不会被我们的写盖掉。
  */
-async function mutateGuard(
+async function legacyMutateGuard(
     api: NavigationAPI,
     key: string,
     bucket: string,
@@ -201,7 +541,9 @@ async function mutateGuard(
         try {
             raw = await api.getConfig(key);
         } catch {
-            raw = null; // 读不出来当作空存储，至少让 mutate 能跑完
+            // ⚠️ 读不出来就**不要写**：把整份 JSON 当成空存储再写回去，
+            // 等于把别人刚攒的计数整个抹掉（这也是 enforceWriteGuard 原来的做法）。
+            return false;
         }
         const store = parseGuardStore(raw);
         store[bucket] = mutate(store[bucket] ?? { count: 0, until: 0, seen: Date.now() });
@@ -211,22 +553,111 @@ async function mutateGuard(
     return false;
 }
 
-/** 取某个限速键的全部桶。取不到就当「没有限制」—— 存储异常不该把正常用户挡在门外 */
-async function readGuardStore(api: NavigationAPI, key: string): Promise<GuardStore> {
-    try {
-        return parseGuardStore(await api.getConfig(key));
-    } catch {
-        return {};
+/**
+ * 递增某个限速桶（JSON 老路径），语义与新的 `bumpGuard` 完全一致。
+ * 只在「存储层没有 db」时才会被调用。
+ */
+async function legacyBumpGuard(
+    api: NavigationAPI,
+    key: string,
+    bucket: string,
+    next: (prev: GuardState) => GuardState
+): Promise<LoginGuard | null> {
+    // 读到的状态本来就在锁定期时记一份：下面万一写不进去，也要把它如实返回 ——
+    // 「这次没能记上数」不该顺手把一把**已知有效**的锁解开（放行才是自相矛盾）。
+    // 这是 enforceWriteGuard 非 CAS 分支原先就有的行为，统一入口时不能丢。
+    let knownLock: LoginGuard | null = null;
+    for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
+        let raw: string | null;
+        try {
+            raw = await api.getConfig(key);
+        } catch {
+            // 同 legacyMutateGuard：读不出来就别写 —— 这份 JSON 是**整块覆盖**的，
+            // 拿「空存储」去覆盖会把别人刚攒的失败次数一起抹掉。
+            return null;
+        }
+        const store = parseGuardStore(raw);
+        const now = Date.now();
+        const prev = store[bucket] ?? { count: 0, until: 0, seen: 0 };
+        const updated = next(prev);
+        const result: LoginGuard = {
+            count: Number.isFinite(updated.count) ? updated.count : 0,
+            until: Number.isFinite(updated.until) ? updated.until : 0,
+        };
+        if ((prev.until ?? 0) > now) knownLock = result;
+        store[bucket] = { ...result, seen: now };
+        try {
+            if (await casWrite(api, key, raw, serializeGuardStore(store))) return result;
+        } catch {
+            return null;
+        }
+        if (attempt < CAS_MAX_ATTEMPTS - 1) await sleep(CAS_BACKOFF_MS * (attempt + 1));
     }
+    return knownLock;
+}
+
+// ---------------- 统一入口 ----------------
+
+/**
+ * 读某个桶的完整状态（含 seen，导出 / 写操作那两把锁按「离上次动多久」衰减要用）。
+ * 存储异常一律当「没有限制」（fail-open）。
+ */
+async function readGuardState(
+    api: NavigationAPI,
+    key: string,
+    bucket: string
+): Promise<GuardState> {
+    if (!bucketStoreOf(api)) {
+        const store = await legacyReadGuardStore(api, key);
+        return store[bucket] ?? { count: 0, until: 0, seen: 0 };
+    }
+    return await readBucketRow(api, key, bucket);
+}
+
+/** 只对外暴露 count / until 的那部分（登录 / 初始化 / 注册 / 找回 / 分享四把锁的契据） */
+function toLoginGuard(state: GuardState): LoginGuard {
+    return {
+        count: toSafeCount(state.count),
+        until: toSafeCount(state.until),
+    };
+}
+
+/** 多带一个 seen 的那部分（导出 / 写操作） */
+function toExportGuard(state: GuardState): ExportGuard {
+    return { ...toLoginGuard(state), seen: toSafeCount(state.seen) };
+}
+
+/**
+ * 绝对写回一个桶（`writeXxxGuard` 用）。
+ *
+ * 这些调用方在外面已经算好了终值（清零 / 只记锁定时刻），所以不需要读-改-写；
+ * 并发时后写的赢，与改动前「各自 CAS 重试同一个确定值」的结果一样。
+ */
+async function mutateGuard(
+    api: NavigationAPI,
+    key: string,
+    bucket: string,
+    mutate: (prev: GuardState) => GuardState
+): Promise<boolean> {
+    if (!bucketStoreOf(api)) return await legacyMutateGuard(api, key, bucket, mutate);
+    const now = Date.now();
+    const prev = await readBucketRow(api, key, bucket);
+    const wanted = mutate(prev);
+    return await writeBucketRow(api, key, bucket, {
+        count: toSafeCount(wanted.count),
+        until: toSafeCount(wanted.until),
+        seen: now,
+    });
 }
 
 /**
  * 递增某个限速桶，并把「递增之后的那份状态」返回给调用方。
  *
  * 与 `writeXxxGuard` 的区别是**在哪里算数**：后者在外面把 count 算好传进来，
- * CAS 抢不到时重试的仍是那个旧数字 —— 两个请求并发时，后写入的那份会把前一个
- * 的增量整个盖掉（实测：同桶两次固定 count=1，最终还是 1），爆破于是可以一直续杯。
- * 这里把计算放进 CAS 循环里：每次重读都用最新的值重算，并发不会互相抹掉。
+ * 并发时后写入的那份会把前一个的增量整个盖掉（实测：同桶两次固定 count=1，
+ * 最终还是 1），爆破于是可以一直续杯。这里把计算放进存储层：
+ *   · 热路径（`next` 只是把 count +1）→ **一条原子 upsert**，并发下也不会丢计数；
+ *   · 其它（锁定期续 seen / 按窗口衰减重置）→ 行的「值等 CAS」，抢不到就重读重算。
  *
  * 返回值是真正写进去的那份（调用方拿它算「还剩几次 / 要等多久」，文案才不会撒谎）；
  * 写不进去返回 null —— 计数记不上不等于请求该失败，调用方按「没记上」继续处理。
@@ -237,29 +668,51 @@ export async function bumpGuard(
     bucket: string,
     next: (prev: GuardState) => GuardState
 ): Promise<LoginGuard | null> {
+    if (!bucketStoreOf(api)) return await legacyBumpGuard(api, key, bucket, next);
+
+    // 与 legacyBumpGuard 同一个约定：读到的状态本来在锁定期，就一定把它如实返回，
+    // 哪怕这次写不进去（理由见那边的注释）。
+    let knownLock: LoginGuard | null = null;
     for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
-        let raw: string | null;
-        try {
-            raw = await api.getConfig(key);
-        } catch {
-            raw = null;
-        }
-        const store = parseGuardStore(raw);
         const now = Date.now();
-        const updated = next(store[bucket] ?? { count: 0, until: 0, seen: 0 });
+        const prev = await readBucketRow(api, key, bucket);
+        const updated = next(prev);
         const result: LoginGuard = {
-            count: Number.isFinite(updated.count) ? updated.count : 0,
-            until: Number.isFinite(updated.until) ? updated.until : 0,
+            count: toSafeCount(updated.count),
+            until: toSafeCount(updated.until),
         };
-        store[bucket] = { ...result, seen: now };
-        try {
-            if (await casWrite(api, key, raw, serializeGuardStore(store))) return result;
-        } catch {
-            return null;
+        if (prev.until > now) knownLock = { count: result.count, until: result.until };
+
+        // 热路径：`next` 恰好是「计数 +1」（新来源的第一次、以及额度内每多一次失败）。
+        // 这种情况不必「读-算-写」：`count = count + 1` 本身就是原子的，
+        // 并发请求各算各的，一次都不会丢。
+        if (result.count === prev.count + 1) {
+            const bumped = await bumpBucketRow(api, key, bucket, now);
+            if (bumped) {
+                let finalUntil = bumped.until;
+                // 这次刚好越过了失败阈值 → 补一条 UPDATE 把锁抬起来
+                if (result.until > bumped.until) {
+                    await lockBucketRow(api, key, bucket, result.until);
+                    finalUntil = result.until;
+                }
+                await pruneBucketRowsIfDue(api, key);
+                return { count: bumped.count, until: finalUntil };
+            }
+            // 原子 upsert 不可用（表不存在 / 驱动不回 RETURNING）→ 落到下面按 CAS 再试一次
+        }
+
+        const written = await casWriteBucketRow(api, key, bucket, prev, {
+            count: result.count,
+            until: result.until,
+            seen: now,
+        });
+        if (written) {
+            await pruneBucketRowsIfDue(api, key);
+            return result;
         }
         if (attempt < CAS_MAX_ATTEMPTS - 1) await sleep(CAS_BACKOFF_MS * (attempt + 1));
     }
-    return null;
+    return knownLock;
 }
 
 /** 读某个来源当前的限速状态 */
@@ -267,13 +720,7 @@ export async function readLoginGuard(
     api: NavigationAPI,
     bucket = "legacy"
 ): Promise<LoginGuard> {
-    const store = await readGuardStore(api, LOGIN_GUARD_KEY);
-    const found = store[bucket];
-    if (!found) return { count: 0, until: 0 };
-    return {
-        count: typeof found.count === "number" && found.count > 0 ? found.count : 0,
-        until: typeof found.until === "number" && found.until > 0 ? found.until : 0,
-    };
+    return toLoginGuard(await readGuardState(api, LOGIN_GUARD_KEY, bucket));
 }
 
 export async function writeLoginGuard(
@@ -296,13 +743,7 @@ export async function readInitGuard(
     api: NavigationAPI,
     bucket = "legacy"
 ): Promise<LoginGuard> {
-    const store = await readGuardStore(api, INIT_GUARD_KEY);
-    const found = store[bucket];
-    if (!found) return { count: 0, until: 0 };
-    return {
-        count: typeof found.count === "number" && found.count > 0 ? found.count : 0,
-        until: typeof found.until === "number" && found.until > 0 ? found.until : 0,
-    };
+    return toLoginGuard(await readGuardState(api, INIT_GUARD_KEY, bucket));
 }
 
 export async function writeInitGuard(
@@ -331,13 +772,7 @@ export async function readRegisterGuard(
     api: NavigationAPI,
     bucket = "legacy"
 ): Promise<LoginGuard> {
-    const store = await readGuardStore(api, REGISTER_GUARD_KEY);
-    const found = store[bucket];
-    if (!found) return { count: 0, until: 0 };
-    return {
-        count: typeof found.count === "number" && found.count > 0 ? found.count : 0,
-        until: typeof found.until === "number" && found.until > 0 ? found.until : 0,
-    };
+    return toLoginGuard(await readGuardState(api, REGISTER_GUARD_KEY, bucket));
 }
 
 export async function writeRegisterGuard(
@@ -361,13 +796,7 @@ export async function readRecoverGuard(
     api: NavigationAPI,
     bucket = "legacy"
 ): Promise<LoginGuard> {
-    const store = await readGuardStore(api, RECOVER_GUARD_KEY);
-    const found = store[bucket];
-    if (!found) return { count: 0, until: 0 };
-    return {
-        count: typeof found.count === "number" && found.count > 0 ? found.count : 0,
-        until: typeof found.until === "number" && found.until > 0 ? found.until : 0,
-    };
+    return toLoginGuard(await readGuardState(api, RECOVER_GUARD_KEY, bucket));
 }
 
 export async function writeRecoverGuard(
@@ -440,14 +869,7 @@ export async function readExportGuard(
     api: NavigationAPI,
     bucket = "legacy"
 ): Promise<ExportGuard> {
-    const store = await readGuardStore(api, EXPORT_GUARD_KEY);
-    const found = store[bucket];
-    if (!found) return { count: 0, until: 0, seen: 0 };
-    return {
-        count: typeof found.count === "number" && found.count > 0 ? found.count : 0,
-        until: typeof found.until === "number" && found.until > 0 ? found.until : 0,
-        seen: typeof found.seen === "number" ? found.seen : 0,
-    };
+    return toExportGuard(await readGuardState(api, EXPORT_GUARD_KEY, bucket));
 }
 
 export async function writeExportGuard(
@@ -489,14 +911,7 @@ export async function readWriteGuard(
     api: NavigationAPI,
     bucket = "legacy"
 ): Promise<ExportGuard> {
-    const store = await readGuardStore(api, WRITE_GUARD_KEY);
-    const found = store[bucket];
-    if (!found) return { count: 0, until: 0, seen: 0 };
-    return {
-        count: typeof found.count === "number" && found.count > 0 ? found.count : 0,
-        until: typeof found.until === "number" && found.until > 0 ? found.until : 0,
-        seen: typeof found.seen === "number" ? found.seen : 0,
-    };
+    return toExportGuard(await readGuardState(api, WRITE_GUARD_KEY, bucket));
 }
 
 export async function writeWriteGuard(
@@ -513,64 +928,27 @@ export async function writeWriteGuard(
  * 返回 `null` 表示放行；否则是已经填好 `Retry-After` 的 429 响应，路由直接 return 它。
  * 计数与锁定时长沿用登录那套指数退避（`computeLockAfterFailure`），
  * 只是窗口与阈值换成写接口自己的。
+ *
+ * ⚠️ 这里**不再自己写一份 CAS 循环**（C1 顺手收掉的重复）：那段逻辑与 `enforceGuard`
+ * 逐字同构，两份并存的结果是改一处漏一处（S04 修「计数必须在 CAS 内重算」时就漏过一遍）。
+ * 现在两者共用同一条实现，差别只剩阈值与文案。
+ *
+ * 故障策略与登录锁保持一致：**记不上数就放行**。看起来是开个口子，但站不住脚：
+ * 计数与真正的写入用的是同一个 D1，库读不出来时后面的 createSite / importData
+ * 自己就会失败，放行并不会让任何一次写入真的成功；反过来若在这里 503，
+ * 会把「参数不合法」这类 400 也盖成 503，白白丢掉正确的错误码。
  */
 export async function enforceWriteGuard(
     api: NavigationAPI,
     bucket: string
 ): Promise<Response | null> {
-    const limited = (until: number, now: number) => {
-        const retryAfter = Math.max(1, Math.ceil((until - now) / 1000));
-        return errorResponse(ApiError.rateLimited(`操作太频繁，请 ${retryAfter} 秒后再试`), { headers: { "Retry-After": String(retryAfter) } });
-    };
-    // 计数必须在每次 CAS 重读后计算，不能重试一个外部算好的固定值。
-    //
-    // 故障策略与登录锁保持一致：**记不上数就放行**。看起来是开个口子，但站不住脚：
-    // 计数与真正的写入用的是同一个 D1，库读不出来时后面的 createSite / importData
-    // 自己就会失败，放行并不会让任何一次写入真的成功；反过来若在这里 503，
-    // 会把「参数不合法」这类 400 也盖成 503，白白丢掉正确的错误码。
-    if (typeof api.compareAndSetConfig === "function") {
-        for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
-            try {
-                const raw = await api.getConfig(WRITE_GUARD_KEY);
-                const store = parseGuardStore(raw);
-                const guard = store[bucket] ?? { count: 0, until: 0, seen: 0 };
-                const now = Date.now();
-                if (guard.until > now) return limited(guard.until, now);
-                const count = nextDecayedCount(guard, WRITE_COUNT_RESET_MS, now);
-                const lockMs = computeLockAfterFailure(
-                    count, WRITE_FREE_ATTEMPTS, WRITE_BASE_LOCK_MS, WRITE_MAX_LOCK_MS
-                );
-                const until = lockMs > 0 ? now + lockMs : 0;
-                store[bucket] = { count, until, seen: now };
-                if (await api.compareAndSetConfig(WRITE_GUARD_KEY, raw, serializeGuardStore(store))) {
-                    return until > now ? limited(until, now) : null;
-                }
-            } catch {
-                return null;
-            }
-            if (attempt < CAS_MAX_ATTEMPTS - 1) await sleep(CAS_BACKOFF_MS * (attempt + 1));
-        }
-        return null;
-    }
-
-    // 没有 CAS 能力的存储层：退回改动前的读-改-写，行为与旧版一致
-    try {
-        const guard = await readWriteGuard(api, bucket);
-        const now = Date.now();
-        if (guard.until > now) return limited(guard.until, now);
-        const count = nextDecayedCount(guard, WRITE_COUNT_RESET_MS, now);
-        const lockMs = computeLockAfterFailure(
-            count,
-            WRITE_FREE_ATTEMPTS,
-            WRITE_BASE_LOCK_MS,
-            WRITE_MAX_LOCK_MS
-        );
-        const until = lockMs > 0 ? now + lockMs : 0;
-        await writeWriteGuard(api, { count, until }, bucket);
-        return until > now ? limited(until, now) : null;
-    } catch {
-        return null;
-    }
+    return await enforceGuard(api, WRITE_GUARD_KEY, bucket, {
+        free: WRITE_FREE_ATTEMPTS,
+        baseLockMs: WRITE_BASE_LOCK_MS,
+        maxLockMs: WRITE_MAX_LOCK_MS,
+        resetMs: WRITE_COUNT_RESET_MS,
+        message: "操作太频繁",
+    });
 }
 
 // ============ 配置写 / WebDAV 备份：这两类端点原本一把锁都没有 ============
@@ -731,13 +1109,7 @@ export async function readShareGuard(
     api: NavigationAPI,
     bucket = "legacy"
 ): Promise<LoginGuard> {
-    const store = await readGuardStore(api, SHARE_GUARD_KEY);
-    const found = store[bucket];
-    if (!found) return { count: 0, until: 0 };
-    return {
-        count: typeof found.count === "number" && found.count > 0 ? found.count : 0,
-        until: typeof found.until === "number" && found.until > 0 ? found.until : 0,
-    };
+    return toLoginGuard(await readGuardState(api, SHARE_GUARD_KEY, bucket));
 }
 
 export async function writeShareGuard(
@@ -803,7 +1175,8 @@ export async function bumpShareGuardFailure(
 
 /** 口令对了：清零，别让之前的手滑一直累积 */
 export async function clearShareGuard(api: NavigationAPI, bucket: string): Promise<void> {
-    await writeShareGuard(api, { count: 0, until: 0 }, bucket);
+    // 清零 = 删掉这一行（读出来的语义与 {count:0,until:0} 完全一致，还省得留垃圾）
+    await resetBucketRow(api, SHARE_GUARD_KEY, bucket);
 }
 
 // ============ 校验当前密码：改密 / 注销前的那道身份复核 ============
@@ -869,3 +1242,26 @@ export async function enforceCredentialGuard(
     if (bumped.until <= now) return { limited: false, retryAfter: 0 };
     return { limited: true, retryAfter: Math.max(1, Math.ceil((bumped.until - now) / 1000)) };
 }
+
+// ============ 十把锁的键清单（裁桶 / 迁移要按它遍历） ============
+/**
+ * 所有限速桶所属的 configs 键（= 新表里的 bucket_key）。
+ *
+ * 为什么要有这份清单：旧存储是「一把锁一条 configs 记录」，新表是十把锁共表，
+ * 于是「按锁清理过期桶」与「把旧 JSON 搬进新表」都需要知道全集。
+ * 新增一把锁时**必须往这里加一条**，否则它的桶永远不会被裁（只会慢慢涨）。
+ *
+ * ⚠️ 顺序与声明顺序一致，仅为可读；没有任何逻辑依赖顺序。
+ */
+export const RATE_LIMIT_GUARD_KEYS: readonly string[] = [
+    LOGIN_GUARD_KEY,
+    INIT_GUARD_KEY,
+    REGISTER_GUARD_KEY,
+    RECOVER_GUARD_KEY,
+    EXPORT_GUARD_KEY,
+    WRITE_GUARD_KEY,
+    CONFIG_GUARD_KEY,
+    DAV_GUARD_KEY,
+    SHARE_GUARD_KEY,
+    VERIFY_PW_GUARD_KEY,
+];

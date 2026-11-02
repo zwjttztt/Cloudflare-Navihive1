@@ -267,6 +267,53 @@ export const FOLDER_TAG_TABLE_STATEMENTS = [
     `CREATE INDEX IF NOT EXISTS idx_site_tombstone_time ON site_tombstone(user_id, deleted_at);`,
 ];
 
+/**
+ * 限速桶表（C1，schema 29）：**一个桶一行**，取代 configs 里那十份
+ * `auth.*Guard` 的大 JSON。
+ *
+ * 为什么换存储（不是洁癖，是热路径的代价）：旧格式把**所有来源**的计数塞在
+ * 同一条 configs 记录里（`{version:2, buckets:{<ip>:{count,until,seen}}}`，
+ * 上限 2000 桶 ≈ 220 KB）。每次「输错一次密码」都要
+ * 「读 220 KB → 全量 JSON.parse → 改一个桶 → 排序裁剪 → serialize → compareAndSet 写回 220 KB」，
+ * 并发时 CAS 失败还要把这一整套重跑（最多 3 次）。而这一切只为改一个整数。
+ *
+ * 改成一桶一行之后：一次失败尝试 = 一条 upsert（`count = count + 1`）+ 需要锁定时
+ * 一条 UPDATE。读写量从「与桶数成正比」变成「与桶数无关」，JSON 序列化整条消失，
+ * 并发递增交给 SQL 自己（`count = count + 1` 是原子的）。
+ *
+ * ⚠️ **三件被明确否决的事**（别改回去）：
+ *   1. **双写**（新表 + 旧 JSON 各写一份）：限速器就有了两个真源，两份计数各自漂移，
+ *      最终谁都锁不住人。安全模块不容忍双真源。
+ *   2. **惰性读**（新表里没有就回查旧 JSON）：「表里没这个 IP」正是新 IP 的**常态**，
+ *      回查等于把收益吃掉一半，还多了一次必然落空的读。
+ *   3. **迁移时顺手删旧键**：那就没有回滚退路了。旧键一律**保留不动**（见
+ *      迁移步骤 `rate-limit-bucket-rows`），要回退到旧版本直接就能用。
+ *
+ * 也不进导出 / 备份 / 分享产物：它不在 configs 里，transfer.ts 根本看不到它
+ * （`grep -n "rate_limit_bucket" src/API/methods/transfer.ts` 必须 0 命中）。
+ */
+export const RATE_LIMIT_BUCKET_TABLE_SQL = `CREATE TABLE IF NOT EXISTS rate_limit_bucket (
+    bucket_key TEXT    NOT NULL,
+    bucket     TEXT    NOT NULL,
+    count      INTEGER NOT NULL DEFAULT 0,
+    until      INTEGER NOT NULL DEFAULT 0,
+    seen       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (bucket_key, bucket)
+);`;
+
+/**
+ * 限速桶的两条索引。
+ *
+ *  · `(bucket_key, seen)`：主键之外的唯一大范围操作是「裁掉太久没动静的桶」，
+ *    以及「桶太多时丢掉最久没动静的那批」，两者都按 `(本次是哪把锁, seen)` 排序；
+ *  · `(until)`：`until > now` 是「这个桶还在锁定期」的唯一判据，裁剪必须能
+ *    便宜地跳过它 —— **锁定中的桶永远不许被裁掉**（否则等着解锁的人被裁了就等于解锁）。
+ */
+export const RATE_LIMIT_BUCKET_INDEX_STATEMENTS = [
+    `CREATE INDEX IF NOT EXISTS idx_rate_limit_bucket_seen ON rate_limit_bucket(bucket_key, seen);`,
+    `CREATE INDEX IF NOT EXISTS idx_rate_limit_bucket_locked ON rate_limit_bucket(until);`,
+];
+
 // 建表 SQL（幂等）
 export const CREATE_STATEMENTS = [
     // 分享表也进基础迁移batch，避免部署中的分步迁移漏建但版本已更新。
@@ -395,6 +442,11 @@ export const CREATE_STATEMENTS = [
         vec TEXT NOT NULL,
         updated_at TEXT NOT NULL
     );`,
+    // 限速桶（schema 29）：一桶一行，见上面 RATE_LIMIT_BUCKET_TABLE_SQL 的说明。
+    // ⚠️ 放在这个 batch 里只对**全新库**有效 —— 已部署实例的 `core-tables` 步骤
+    // 早就在 schema.steps 里了，不会再跑，所以迁移步骤 `rate-limit-bucket-rows`
+    // 里必须**再显式建一次**（与 vault / attachments 那几个新表同一个坑）。
+    RATE_LIMIT_BUCKET_TABLE_SQL,
 ];
 
 /**
@@ -466,6 +518,9 @@ export const INDEX_STATEMENTS = [
     `CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);`,
     // 幂等记录按过期时间整批清（跟其它临时表一个套路）
     `CREATE INDEX IF NOT EXISTS idx_idempotency_expires_at ON idempotency_keys(expires_at);`,
+    // 限速桶（schema 29）：裁桶按 (哪把锁, seen) 排序；锁定判断按 until。
+    // 同样只对全新库有效，老库由迁移步骤 `rate-limit-bucket-rows` 显式建。
+    ...RATE_LIMIT_BUCKET_INDEX_STATEMENTS,
 ];
 
 // 还原时的兜底字段：只在读不到表结构（pragma 不可用）时才用，

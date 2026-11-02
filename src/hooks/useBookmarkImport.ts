@@ -9,7 +9,7 @@
 // 并发要有上限（一次性几百个请求会把 Worker 打爆）、导入完要静默刷新。
 import { useCallback } from "react";
 import type { Group, Site } from "../API/http";
-import { mapWithConcurrency } from "../API/methods/transfer";
+import { mapWithConcurrency } from "../utils/concurrency";
 import { resolveIconApiUrl } from "../utils/iconApi";
 import type { ParsedBookmarkGroup } from "../utils/bookmarks";
 import type { GroupWithSites } from "../types";

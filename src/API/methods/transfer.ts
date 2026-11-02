@@ -10,6 +10,7 @@ import type { D1PreparedStatement } from "../schema";
 import { chunkStatements } from "../d1Limits";
 import { computeBackupIntegrity, verifyBackupIntegrity } from "../../utils/backupIntegrity";
 import { normalizeUrl, urlIdentityKey } from "../../utils/url";
+import { mapWithConcurrency } from "../../utils/concurrency";
 import { isAuthConfigKey, isAiConfigKey, isImportableConfigValue, isPerUserAppearanceKey, isSecretConfigKey, isUserScopedConfigKey, stripSecretConfigs } from "../configGuards";
 import { BACKUP_CREDENTIALS_CONFIG } from "../configKeys";
 import { encryptSecret } from "../crypto";
@@ -87,36 +88,11 @@ export function siteMatchKey(groupId: number, url?: string | null, name?: string
  */
 export const COMMIT_CHUNK_STATEMENTS = 250;
 
-/**
- * 限并发地跑一遍异步映射：同时最多 `limit` 个在飞，输出顺序与输入一致。
- *
- * 抽出来是因为「并发窗口到底生效没有」必须能被验证 —— 埋在 encryptSitePasswords
- * 里就只能靠计时猜。这里是个纯函数，测试可以直接数在飞的数量。
- * `limit` 会被夹到 [1, items.length]：0 会永久挂住，超过条目数则是白开几条空车道。
- */
-export async function mapWithConcurrency<T, R>(
-    items: readonly T[],
-    limit: number,
-    fn: (item: T, index: number) => Promise<R>,
-    onProgress?: (done: number, total: number) => void
-): Promise<R[]> {
-    const out: R[] = new Array(items.length);
-    let done = 0;
-    let cursor = 0;
-
-    const worker = async (): Promise<void> => {
-        while (cursor < items.length) {
-            const index = cursor++;
-            out[index] = await fn(items[index], index);
-            done++;
-            onProgress?.(done, items.length);
-        }
-    };
-
-    const lanes = Math.min(Math.max(1, limit), Math.max(1, items.length));
-    await Promise.all(Array.from({ length: lanes }, worker));
-    return out;
-}
+// 实现已搬到 utils/concurrency.ts（纯异步控制流工具，零依赖）。
+// 这里保留再导出，是为了不动既有 import 路径：tests/importProgress.test.ts
+// 等用例是从 transfer 里引它的。上面那行 import 同时兼顾本文件内部调用
+// （export ... from 只做再导出、不产生本地绑定，光有它 transfer 内部会找不到名字）。
+export { mapWithConcurrency };
 
 // 导入进度的形状定义在 types.ts（前端和 Worker 都要用），这里转手导出一份，
 // 免得两处各写一遍、改了一边忘了另一边。
@@ -502,6 +478,34 @@ export const transferImpl: TransferApi = {
                 report("write", total, total);
             }
             report("done", total, total);
+
+            // 数据面审计（第 6 条）：**恢复出口**。整站数据被这份备份就地改写，是这个
+            // 服务上唯一「一个请求换掉全部内容」的动作，必须留痕。
+            //
+            // detail 只写三个**计数**，不写任何一行内容：
+            //   审计表按保留期长期留存（默认 7 天、周清最长多留 7 天），它不是第二份
+            //   数据副本 —— 站点 URL / 卡片标题 / 笔记正文一个字都不许进来。恢复这个
+            //   动作靠计数就够判断「这次搬了多少东西」，内容要去库里看。
+            //
+            // 为什么在 API 层而不是只在路由层（backup.ts 的 data-import）：那条记的是
+            // 「有人调了导入接口」，这条记的是「恢复真的落库成功了」。流式响应那条路径
+            // 与任何直接调 importData 的调用方都绕不过这里，而「数据被换掉了」这件事
+            // 恰恰不该取决于调用方记不记得写日志。
+            //
+            // ip 只能是空串：API 层拿不到客户端 IP（ctx.ip 在路由层）。要带 IP 的那一行
+            // 由 backup.ts 的 data-import 提供，两者互不替代。
+            // 不包 try：writeAudit 内部整段 try/catch 且不外抛，所以它失败不会把一次
+            // 已经提交成功的恢复变成「导入失败」。
+            await this.writeAudit(
+                "data.restore",
+                this.currentUserId === null ? "" : String(this.currentUserId),
+                "",
+                JSON.stringify({
+                    groups: normalized.groups.length,
+                    sites: normalized.sites.length,
+                    notes: normalized.notes?.length ?? 0,
+                })
+            );
 
             return {
                 success: true,

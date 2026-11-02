@@ -281,7 +281,7 @@ flowchart LR
 - compose 两个服务：`navihive`（业务，只绑 `127.0.0.1:8787`，`replicas: 1`，SQLite 单写者）+ `upgrader`（`docker:27-cli`，持 sock，不开端口、不跑业务代码）。
 - **升级流程**：网页端 `POST /api/system/upgrade`（owner）→ 只写 `/spool/request` → upgrader 轮询消费 → `docker pull` → 给**当前** ImageID 打 `navihive:previous` 锚点 → `compose up -d --force-recreate --no-deps navihive`。
 - **健康门禁**：重建后轮询 `docker inspect --format '{{.State.Health.Status}}'`，3 秒一次最多 40 次（120 秒，覆盖 `start-period 15s + retries 3 × interval 30s`）；`healthy` 才算过关，`unhealthy` 或一直 `starting` 都回滚到 `navihive:previous`（`server/upgradeHealth.ts`）。
-- 探活端点：容器 `HEALTHCHECK` 打 `GET /api/init`（公开、会真读一次库），任何 2xx/3xx 算健康。
+- 探活端点：容器 `HEALTHCHECK` 打 `GET /api/readyz`（公开、跑一条 `SELECT 1`，库打不开回 503），任何 2xx/3xx 算健康。不碰库的 liveness 另有一个 `GET /api/healthz`（恒 200 + `{ok:true}`）——**`HEALTHCHECK` 刻意不用它**：零 DB 的探针会把「数据库打不开」的镜像判成 healthy，自动回滚就永远不触发。
 - 审计：升级的每次判定都落 `audit_log`（`system-upgrade` / `.failed` / `.denied`），且**在响应之前** `await` 写完 —— 因为容器随时会被换掉。
 
 ---

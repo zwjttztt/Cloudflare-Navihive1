@@ -47,6 +47,9 @@ const LABELS: Record<string, string> = {
     "data-import": "导入数据",
     "data_import": "导入数据",
     "data.import": "导入数据",
+    // 恢复出口（src/API/methods/transfer.ts 的 importData）：与 data-import 各记一条 ——
+    // 那条记「有人调了导入接口」（路由层，带 IP），这条记「恢复真的落库了」（数据层）。
+    "data.restore": "恢复数据",
     // 运维 / 升级（server/entry.ts 的 POST /api/system/upgrade，判定在 server/upgradeAudit.ts）
     // 这条是「谁在什么时候把生产容器换掉了」的唯一记录：2026-10-28 v17.0.0 发布后
     // 升级器重建了容器，而审计表里一条都没有 —— 从此每次升级受理 / 提交失败 / 越权尝试都留痕。

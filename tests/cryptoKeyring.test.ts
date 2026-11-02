@@ -21,6 +21,8 @@ import {
     KEY_ID_DATA_SALTED,
     KEY_ID_LEGACY,
     KEY_ID_LEGACY_SALTED,
+    KEY_ID_LEGACY_SINGLE,
+    KEY_ID_DATA_SINGLE,
     signJwt,
     verifyJwt,
     verifyJwtAny,
@@ -54,12 +56,12 @@ async function encryptSecretWithFixedSalt(plain: string, ring: ReturnType<typeof
 }
 
 // ================= 1. 向后兼容：老密文永远解得开 =================
-test("2026-10-21 起新写入走随机盐（keyId 2），裸字符串照样能解", async () => {
+test("2026-11-02 起新写入走确定性单盐（keyId 4），裸字符串照样能解", async () => {
     const ring = createKeyring({ legacySecret: OLD_SECRET });
-    assert.equal(ring.writeKeyId, KEY_ID_LEGACY_SALTED, "新写入一律用随机盐版");
+    assert.equal(ring.writeKeyId, KEY_ID_LEGACY_SINGLE, "新写入一律用确定性单盐版");
     assert.equal(ring.bytesKeyId, KEY_ID_LEGACY, "整包二进制维持固定盐（备份格式不能变）");
     const cipher = await encryptSecret("webdav-pass", ring);
-    assert.ok(cipher.startsWith("enc$2$"), cipher.slice(0, 8));
+    assert.ok(cipher.startsWith("enc$4$"), cipher.slice(0, 8));
     assert.equal(await decryptSecret(cipher, ring), "webdav-pass");
     // 与「直接传裸字符串」的产物可互解 —— 老调用方不受影响
     assert.equal(await decryptSecret(cipher, OLD_SECRET), "webdav-pass");
@@ -93,26 +95,27 @@ test("裸字符串密钥与密钥环(keyId 0)互解：老调用方与新代码�
 });
 
 // ================= 2. 核心回归：配了新密钥，老密文仍然解得开 =================
-test("配了 DATA_ENCRYPTION_KEY 后：写入走新钥（keyId 3，随机盐），老密文仍可解", async () => {
+test("配了 DATA_ENCRYPTION_KEY 后：写入走新钥（keyId 5，确定性单盐），老密文仍可解", async () => {
     const oldRing = createKeyring({ legacySecret: OLD_SECRET });
     const legacyCipher = await encryptSecret("old-site-password", oldRing);
 
     const ring = createKeyring({ legacySecret: OLD_SECRET, dataKey: NEW_SECRET });
-    assert.equal(ring.writeKeyId, KEY_ID_DATA_SALTED);
+    assert.equal(ring.writeKeyId, KEY_ID_DATA_SINGLE);
     assert.equal(ring.bytesKeyId, KEY_ID_DATA);
     const fresh = await encryptSecret("new-site-password", ring);
-    assert.ok(fresh.startsWith("enc$3$"), fresh.slice(0, 8));
+    assert.ok(fresh.startsWith("enc$5$"), fresh.slice(0, 8));
 
     assert.equal(await decryptSecret(fresh, ring), "new-site-password");
     assert.equal(await decryptSecret(legacyCipher, ring), "old-site-password", "老密文必须还能解");
 });
 
-test("keyId 2（旧密钥 + 随机盐）在配上 DATA_ENCRYPTION_KEY 之后仍解得开", async () => {
+test("keyId 4（旧密钥 + 确定性单盐）在配上 DATA_ENCRYPTION_KEY 之后仍解得开", async () => {
     // 为什么这条必须钉住：keyId 表达的是「用哪把源密钥派生的」，
-    // 不能因为后来开了新数据密钥，就把之前用 AUTH_SECRET 写的随机盐密文变成废数据
+    // 不能因为后来开了新数据密钥，就把之前用 AUTH_SECRET 写的密文变成废数据
+    // （keyId 2 那一档的同款回归见 tests/cryptoSingleSalt.test.ts 的硬编码 fixture）
     const before = createKeyring({ legacySecret: OLD_SECRET });
     const saltedWithLegacy = await encryptSecret("written-before-switch", before);
-    assert.ok(saltedWithLegacy.startsWith("enc$2$"));
+    assert.ok(saltedWithLegacy.startsWith("enc$4$"));
 
     const after = createKeyring({ legacySecret: OLD_SECRET, dataKey: NEW_SECRET });
     assert.equal(await decryptSecret(saltedWithLegacy, after), "written-before-switch");

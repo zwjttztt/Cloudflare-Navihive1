@@ -12,6 +12,7 @@
 // ⚠️ 拉黑这一步不能省：只删行的话，那张令牌在过期前依然能通过验签（JWT 自包含），
 // 界面上看不到它、它却照样能改数据 —— 比不吊销更糟，因为主人会以为已经踢掉了。
 import type { NavigationAPI } from "../http";
+import type { D1PreparedStatement } from "../schema";
 import { peekJwtClaim } from "../crypto";
 import type { SessionInfo } from "../types";
 import { logger } from "../../../shared/logger";
@@ -119,6 +120,13 @@ export interface SessionsApi {
     ): Promise<void>;
     /** 验签通过后刷新「最后活跃」（限频） */
     touchSession(jti: string): Promise<void>;
+    /**
+     * 两写合并：账号活跃时间 + 会话最后活跃，**一次 batch**（D1 1 次往返 /
+     * 自托管 SQLite 1 个 BEGIN IMMEDIATE 事务）。节流阈值与两条独立写完全一致。
+     *
+     * uid 为 null（遗留令牌）时只发会话那一条；jti 为空时只发账号那一条。
+     */
+    touchActivity(uid: number | null, jti: string): Promise<void>;
     /** 列出某账号仍然有效的会话；currentJti 用来标出「当前这一台」 */
     listSessions(uid: number, currentJti: string): Promise<SessionInfo[]>;
     /** 吊销单个会话（只能吊销自己的） */
@@ -232,6 +240,63 @@ export const sessionsImpl: SessionsApi = {
                 .run();
         } catch {
             // 表还没建好、或这行已被清理掉，都不该影响主流程
+        }
+    },
+
+    /**
+     * 两写合并：`users.last_active_at` + `user_sessions.last_seen_at` 一次写完。
+     *
+     * 改造前中间件对每个已认证请求打两次独立的写（touchLastActive / touchSession），
+     * 走两条完全无关的语句、两次往返。它们的节流条件各自写在 SQL 里，所以合并成
+     * 一个 batch **不会改变任何写语义**：阈值、条件、影响的行数逐条一致。
+     * 收益是往返从 2 降到 1（D1 的 batch 是一个事务；自托管适配器是 1 个
+     * BEGIN IMMEDIATE，见 server/sqlite-d1.ts）。
+     *
+     * ⚠️ 为什么不用 `ctx.waitUntil` / fire-and-forget 做异步化：
+     *    `worker/index.ts` 的 fetch(request, env) 根本没有接第三个 ExecutionContext
+     *    （全仓 waitUntil 零调用），要接得同时改 worker/index.ts + RouteCtx + server/entry.ts
+     *    三处；而且 fire-and-forget 会让「中间件打了几次库」这类现有用例变成竞态。
+     *    为了再省这 1 次往返不值得 —— 合并成 batch 是安全的，异步化不是。
+     *
+     * ⚠️ 为什么放在 sessions.ts 而不是 accounts.ts：会话节流阈值
+     *    （SESSION_TOUCH_INTERVAL_SEC）定义在这里，搬过去要么导出常量、要么抄一份
+     *    ——两份阈值迟早分叉。两个独立方法（touchLastActive / touchSession）仍然保留：
+     *    其它调用点（登录、恢复、账号治理）各有各的语义，别顺手改它们。
+     */
+    touchActivity: async function (this: NavigationAPI, uid: number | null, jti: string): Promise<void> {
+        const now = Math.floor(Date.now() / 1000);
+        const statements: D1PreparedStatement[] = [];
+
+        // ① 账号活跃：每天最多写一次（阈值与 touchLastActive 逐字一致）
+        if (uid !== null) {
+            statements.push(
+                this.db
+                    .prepare(
+                        `UPDATE users SET last_active_at = ? WHERE id = ? AND (last_active_at IS NULL OR last_active_at < ?)`
+                    )
+                    .bind(now, uid, now - 24 * 60 * 60)
+            );
+        }
+
+        // ② 会话活跃：同一会话每小时最多写一次（阈值与 touchSession 逐字一致）
+        if (jti) {
+            statements.push(
+                this.db
+                    .prepare(
+                        `UPDATE user_sessions SET last_seen_at = ? WHERE jti = ? AND last_seen_at < ?`
+                    )
+                    .bind(now, jti, now - SESSION_TOUCH_INTERVAL_SEC)
+            );
+        }
+
+        // 两条都不发（没有 uid、也没有 jti）：连 batch 都不必开
+        if (statements.length === 0) return;
+
+        try {
+            await this.db.batch(statements);
+        } catch {
+            // 与两条独立写各自的 catch 同义：活跃时间只是「锦上添花」，
+            // 表还没建好 / 这行已被清理都不该影响主流程（更不能回滚成 500）
         }
     },
 

@@ -70,10 +70,20 @@ async function whoClaims(path: string, method: string): Promise<string[]> {
     return hits;
 }
 
-// 全部 54 个路由分支。startsWith 的那几个（users/ groups/ sites/ configs/）
-// 用一条具体路径代表 —— 前缀匹配对任意 id 都成立，测一个就够。
+// **抽样清单，不是穷举**（2026-11 更正）：这里只钉「每条分支线上至少有一个代表」——
+// startsWith / 正则的那几族（users/ groups/ sites/ configs/ notes/ webdav/ note-shares/）
+// 各取一条具体路径，前缀匹配对任意 id 都成立，测一个就够。
+//
+// ⚠️ 别在这里写死总数（以前用例名写着「54 个路由分支」，而那时清单里的条目数、
+// 真实分支数都已经不是 54 了）：数字必然过期，而过期的数字比没有数字更糟 ——
+// 上一批刚清掉三处同类问题。要「穷举」只能改成自动化枚举（从源码解析分支），
+// 那是另一件事，不在抽样清单的职责里。
 const EXPECTED: Array<[string, string]> = [
     // public：不需要登录
+    // 健康检查：liveness（零 DB）与 readiness（一条 SELECT 1）分开，都是公开、未鉴权、
+    // 不限速的常驻探针 —— 它们必须由 public 模块认领，一旦被后面的模块抢走就会变成要登录。
+    ["GET", "healthz"],
+    ["GET", "readyz"],
     ["GET", "icon"],
     ["POST", "csp-report"],
     ["POST", "report-error"],
@@ -165,7 +175,7 @@ test("分发表里的模块数量与预期一致", () => {
     );
 });
 
-test("54 个路由分支全部有人认领，且不重复", async () => {
+test("清单里的每条路由分支都有人认领，且不重复（抽样，不是穷举）", async () => {
     for (const [method, path] of EXPECTED) {
         const hits = await whoClaims(path, method);
         assert.ok(

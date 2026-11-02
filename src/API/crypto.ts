@@ -287,11 +287,15 @@ async function pbkdf2(
 // （没有服务端密钥即解不开）。每次写入换随机 IV。
 //
 // 密文自带 keyId，一把钥匙一个编号：
-//   keyId 0 —— 由 AUTH_SECRET 派生（升级前的唯一格式，密文里不带编号）
-//   keyId 1 —— 由 DATA_ENCRYPTION_KEY 派生
+//   keyId 0 —— 由 AUTH_SECRET 派生（升级前的唯一格式，密文里不带编号）+ 固定盐
+//   keyId 1 —— 由 DATA_ENCRYPTION_KEY 派生 + 固定盐
+//   keyId 2 —— 由 AUTH_SECRET 派生 + **每条密文各自的随机盐**（盐存在 payload 头 16 字节）
+//   keyId 3 —— 由 DATA_ENCRYPTION_KEY 派生 + 每条密文各自的随机盐
+//   keyId 4 —— 由 AUTH_SECRET 派生 + **确定性派生**的单盐（盐不落盘，由源密钥算出来）
+//   keyId 5 —— 由 DATA_ENCRYPTION_KEY 派生 + 确定性派生的单盐
 // 这样做的意义是「轮换数据密钥不必停机迁移」：新写入一律用新钥，老密文按自己头上的
-// 编号找老钥，两边同时可读。没配 DATA_ENCRYPTION_KEY 时 writeKeyId 仍是 0、
-// 格式与升级前逐字节一致 —— 缺失新环境变量等于没启用这个功能，绝不碰已有密文。
+// 编号找老钥，两边同时可读。没配 DATA_ENCRYPTION_KEY 时 writeKeyId 走 AUTH_SECRET 那条支线、
+// 绝不碰已有密文。
 const ENC_PREFIX = "enc$";
 const AES_SALT_LEGACY = enc.encode("navihive-aes-v1");
 const AES_SALT_DATA = enc.encode("navihive-aes-k1");
@@ -315,22 +319,89 @@ export const KEY_ID_DATA = 1;
  */
 export const KEY_ID_LEGACY_SALTED = 2;
 export const KEY_ID_DATA_SALTED = 3;
+/**
+ * 2026-11-02（冷启动性能）：**确定性单盐**版本。
+ *
+ * 问题：keyId 2/3 的盐逐条随机、存在密文里，于是 `aesKey` 的缓存键必须带盐 ——
+ * 「一个 keyId + 一把源密钥」对应的是**每条密文一把钥匙**。首屏要解 N 个站点密码，
+ * 冷启动就要跑 N 次 PBKDF2(50k)，这是实测的冷启动大头。
+ *
+ * 解法：把盐变成**源密钥的确定性函数**（见 `singleSaltFor`）。盐不进密文、不落库、
+ * 不需要任何存储，同一把源密钥永远算出同一个盐，于是缓存键里再没有盐 ——
+ * 冷启动只跑 1 次 PBKDF2，与站点数无关。
+ *
+ * ⚠️ 为什么**不用**「进程级随机盐 + 内存缓存」这种看起来更省事的做法：
+ * 随机会在**多 isolate 并发首次写入**时分叉。isolate A 生成盐 X 写一条密文、
+ * isolate B 生成盐 Y 写一条，两条密文都进了 configs 表，而盐只活在各 isolate 的
+ * 内存里 —— 谁最后落库谁说了算，另一条密文**永久解不开**。这是数据丢失，不是性能
+ * 问题。要救它就得给 `encryptSecret` 加「读库取盐 + CAS 抢写入 + 失败退回」，
+ * 而它现在是纯函数（payload → 密文字符串），一旦引入 DB 就不再是纯函数，
+ * 所有调用方都得跟着改。确定性派生是唯一同时满足「零存储 / 零并发风险 /
+ * 冷启动 1 次 PBKDF2」的形态。
+ *
+ * ⚠️ 安全代价（相比 2/3 丢掉了什么）：固定/可推导的盐意味着「只拿到密文、
+ * 没拿到数据库」的攻击者可以离线枚举候选源密钥来验证猜测 —— 2/3 的随机盐挡的正是
+ * 这一层。但实际威胁模型里，拿到密文（configs 表 / D1 导出）通常也就同时拿到了
+ * 全部密文，这一层几乎不存在；而源密钥是 32 字节随机 hex（不是人类口令），
+ * 本来就没有预计算表可言，PBKDF2 的迭代意义只在于抬高单次尝试成本。
+ * 保留的差异是**密钥轮换语义**：4/5 的盐随旧 secret 一起消失，轮换后旧密文不可解 ——
+ * 这与 0/1 相同、与 2/3 不同。也就是说 4/5 是「退回 0/1 的轮换特性」，
+ * 不是新增缺陷；一旦轮换过 AUTH_SECRET / DATA_ENCRYPTION_KEY，必须先把库里的
+ * 字段重加密一遍（读得出旧值的窗口内做），否则旧密文就废了。
+ */
+export const KEY_ID_LEGACY_SINGLE = 4;
+export const KEY_ID_DATA_SINGLE = 5;
 export type KeyId =
     | typeof KEY_ID_LEGACY
     | typeof KEY_ID_DATA
     | typeof KEY_ID_LEGACY_SALTED
-    | typeof KEY_ID_DATA_SALTED;
+    | typeof KEY_ID_DATA_SALTED
+    | typeof KEY_ID_LEGACY_SINGLE
+    | typeof KEY_ID_DATA_SINGLE;
 
-/** 这个编号的密文里是不是自带盐（盐在最前面 16 字节） */
+/**
+ * 这个编号的密文里是不是自带盐（盐在 payload 最前面 16 字节）。
+ *
+ * ⚠️ 4 / 5 必须返回 **false**：它们的盐是算出来的、密文里没有盐。
+ * 返回 true 的话 `decryptSecret` 会去 payload 头上取 16 字节当盐，解出来必然错。
+ * 反过来 false 让读取路径走「不从密文取盐」分支，而派生层（deriveAesKey）负责
+ * 给 4 / 5 算出确定性盐 —— 这两处是配套的，改一处必须同时看另一处。
+ */
 export function isSaltedKeyId(id: KeyId): boolean {
     return id === KEY_ID_LEGACY_SALTED || id === KEY_ID_DATA_SALTED;
 }
 
-/** 固定盐：只有 0 / 1 用得到（salted 版的盐来自密文本身） */
+/** 是不是「确定性单盐」编号（4 / 5）：盐由源密钥算出来，密文与缓存键里都没有它 */
+function isSingleSaltKeyId(id: KeyId): boolean {
+    return id === KEY_ID_LEGACY_SINGLE || id === KEY_ID_DATA_SINGLE;
+}
+
+/** 固定盐：只有 0 / 1 用得到（salted 版的盐来自密文本身，单盐版由 secret 算出来） */
 const KEY_SALTS: Record<typeof KEY_ID_LEGACY | typeof KEY_ID_DATA, Uint8Array> = {
     [KEY_ID_LEGACY]: AES_SALT_LEGACY,
     [KEY_ID_DATA]: AES_SALT_DATA,
 };
+
+/**
+ * keyId 4 / 5 的盐：`SHA-256("navihive-single-salt-v4|<secret>")` 取前 16 字节。
+ *
+ * 为什么用 SHA-256 而不是「secret 的前 16 字节」之类：盐必须与密钥材料**不可逆地**
+ * 分开，否则拿到盐就等于拿到半个源密钥。这里 SHA-256 只是一次性摘要（微秒级），
+ * 与真正的开销 PBKDF2(50k) 比起来可以忽略；标签串把「派生盐」的用途与其它任何
+ * 用同一 secret 做的推导隔开（域分离）。
+ *
+ * 为什么带个版本号 v4：将来若要再换一套盐方案，改标签即可 —— 新旧两套盐并存不会
+ * 互相污染，且老密文仍能按它自己的编号算回老盐（前提是编号不同）。
+ */
+const SINGLE_SALT_LABEL = "navihive-single-salt-v4";
+
+async function singleSaltFor(secret: string): Promise<Uint8Array> {
+    const digest = await crypto.subtle.digest(
+        "SHA-256",
+        enc.encode(`${SINGLE_SALT_LABEL}|${secret}`)
+    );
+    return new Uint8Array(digest).slice(0, SALT_LEN);
+}
 
 export interface Keyring {
     /**
@@ -340,7 +411,7 @@ export interface Keyring {
      * 公开的常量，用它「加密」等于把明文换个写法，还不如不装；见 navigationApi.ts。
      */
     readonly plaintext: boolean;
-    /** 新**文本**密文一律用它加密（salted 编号） */
+    /** 新**文本**密文一律用它加密（单盐编号 4 / 5，见 KEY_ID_LEGACY_SINGLE 的注释） */
     readonly writeKeyId: KeyId;
     /**
      * 整包二进制（备份文件）用的编号 —— **固定盐**那一个。
@@ -350,7 +421,11 @@ export interface Keyring {
     readonly bytesKeyId: KeyId;
     /** 已注册的钥匙编号，第一个是 writeKeyId（解密时按这个顺序兜底） */
     readonly ids: readonly KeyId[];
-    /** 固定盐的那几个编号（二进制解密用：没有盐可读） */
+    /**
+     * **常量盐**的那几个编号（0 / 1），二进制解密用：备份文件里既没有 keyId 也没有盐。
+     * ⚠️ 这里不能写成 `ids.filter(id => !isSaltedKeyId(id))` —— 那样会把 4 / 5 也收进来，
+     * 而它们的盐是算出来的，拿去试备份必然认证失败，只是白花一次 PBKDF2。
+     */
     readonly fixedIds: readonly KeyId[];
     /**
      * 取某把钥匙；没注册返回 null（不是抛错——缺钥要能优雅降级）。
@@ -372,23 +447,47 @@ export function createKeyring(opts: {
 }): Keyring {
     const dataKey = opts.dataKey ?? "";
     const legacySecret = opts.legacySecret ?? "";
-    // 编号 → 源密钥。salted 版与固定盐版**共用同一个源密钥**，只是盐的来源不同。
+    // 编号 → 源密钥。2/3（随机盐）与 4/5（单盐）都与固定盐版**共用同一个源密钥**，
+    // 区别只在盐从哪来：常量 / 密文自带 / 由 secret 算出来。
     const secrets = new Map<KeyId, string>();
     // legacy 永远注册：升级前没配 AUTH_SECRET 时也是拿空串当密钥用的，
     // 这里保持一致，免得「未配置」场景下加密突然变成不可解。
     secrets.set(KEY_ID_LEGACY, legacySecret);
     secrets.set(KEY_ID_LEGACY_SALTED, legacySecret);
+    // 4 只在**真的有 AUTH_SECRET** 时注册：空串下确定性盐等于公开常量盐，
+    // 这种钥匙没有任何保护意义，注册进兜底名单只会白花几次 PBKDF2（见 writeKeyId 的空密钥守卫）。
+    if (legacySecret) secrets.set(KEY_ID_LEGACY_SINGLE, legacySecret);
     if (dataKey) {
         secrets.set(KEY_ID_DATA, dataKey);
         secrets.set(KEY_ID_DATA_SALTED, dataKey);
+        secrets.set(KEY_ID_DATA_SINGLE, dataKey);
     }
 
-    const writeKeyId: KeyId = dataKey ? KEY_ID_DATA_SALTED : KEY_ID_LEGACY_SALTED;
+    // 新写入一律走**单盐**编号（冷启动只付一次 PBKDF2）。
+    // 空密钥守卫：`legacySecret === ""` 时退回随机盐版 2 —— 空串下的确定性盐是个
+    // 公开常量（谁都能算），那样「加密」就退化成用公开常量演一遍；逐条随机盐虽然也
+    // 救不了一个空密钥，但至少不比今天更差，而且这条路径本来就只出现在漏配密钥的部署里。
+    const writeKeyId: KeyId = dataKey
+        ? KEY_ID_DATA_SINGLE
+        : legacySecret
+          ? KEY_ID_LEGACY_SINGLE
+          : KEY_ID_LEGACY_SALTED;
     const bytesKeyId: KeyId = dataKey ? KEY_ID_DATA : KEY_ID_LEGACY;
-    // 解密兜底顺序：新写入的 → 整包用的 → 剩下那些历史编号
-    const all: KeyId[] = [writeKeyId, bytesKeyId, KEY_ID_DATA_SALTED, KEY_ID_LEGACY_SALTED, KEY_ID_DATA, KEY_ID_LEGACY];
+    // 解密兜底顺序：新写入的 → 整包用的 → 单盐的历史编号 → 随机盐的 → 固定盐的
+    const all: KeyId[] = [
+        writeKeyId,
+        bytesKeyId,
+        KEY_ID_DATA_SINGLE,
+        KEY_ID_LEGACY_SINGLE,
+        KEY_ID_DATA_SALTED,
+        KEY_ID_LEGACY_SALTED,
+        KEY_ID_DATA,
+        KEY_ID_LEGACY,
+    ];
     const ids = [...new Set(all)].filter(id => secrets.has(id));
-    const fixedIds = ids.filter(id => !isSaltedKeyId(id));
+    // ⚠️ 只留**常量盐**的 0 / 1：备份二进制里没有 keyId 也没有盐，拿 4 / 5 去试
+    // 必然认证失败，只是白花一次 PBKDF2。所以这里显式列出，而不是 !isSaltedKeyId（那会带上 4/5）。
+    const fixedIds = ids.filter(id => id === KEY_ID_LEGACY || id === KEY_ID_DATA);
     return {
         plaintext: opts.plaintext === true,
         writeKeyId,
@@ -415,7 +514,8 @@ export function createKeyring(opts: {
 
 /**
  * 加解密函数既吃裸字符串（老调用方 / 单测）也吃密钥环。
- * 传字符串 = 只有一把 keyId 0 的钥匙，行为与升级前完全一致。
+ * 传字符串 = 用这一把密钥建一个「只有 legacy 支线」的环：写入走 keyId 4（非空时），
+ * 读取时 0 / 2 / 4 都注册着，所以老密文照样解得开 —— 对调用方零摩擦。
  */
 export type SecretSource = string | Keyring;
 
@@ -436,10 +536,19 @@ export function isEncrypted(stored: string): boolean {
     return stored.startsWith(ENC_PREFIX);
 }
 
-/** 拆密文：`enc$<keyId>$<b64>`（带编号）或 `enc$<b64>`（旧，等价于 keyId 0） */
-function parseEnc(cipher: string): { keyId: KeyId; payload: string } | null {
+/**
+ * 拆密文：`enc$<keyId>$<b64>`（带编号 0–5）或 `enc$<b64>`（旧，等价于 keyId 0）。
+ *
+ * 导出只为「单测能直接钉住正则」——它不是稳定 API，格式跟着 KEY_ID_* 常量走，
+ * 外部调用方请用 isEncrypted / decryptSecret。
+ */
+export function parseEnc(cipher: string): { keyId: KeyId; payload: string } | null {
     const rest = cipher.slice(ENC_PREFIX.length);
-    const m = /^([0-3])\$/.exec(rest);
+    // ⚠️ 字符集必须覆盖**所有**已存在的编号（0–5）。漏一个的失败形态极恶劣：
+    // 正则不匹配 → 走下面的 fallback 把整段当成 keyId 0 的 payload → 前缀 "4$" 落进
+    // base64 里，要么 atob 抛，要么解出空串 —— **不报错、不告警，数据看着就没了**。
+    // 所以这条正则和上面那串 KEY_ID_* 常量是绑定的：以后再加编号，这里必须同步。
+    const m = /^([0-5])\$/.exec(rest);
     if (!m) return { keyId: KEY_ID_LEGACY, payload: rest };
     return { keyId: Number(m[1]) as KeyId, payload: rest.slice(m[0].length) };
 }
@@ -474,7 +583,11 @@ export async function decryptSecret(cipher: string, src: SecretSource): Promise<
     if (!parsed) return "";
     const raw = b64urlDecode(parsed.payload);
     const ring = resolveKeyring(src);
-    // salted 编号：盐在 payload 最前面 16 字节；固定盐编号：盐来自常量
+    // 盐在 payload 里的位置按编号分三种：
+    //   2 / 3 —— 盐在 payload 最前面 16 字节（逐条随机）
+    //   4 / 5 —— payload 里**没有盐**（由 deriveAesKey 从 secret 算出来）
+    //   0 / 1 —— 也没有，盐来自模块常量
+    // 后两种的 head 都是 0，所以这里只问 isSaltedKeyId —— 它对 4 / 5 必须返回 false。
     const head = isSaltedKeyId(parsed.keyId) ? SALT_LEN : 0;
     if (raw.length <= head + 12) return "";
     const salt = head ? raw.subarray(0, head) : undefined;
@@ -482,8 +595,9 @@ export async function decryptSecret(cipher: string, src: SecretSource): Promise<
     const ct = raw.subarray(head + 12);
     // 先按密文自带的编号解；解不开再依次试其它已注册的钥匙 ——
     // 历史上存在「换过 AUTH_SECRET 后旧密文没重加密」的存量，兜底能让这些数据自愈。
-    // ⚠️ 兜底试 salted 编号时**只能用它自己的盐**：盐是逐条随机的，
+    // ⚠️ 兜底试 salted 编号（2/3）时**只能用它自己的盐**：盐是逐条随机的，
     // 拿别的盐去试一定失败，白花一次 PBKDF2（五万次迭代，首屏上很贵）。
+    // 单盐编号（4/5）不需要盐参数，派生层自己会算，所以 keySalt 传 undefined 即可。
     for (const id of [parsed.keyId, ...ring.ids.filter((x) => x !== parsed.keyId)]) {
         const keySalt = isSaltedKeyId(id) ? salt : undefined;
         if (isSaltedKeyId(id) && !keySalt) continue;
@@ -527,6 +641,11 @@ export async function decryptSecretDeep(
 // 会白白拖慢几十倍：派生结果永远不变，按「keyId + 源密钥」缓存即可，
 // 解 N 个字段只派生一次。缓存的是 Promise 而不是结果，并发调用也不会重复派生。
 // 顺带让 decryptSecretDeep 的多层解密（每层都要一次派生）也只付一次代价。
+//
+// ⚠️ 缓存键里的盐段决定了「一个 keyId 到底要派生几次」：
+//   - 2 / 3：盐逐条随机 → 每条密文一个缓存键 → **N 条密文 N 次 PBKDF2**（冷启动慢的根因）
+//   - 4 / 5：盐由 secret 算出、不进缓存键 → 同一把源密钥只有**一个**缓存键 → 整套数据 1 次
+//   这不是巧合，是「确定性单盐」这个设计的目的，改盐的来源时必须连着看这里。
 const aesKeyCache = new Map<string, Promise<CryptoKey>>();
 
 function aesKey(keyId: KeyId, secret: string, salt?: Uint8Array): Promise<CryptoKey> {
@@ -544,11 +663,19 @@ function aesKey(keyId: KeyId, secret: string, salt?: Uint8Array): Promise<Crypto
 }
 
 async function deriveAesKey(keyId: KeyId, secret: string, salt?: Uint8Array): Promise<CryptoKey> {
-    // salted 编号必须带盐；固定盐编号忽略传入的盐（保持老密文的口径不变）
-    const useSalt = isSaltedKeyId(keyId)
-        ? (salt as Uint8Array)
-        : KEY_SALTS[keyId as typeof KEY_ID_LEGACY | typeof KEY_ID_DATA];
-    if (!useSalt) throw new Error("salted keyId 缺少盐");
+    // 盐有三种来源，按编号选：
+    //   0 / 1 —— 模块里的固定常量（历史格式，一个字节都不能变）
+    //   2 / 3 —— 密文自带的随机盐，必须由调用方传进来
+    //   4 / 5 —— 由源密钥确定性算出来的单盐（密文里没有盐，缓存键里也没有）
+    let useSalt: Uint8Array | undefined;
+    if (isSaltedKeyId(keyId)) {
+        useSalt = salt;
+    } else if (isSingleSaltKeyId(keyId)) {
+        useSalt = await singleSaltFor(secret);
+    } else {
+        useSalt = KEY_SALTS[keyId as typeof KEY_ID_LEGACY | typeof KEY_ID_DATA];
+    }
+    if (!useSalt) throw new Error(`keyId ${keyId} 缺少盐`);
     const raw = await pbkdf2(secret, useSalt, AES_ITERS, 32);
     return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }

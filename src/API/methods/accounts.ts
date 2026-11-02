@@ -62,6 +62,11 @@ export interface AccountsApi {
     getUserById(id: number): Promise<UserRecord | null>;
     touchLastActive(uid: number): Promise<void>;
     getAccountSessionState(uid: number): Promise<AccountSessionState>;
+    /**
+     * 用 authProbe 已经顺手读到的账号态走同一套缓存（TTL / invalidate 语义一致）。
+     * 纯内存操作，不碰 DB —— 这就是「三读合一」省下的那一次往返。
+     */
+    accountStateFromProbe(uid: number, probed: AccountSessionState): AccountSessionState;
     invalidateSessionState(uid: number): void;
     recordActiveLogin(uid: number): Promise<void>;
     listUsers(): Promise<AccountInfo[]>;
@@ -387,6 +392,31 @@ export const accountsImpl: AccountsApi = {
         if (fromError) this.sessionStateCache.delete(uid);
         else this.sessionStateCache.set(uid, { state, at: now });
         return state;
+    },
+
+    /**
+     * 三读合一的账号态出口：authProbe 已经把 `users."status"` 读回来了，
+     * 这里只负责让它走**和 getAccountSessionState 完全相同**的缓存语义。
+     *
+     * 为什么必须先查缓存再采信：
+     *   缓存里那条结论（`SESSION_STATE_TTL_MS` 内）在改造前本来就会被优先返回 ——
+     *   哪怕库里刚刚变了。直接采信刚读到的值会变成「同一请求内一会儿按缓存、一会儿按库」，
+     *   那就是 30 秒的判定窗口被悄悄取消了。保持原样：缓存命中就还用缓存。
+     *
+     * 缓存里没有（或已过期）→ 写入刚读到的结论。改造前这里因为是「真读到的」，
+     * 同样会进缓存（只有「由查询出错推出的结论」才不进缓存，那个分支在
+     * getAccountSessionState 里，合并路径压根不会产生 fromError 结论）。
+     */
+    accountStateFromProbe: function (
+        this: NavigationAPI,
+        uid: number,
+        probed: AccountSessionState
+    ): AccountSessionState {
+        const now = Date.now();
+        const cached = this.sessionStateCache.get(uid);
+        if (cached && now - cached.at < SESSION_STATE_TTL_MS) return cached.state;
+        this.sessionStateCache.set(uid, { state: probed, at: now });
+        return probed;
     },
 
     /** 停用 / 清除 / 重新启用之后调一下：缓存里那条结论已经不成立了 */

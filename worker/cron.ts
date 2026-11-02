@@ -12,6 +12,7 @@
 
 import { CRON_LAST_ERROR_KEY, type Site } from "../src/API/http";
 import { NavigationAPI } from "../src/API/navigationApi";
+import { pruneAllRateLimitBuckets } from "./loginGuard";
 import type { Env } from "./types";
 import { configFromStored, readAllConfigs, runWebDavBackup } from "./webdav";
 import {
@@ -475,8 +476,14 @@ export async function runInactiveSweep(api: SchedulerDB): Promise<void> {
 /**
  * 过期数据清理：审计日志、回收站、令牌黑名单、用过的恢复令牌标记、过期邀请码。
  * 这些表 / 键只增不减，不清就一直线性涨。详见 http.ts 的 cleanupExpiredRows。
+ *
+ * 顺带把**限速桶**（rate_limit_bucket，C1）裁一遍：热路径上的裁剪是
+ * 「每个 isolate 每小时、且只裁当前正在用的那把锁」，没人登录的那几把锁永远轮不到；
+ * 每天在这里扫全量一次，把「24 小时没动静」和「超出 2000 桶上限」的都清掉。
+ * 它内部对「没有 db 的假实现」直接返回，不影响 cron 验证脚本。
  */
 export async function runRetentionCleanup(api: SchedulerDB): Promise<void> {
+    await pruneAllRateLimitBuckets(api as unknown as NavigationAPI);
     const nav = api as unknown as Partial<NavigationAPI>;
     if (typeof nav.cleanupExpiredRows !== "function") return;
     const result = await nav.cleanupExpiredRows();

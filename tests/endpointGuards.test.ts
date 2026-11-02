@@ -12,6 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { NavigationAPI } from "../src/API/navigationApi";
+import { FakeBucketTable } from "./helpers/fakeBucketTable";
 import {
     CONFIG_FREE_ATTEMPTS,
     DAV_FREE_ATTEMPTS,
@@ -21,31 +22,58 @@ import {
 } from "../worker/loginGuard";
 
 // ---------------- 支持 CAS 的内存版 D1（与 limiter 测试同一套路） ----------------
+//
+// ⚠️ C1（schema 29）起，限速计数不再写在 configs 的 JSON 里，而是落在
+// `rate_limit_bucket`（一桶一行）。所以这个桩必须同时认两套 SQL：
+//   · configs 的读 / 插入 / CAS（老路径，本用例用它模拟「存储写不进去」）；
+//   · 限速桶表的 upsert / CAS / 裁剪（`FakeBucketTable`，与 rateLimitBucket.test.ts 共用一份，
+//     免得两处对「ON CONFLICT 该 +1 还是覆盖」各自理解不同）。
 class MockD1 {
     configs = new Map<string, string>();
+    /** 限速桶表（一桶一行） */
+    buckets = new FakeBucketTable();
+    /**
+     * true = 整个存储层写不进去（模拟 D1 不可用）。
+     *
+     * 名字沿用 countAndSet 时代的 `casFail`：本文件最后那条用例要的是
+     * 「计数记不上 → 放行」，而换了存储之后只让 configs 的 CAS 失败已经不足以
+     * 表达这件事（桶表照样能写），所以它现在同时把桶表也置成不可用。
+     */
     casFail = false;
 
     prepare(sql: string) {
         const self = this;
+        const norm = sql.replace(/\s+/g, " ").trim();
+        self.buckets.unavailable = self.casFail;
         const make = (args: unknown[]) => ({
             bind: (...a: unknown[]) => make(a),
             first: async () => {
-                if (/SELECT value FROM configs/.test(sql)) {
+                const bucket = self.buckets.exec(norm, args);
+                if (bucket) return bucket.rows[0] ?? null;
+                if (/SELECT value FROM configs/.test(norm)) {
                     const v = self.configs.get(String(args[0]));
                     return v == null ? null : { value: v };
                 }
                 return null;
             },
-            all: async () => ({ results: [], success: true }),
+            all: async () => {
+                const bucket = self.buckets.exec(norm, args);
+                if (bucket) return { results: bucket.rows, success: true };
+                return { results: [], success: true };
+            },
             run: async () => {
+                const bucket = self.buckets.exec(norm, args);
+                if (bucket) {
+                    return { success: true, meta: { rows_written: bucket.rows.length } };
+                }
                 let written = 0;
-                if (/INSERT INTO configs/.test(sql)) {
+                if (/INSERT INTO configs/.test(norm)) {
                     const k = String(args[0]);
                     if (!self.configs.has(k)) {
                         self.configs.set(k, String(args[1]));
                         written = 1;
                     }
-                } else if (/UPDATE configs SET value/.test(sql)) {
+                } else if (/UPDATE configs SET value/.test(norm)) {
                     // SET value=? WHERE key=? AND value=?
                     const [next, key, expected] = args as [string, string, string | null];
                     const cur = self.configs.has(key) ? self.configs.get(key) : null;

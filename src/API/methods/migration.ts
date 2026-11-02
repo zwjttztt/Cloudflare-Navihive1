@@ -11,6 +11,7 @@ import { encryptSecret, hashPassword, isHashedPassword } from "../crypto";
 import { countWikiLinks } from "../../utils/noteWikiLinkCount";
 import { FTS_CONTENT_LIMIT, segmentCJK } from "../../utils/ftsQuery";
 import type { D1PreparedStatement } from "../schema";
+import { chunkStatements } from "../d1Limits";
 import {
     ATTACHMENTS_TABLE_STATEMENTS,
     CREATE_STATEMENTS,
@@ -18,9 +19,16 @@ import {
     INDEX_STATEMENTS,
     NOTES_FTS_TABLE_SQL,
     NOTES_FTS_ROWID_REBUILD_SQL,
+    RATE_LIMIT_BUCKET_INDEX_STATEMENTS,
+    RATE_LIMIT_BUCKET_TABLE_SQL,
     VAULT_TABLE_STATEMENTS,
     migrationState,
 } from "./internals";
+import {
+    BUCKET_IDLE_MS,
+    RATE_LIMIT_GUARD_KEYS,
+    parseGuardStore,
+} from "../../../worker/loginGuard";
 import { logger } from "../../../shared/logger";
 
 /**
@@ -96,15 +104,122 @@ import { logger } from "../../../shared/logger";
 // 28 = notes_fts 的 rowid 契约（2026-10-28，性能）：fts 行的 rowid 恒等于 notes.id，
 //     写入路径全部改按 rowid 定位。老库的 rowid 是 fts5 自动分配的，必须靠
 //     `notes-fts-rowid` 这一步整表重建 —— 而步骤表同样吃快路径，所以版本号必须跟着走到 28。
+// 29 = rate_limit_bucket（2026-11，C1 性能 + 限速正确性）：登录 / 注册 / 找回 / 初始化 /
+//     导出 / 写操作 / 配置 / WebDAV / 分享口令 / 校验密码这十把锁的计数，从
+//     configs 里那十份大 JSON（单份上限 2000 桶 ≈ 220 KB）搬到「一桶一行」的表。
+//     新表同样吃快路径（`core-tables` 早已在 schema.steps 里，不会重跑），
+//     所以必须有 `rate-limit-bucket-rows` 这一步显式建表并搬数据：
+//     不升号的话老库上表永远不存在 → 十把锁全部退化成「记不上数就放行」。
 //
 // ⚠️ 从 27 起，「什么时候该升号」不再靠人记住 —— 见下面 MIGRATION_VERSION 的说明：
 // 往 MIGRATION_STEPS 加一条步骤、或往 INDEX_STATEMENTS 加一条索引，落库的版本串会
 // 自动往前走一格。手工改这个字面量，只在「搬数据但没新增步骤」这类情况下才还需要。
-export const SCHEMA_VERSION = "28";
+export const SCHEMA_VERSION = "29";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 /** 「已执行过的迁移步骤」集合存在 configs 里的键名（值是 JSON 字符串数组） */
 export const MIGRATION_STEPS_KEY = "schema.steps";
+/**
+ * 迁移运行日志存在 configs 里的键名（D3，值是 JSON 数组，最近 50 条环形）。
+ *
+ * 为什么不新建表：`schema.version` / `schema.steps` 已经在做「跑到哪了」的记账，
+ * 缺的只是「这一步花了多久、为什么没过」。新建表反而会引出「快路径会不会把它跳过去」
+ * 这个新风险（本文件里那几段注释反复记的就是这类坑）。
+ *
+ * ⚠️ 只记**步骤 id / 成败 / 起止时刻 / 耗时 / 一句原因**：不记堆栈、不记绑定值 ——
+ * 这条记录会跟着 configs 一起进备份文件，安全模块的失败细节不该往外走。
+ */
+export const MIGRATION_LOG_KEY = "schema.log";
+/** 日志环形缓冲保留多少条（够看最近几轮冷启动就够，configs 单值不该无限增长） */
+export const MIGRATION_LOG_KEEP = 50;
+/** 每条失败原因的最大长度：一句可读的原因，不要整段噪声 */
+export const MIGRATION_LOG_ERROR_MAX = 200;
+
+/** 一条迁移运行记录 */
+export interface MigrationLogEntry {
+    /** 稳定步骤 id（与 MIGRATION_STEPS 里的 id 一致） */
+    step: string;
+    /** 这一步成功了吗 */
+    ok: boolean;
+    /** 开始时刻（毫秒时间戳） */
+    at: number;
+    /** 耗时（毫秒），成功的步骤也是有用的信号 */
+    ms: number;
+    /** 失败原因（截断到 200 字符，不含堆栈与绑定值） */
+    err?: string;
+}
+
+/**
+ * 迁移没跑完时抛的错误（D3）。
+ *
+ * 为什么要有类型而不是裸 Error：调用方（migrate / withSchemaRetry / 未来的健康检查）
+ * 需要能分辨「结构没补齐」与「其它异常」。**它只表示「结构可能不完整」，
+ * 不表示请求必须被拦下** —— 收尾会把 `dbReady` 置 false（迁移失败期间按更宽松的
+ * fail-open 处理，见 runMigrations 的说明），仍不改变任何路由的放行语义。
+ */
+export class MigrationIncompleteError extends Error {
+    /** 本次没跑成功的步骤 id */
+    readonly failed: readonly string[];
+
+    constructor(failed: readonly string[]) {
+        super(`迁移步骤未全部完成: ${failed.join(", ")}`);
+        this.name = "MigrationIncompleteError";
+        this.failed = [...failed];
+    }
+}
+
+/**
+ * 把异常压成一句可读的原因：**不含堆栈、不含绑定值**。
+ * 日志会落进 configs（跟着备份走），所以只留「哪一步、为什么」。
+ */
+function describeMigrationError(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.replace(/\s+/g, " ").trim().slice(0, MIGRATION_LOG_ERROR_MAX);
+}
+
+/** 读迁移日志；读不到 / JSON 坏了 / 形状不对一律当空数组（日志坏了不该影响迁移） */
+async function readMigrationLog(api: NavigationAPI): Promise<MigrationLogEntry[]> {
+    try {
+        const row = await api.db
+            .prepare("SELECT value FROM configs WHERE key = ?")
+            .bind(MIGRATION_LOG_KEY)
+            .first<{ value: string }>();
+        if (typeof row?.value !== "string" || !row.value) return [];
+        const parsed: unknown = JSON.parse(row.value);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((entry): entry is MigrationLogEntry => {
+            if (!entry || typeof entry !== "object") return false;
+            const candidate = entry as Partial<MigrationLogEntry>;
+            return typeof candidate.step === "string" && typeof candidate.ok === "boolean";
+        });
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * 追加一段迁移日志。
+ *
+ * ⚠️ **写失败只 warn，绝不让迁移因此失败**：日志是诊断用的，不能变成新的故障点
+ * （这一步跑在「结构已尽力补齐」之后，此时再抛错等于把一次成功迁移判成失败）。
+ */
+async function appendMigrationLog(api: NavigationAPI, entries: MigrationLogEntry[]): Promise<void> {
+    if (entries.length === 0) return;
+    try {
+        const existing = await readMigrationLog(api);
+        const merged = [...existing, ...entries].slice(-MIGRATION_LOG_KEEP);
+        await api.db
+            .prepare(
+                `INSERT INTO configs (key, value, updated_at)
+                 VALUES (?, ?, CURRENT_TIMESTAMP)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
+            )
+            .bind(MIGRATION_LOG_KEY, JSON.stringify(merged))
+            .run();
+    } catch (error) {
+        logger.warn("写入迁移日志失败（不影响迁移结果）:", { err: error, component: "migration" });
+    }
+}
 
 /** 首次建 owner 这把锁的存活时间：正常 bootstrap 几毫秒就完事，30 秒足够兜住崩掉的进程 */
 export const OWNER_BOOTSTRAP_LOCK_TTL_MS = 30_000;
@@ -274,14 +389,40 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
             }
         },
     },
+    {
+        /**
+         * 限速桶搬进「一桶一行」的新表（schema 29，C1）。
+         *
+         * 建表 + 两条索引 + 把旧 JSON 里的桶挪过去。三个刻意的写法：
+         *
+         * 1. **表在这里再建一次**：`core-tables` 那个 batch 里虽然也有一条
+         *    `CREATE TABLE IF NOT EXISTS rate_limit_bucket`，但已部署实例的
+         *    `core-tables` 早就在 schema.steps 里了、不会再跑 —— 新表只写在
+         *    CREATE_STATEMENTS 里的症状是「新库正常、老库上十把锁全部记不上数」，
+         *    与 2026-10-06 的文件夹表 500 是同一个坑。
+         * 2. **每行一条 prepared statement，按 1000 切批**：绝不能写成多行 VALUES ——
+         *    2000 个桶 × 5 个参数 = 10000 个绑定参数，而 D1 单语句上限 100，
+         *    一条就炸（见 src/API/d1Limits.ts 里已核实的数字）。
+         * 3. **不删旧键、不改旧键**：留着才有回滚退路（旧版本代码还能直接读它们）。
+         *    新代码也不会再读它们，所以不算「双真源」—— 那份 JSON 是**冷冻的快照**，
+         *    不再有任何写入方。
+         *
+         * ⚠️ 只搬「还在锁定期」或「24 小时内动过」的桶：更老的那些在旧存储里
+         * 也只是等着被裁掉，搬过去只会让新表一上线就胖一圈。
+         */
+        id: "rate-limit-bucket-rows",
+        run: async api => {
+            await migrateRateLimitBuckets(api);
+        },
+    },
     // 索引排在最后：它依赖上面补出来的 user_id 列
     { id: "indexes", run: api => api.createIndexes() },
 ];
 
-/** 28 号这一版登记的步骤条数（加步骤时**不用**改这个数，见 MIGRATION_VERSION） */
-const STEPS_AT_V28 = 19;
-/** 28 号这一版 INDEX_STATEMENTS 的条数（加索引时**不用**改这个数） */
-const INDEXES_AT_V28 = 24;
+/** 29 号这一版登记的步骤条数（加步骤时**不用**改这个数，见 MIGRATION_VERSION） */
+const STEPS_AT_V29 = 20;
+/** 29 号这一版 INDEX_STATEMENTS 的条数（加索引时**不用**改这个数） */
+const INDEXES_AT_V29 = 26;
 /**
  * 自 27 号以来新增的「结构变更」条数：多一条迁移步骤、或多一条索引都算一格。
  *
@@ -290,13 +431,13 @@ const INDEXES_AT_V28 = 24;
  * 在结构上就不可能再发生：升号是算出来的，不是记出来的。
  */
 const SCHEMA_DELTA =
-    MIGRATION_STEPS.length - STEPS_AT_V28 + (INDEX_STATEMENTS.length - INDEXES_AT_V28);
+    MIGRATION_STEPS.length - STEPS_AT_V29 + (INDEX_STATEMENTS.length - INDEXES_AT_V29);
 /**
  * 真正落库、也真正拿来比对的版本串。
  *
  * ⚠️ 在当前这份代码里它必须**正好等于** SCHEMA_VERSION（也就是 delta 为 0）。
- * 不为 0 的话要么 STEPS_AT_V27 没跟上 MIGRATION_STEPS 的实际条数，要么
- * INDEXES_AT_V27 没跟上 INDEX_STATEMENTS 的实际条数 ——
+ * 不为 0 的话要么 STEPS_AT_V29 没跟上 MIGRATION_STEPS 的实际条数，要么
+ * INDEXES_AT_V29 没跟上 INDEX_STATEMENTS 的实际条数 ——
  * tests/migrationVersion.test.ts 第一条（写回的版本串要等于 SCHEMA_VERSION）会立刻红。
  */
 export const MIGRATION_VERSION = SCHEMA_DELTA > 0 ? `${SCHEMA_VERSION}+${SCHEMA_DELTA}` : SCHEMA_VERSION;
@@ -549,6 +690,66 @@ export interface MigrationApi {
     withSchemaRetry<T>(run: () => Promise<T>): Promise<T>;
 }
 
+/**
+ * 把十把锁的旧 JSON 存量搬进 `rate_limit_bucket`（一桶一行，schema 29）。
+ *
+ * 幂等：用的是 `INSERT ... ON CONFLICT DO NOTHING` —— 如果部署之后新代码已经给
+ * 某个桶写了一行（那时它的 seen 更新），这次的旧值不会把它盖回去。
+ * 所以这一步中途失败、下次冷启动重跑，都不会把「已经攒起来的失败次数」冲小。
+ *
+ * 分批：每行一条 prepared statement，按 `chunkStatements` 1000 条切。
+ * ⚠️ 不要图省事写成多行 VALUES —— 2000 桶 × 5 参数 = 10000 个绑定参数，
+ * D1 单语句上限 100（src/API/d1Limits.ts 里已核实的数字），一条就炸。
+ */
+async function migrateRateLimitBuckets(api: NavigationAPI): Promise<void> {
+    // 1) 建表 + 两条索引。老库上 `core-tables` / `indexes` 都在 schema.steps 里了，
+    //    不会重跑，所以必须在这里显式建一次（与 migrateVaultTables 同一个理由）。
+    await api.db.prepare(RATE_LIMIT_BUCKET_TABLE_SQL).run();
+    for (const sql of RATE_LIMIT_BUCKET_INDEX_STATEMENTS) {
+        await api.db.prepare(sql).run();
+    }
+
+    // 2) 逐键搬桶。⚠️ 逐键（而不是一次读全部）是为了让「某一把锁的 JSON 坏了」
+    // 只影响它自己 —— parseGuardStore 对坏 JSON 本来就返回空对象。
+    const now = Date.now();
+    const idleCutoff = now - BUCKET_IDLE_MS;
+    for (const key of RATE_LIMIT_GUARD_KEYS) {
+        let raw: string | null;
+        try {
+            raw = await api.getConfig(key);
+        } catch {
+            // 读不出来就跳过这一把锁：它的旧计数搬不过去，但新代码从此不再读旧 JSON，
+            // 效果等于「这次升级把它的计数清零了」—— 比让整步失败（十把锁全部记不上数）好。
+            continue;
+        }
+        const store = parseGuardStore(raw);
+        const statements: D1PreparedStatement[] = [];
+        for (const [bucket, state] of Object.entries(store)) {
+            const rawCount = Number(state?.count);
+            const rawUntil = Number(state?.until);
+            const rawSeen = Number(state?.seen);
+            const until = Number.isFinite(rawUntil) && rawUntil > now ? rawUntil : 0;
+            const seen = Number.isFinite(rawSeen) && rawSeen > 0 ? rawSeen : 0;
+            // 只搬「还在锁定期」或「24 小时内动过」的桶；更老的在旧存储里也是等着被裁的
+            if (until <= 0 && seen <= idleCutoff) continue;
+            const count = Number.isFinite(rawCount) && rawCount > 0 ? Math.floor(rawCount) : 0;
+            statements.push(
+                api.db
+                    .prepare(
+                        `INSERT INTO rate_limit_bucket (bucket_key, bucket, count, until, seen)
+                         VALUES (?, ?, ?, ?, ?)
+                         ON CONFLICT(bucket_key, bucket) DO NOTHING`
+                    )
+                    .bind(key, bucket, count, until, seen)
+            );
+        }
+        for (const chunk of chunkStatements(statements)) {
+            if (chunk.length === 0) continue;
+            await api.db.batch(chunk);
+        }
+    }
+}
+
 export const migrationImpl: MigrationApi = {
 
     // 初始化数据库表
@@ -696,34 +897,60 @@ export const migrationImpl: MigrationApi = {
      *     老库从任何历史版本一路补到最新走的都是同一条路径。
      *   - **失败可重试**：失败的步骤**不进集合**，所以下一次冷启动只重跑那几步，
      *     不必把整条链再走一遍。
+     *
+     * D3（2026-11）：每步记一条 `schema.log`（步骤 id / 成败 / 起止时刻 / 耗时 / 一句原因）。
+     * `schema.version` + `schema.steps` 本来就记了「跑到哪了」，缺的是
+     * 「这一步花了多久、为什么没过」—— 迁移失败时现场只有一行 logger.error，
+     * 事后想知道是哪一步、卡多久、什么原因，只能翻日志平台。
      */
     runMigrations: async function (this: NavigationAPI ): Promise<void> {
         const done = new Set(await this.readMigrationSteps());
         const failed: string[] = [];
+        const log: MigrationLogEntry[] = [];
         for (const step of MIGRATION_STEPS) {
             if (done.has(step.id)) continue;
+            const startedAt = Date.now();
             try {
                 await step.run(this);
                 done.add(step.id);
+                log.push({ step: step.id, ok: true, at: startedAt, ms: Date.now() - startedAt });
             } catch (error) {
                 // 单独一步挂了不挡着其它步骤继续补（索引挂了不该挡住补列）；
                 // 但**不把它记进集合** —— 下次冷启动要再试一次。
                 logger.error(`迁移步骤 ${step.id} 执行失败（下次冷启动会重试）:`, { err: error, component: "migration" })
                 failed.push(step.id);
+                log.push({
+                    step: step.id,
+                    ok: false,
+                    at: startedAt,
+                    ms: Date.now() - startedAt,
+                    err: describeMigrationError(error),
+                });
             }
         }
         // 成功的先落库：即便下面抛错，重试时也只要补失败的那几步
         await this.writeMigrationSteps([...done]);
+        // 日志最后写，且写失败只 warn（appendMigrationLog 内部吞掉）——
+        // 诊断信息不该变成新的故障点。
+        await appendMigrationLog(this, log);
 
-        // 结构已尽力补齐：之后的查询出错按「异常」处理（fail-closed），
-        // 而不是「库还没建好」（fail-open）。
-        this.dbReady = true;
+        // ⚠️ dbReady 的语义（D3 改了这里，原来是无条件 true）：
+        //   · true  = 结构已尽力补齐 → 之后查询出错按「真·DB 异常」fail-closed 处理；
+        //   · false = 还有步骤没跑成 → 按「库还没建好」fail-open 处理（见
+        //     accounts.ts 的 getAccountSessionState）。
+        // 原来失败也置 true，等于「迁移挂了就把全站锁在门外」—— 迁移失败时结构本来就
+        // 不完整，那时候 fail-closed 只会让人连登录页都进不去，方向是错的。
+        // 所以有失败就保持 false：**更宽松，不是更严**。
+        // 代价：这期间一个「被停用的账号」可能靠旧令牌再过一次（窗口 = 迁移修好之前），
+        // 两害相权取轻 —— 迁移失败时优先保证站点能进得来。
+        this.dbReady = failed.length === 0;
 
         if (failed.length > 0) {
             // 往上抛是为了让 migrate() 清掉缓存的 promise —— 否则这一个 isolate 里
             // 失败的步骤再也没机会重试了。代价是本次请求拿到的结构可能不完整，
             // 但 withSchemaRetry 会在「no such column/table」时再兜一次。
-            throw new Error(`迁移步骤未全部完成: ${failed.join(", ")}`);
+            // ⚠️ 抛错不代表「拦请求」：migrate() 会吞掉它，路由照常跑（fail-open 语义不变）。
+            throw new MigrationIncompleteError(failed);
         }
     },
 

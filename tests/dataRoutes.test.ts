@@ -16,6 +16,8 @@ import { errorResponse } from "../worker/lib/apiError";
 import { WRITE_GUARD_KEY, writeBucket } from "../worker/loginGuard";
 import type { RouteCtx } from "../worker/routes/types";
 import type { NavigationAPI } from "../src/API/navigationApi";
+import { EXPORT_VERSION, resetMigrationCacheForTests, type ExportData } from "../src/API/http";
+import { makeRealApi, makeRealD1 } from "./helpers/realSqliteD1";
 
 const HOST = "https://nav.example.com";
 const IP = "203.0.113.1";
@@ -33,6 +35,8 @@ interface Log {
     ownedGroupIds: Set<number>;
     /** 分组分享（groups/{id}/share）落到 api 的调用 */
     shares: Array<{ op: "get" | "create" | "update" | "revoke"; id: number; args?: unknown }>;
+    /** 记事本导入收到的条数（notes/import 落到 api 的调用） */
+    imported: number[];
 }
 
 function emptyLog(): Log {
@@ -46,6 +50,7 @@ function emptyLog(): Log {
         changes: [],
         ownedGroupIds: new Set([1, 2]),
         shares: [],
+        imported: [],
     };
 }
 
@@ -132,6 +137,17 @@ function makeApi(log: Log, o: Options, bucket: string): NavigationAPI {
         },
         writeAudit: async (action: string, _target: string, _ip: string, detail: string) => {
             log.audits.push({ action, detail });
+        },
+        // notes/import 的审计要把 actor 从「当前账号」解析出来（见 currentUserIdentity）
+        getUserById: async (id: number) => ({ id, username: "alice", role: "owner" }),
+        deleteNote: async (id: number, audit?: { action: string; detail?: string }) => {
+            log.deleted.push(id);
+            if (audit) log.audits.push({ action: audit.action, detail: audit.detail ?? "" });
+            return { success: true, recycleId: 11 };
+        },
+        importNotesData: async (body: { notes?: unknown[] }) => {
+            log.imported.push(Array.isArray(body?.notes) ? body.notes.length : 0);
+            return { created: 1, updated: 0, skipped: 0 };
         },
         getGroupShareConfig: async (id: number) => {
             log.shares.push({ op: "get", id });
@@ -504,4 +520,147 @@ test("删分组本身照旧（不能被分享分支抢走）", async () => {
 test("不归本模块的路径返回 null（交给下一个模块）", async () => {
     const { res } = await call("unknown-thing", "GET");
     assert.equal(res, null);
+});
+
+// ---- 数据面审计：6 个「一个请求就能大面积改数据」的动作各留一行 ----
+//
+// 判据只有两条，都来自审计表本身的约束：
+//   1. **一行**：这些动作频率低（人点的），但绝不能顺手给每个请求都记一笔 ——
+//      审计表被自己写放大刷爆是真实风险（server-error 那条按端点节流同理）。
+//   2. **detail 里只有 id / 数量**：审计表按保留期长期留存，它不是第二份数据副本，
+//      站点 URL、卡片标题、笔记正文一个字都不许进来。
+//
+// 前 4 条（site.delete / site.batchDelete / group.delete / note.delete）的审计是在
+// api 层与删除语句塞进**同一个 batch** 的（见 src/API/methods/data.ts 的 auditStatement）：
+// 少一次串行往返，且「删了」与「记了」同生同死。这里的假 api 把那份 audit 参数原样
+// 记下来，所以断言的是「路由确实把审计传下去了」。
+
+/** 测试数据里的「敏感内容」：detail 里绝不许出现的那几个串 */
+const LEAK_URL = "https://secret-site.example/";
+const LEAK_TITLE = "私密标题";
+
+function assertNoLeak(detail: string, where: string): void {
+    assert.ok(!detail.includes(LEAK_URL), `${where} 的 detail 里出现了站点 URL：${detail}`);
+    assert.ok(!detail.includes(LEAK_TITLE), `${where} 的 detail 里出现了卡片标题：${detail}`);
+}
+
+test("审计① site.delete：删一张卡只记一行，detail 只有站点 id", async () => {
+    const { res, log } = await call("sites/7", "DELETE");
+    assert.equal(res?.status, 200);
+    assert.equal(log.audits.length, 1, "一次删除只该有一行审计");
+    assert.equal(log.audits[0]!.action, "site.delete");
+    assert.ok(log.audits[0]!.detail.includes("7"), `detail 要能定位到是哪张卡：${log.audits[0]!.detail}`);
+    assertNoLeak(log.audits[0]!.detail, "site.delete");
+});
+
+test("审计② site.batchDelete：批量删除记一行，detail 只有条数", async () => {
+    const { res, log } = await call("sites/batch-delete", "POST", {}, { ids: [7, 8] });
+    assert.equal(res?.status, 200);
+    assert.equal(log.audits.length, 1, "批量删 500 张卡也只该有一行，不是 500 行");
+    assert.equal(log.audits[0]!.action, "site.batchDelete");
+    assert.ok(log.audits[0]!.detail.includes("2"), `detail 要带条数：${log.audits[0]!.detail}`);
+    assertNoLeak(log.audits[0]!.detail, "site.batchDelete");
+});
+
+test("审计③ group.delete：删分组记一行，detail 只有分组 id", async () => {
+    const { res, log } = await call("groups/3", "DELETE");
+    assert.equal(res?.status, 200);
+    assert.equal(log.audits.length, 1);
+    assert.equal(log.audits[0]!.action, "group.delete");
+    assert.ok(log.audits[0]!.detail.includes("3"));
+    assertNoLeak(log.audits[0]!.detail, "group.delete");
+});
+
+test("审计④ note.delete：删笔记记一行，detail 只有笔记 id", async () => {
+    const { res, log } = await call("notes/5", "DELETE");
+    assert.equal(res?.status, 200);
+    assert.equal(log.audits.length, 1);
+    assert.equal(log.audits[0]!.action, "note.delete");
+    assert.ok(log.audits[0]!.detail.includes("5"));
+    assertNoLeak(log.audits[0]!.detail, "note.delete");
+});
+
+test("审计⑤ data.import：导入记事本记一行，detail 只有条数，不带标题/正文", async () => {
+    const notes = [
+        { uuid: "u-1", title: LEAK_TITLE, content: "正文也不许进审计", pinned: false, order_num: 0 },
+        { uuid: "u-2", title: "第二条", content: "…", pinned: false, order_num: 1 },
+    ];
+    const { res, log } = await call("notes/import", "POST", {}, { kind: "notes", notes });
+    assert.equal(res?.status, 200);
+    assert.deepEqual(log.imported, [2], "整批记事本一次交给 api（不是逐条循环）");
+    assert.equal(log.audits.length, 1, "一次导入只该有一行审计");
+    assert.equal(log.audits[0]!.action, "data.import");
+    assert.deepEqual(
+        JSON.parse(log.audits[0]!.detail) as unknown,
+        { notes: 2 },
+        "detail 只写条数：审计表不是第二份数据副本"
+    );
+    assert.ok(!log.audits[0]!.detail.includes("正文"), "笔记正文不许进审计");
+});
+
+test("审计⑥ data.restore：恢复成功后真库的 audit_log 多一行，detail 只有三个计数", async () => {
+    // 恢复出口在 api 层（src/API/methods/transfer.ts 的 importData），不是某个路由分支，
+    // 所以这一条必须用**真 SQLite**：审计是跟提交一起落库的，假 db 验不出「真写了一行」。
+    resetMigrationCacheForTests();
+    const db = makeRealD1();
+    const api = makeRealApi(db);
+    await api.migrate();
+
+    const countRestore = async (): Promise<number> => {
+        const row = await api.db
+            .prepare("SELECT COUNT(*) AS c FROM audit_log WHERE action = 'data.restore'")
+            .first<{ c: number }>();
+        return Number(row?.c ?? 0);
+    };
+    assert.equal(await countRestore(), 0, "恢复之前一条都不该有");
+
+    const backup: ExportData = {
+        groups: [{ id: 1, name: "常用工具", order_num: 0 }],
+        sites: [
+            {
+                id: 10,
+                group_id: 1,
+                name: LEAK_TITLE,
+                url: LEAK_URL,
+                icon: "",
+                description: "",
+                notes: "",
+                username: "",
+                password: "",
+                order_num: 0,
+            },
+        ],
+        notes: [
+            {
+                uuid: "u-restore-1",
+                title: LEAK_TITLE,
+                content: "恢复进来的正文",
+                pinned: false,
+                order_num: 0,
+                site_id: null,
+            },
+        ],
+        configs: {},
+        version: EXPORT_VERSION,
+        exportDate: new Date().toISOString(),
+    };
+
+    const result = await api.importData(backup);
+    assert.equal(result.success, true, "这份备份本身是合法的，必须先真的恢复成功");
+    assert.equal(await countRestore(), 1, "一次恢复只该写一行 data.restore");
+
+    const row = await api.db
+        .prepare("SELECT action, actor, ip, detail FROM audit_log WHERE action = 'data.restore'")
+        .first<{ action: string; actor: string; ip: string; detail: string }>();
+    assert.ok(row, "没找到 data.restore 那一行");
+    assert.deepEqual(
+        JSON.parse(row.detail) as unknown,
+        { groups: 1, sites: 1, notes: 1 },
+        "detail 必须只有三个计数"
+    );
+    assertNoLeak(row.detail, "data.restore");
+    assert.ok(!row.detail.includes("恢复进来的正文"), "笔记正文不许进审计");
+    // API 层拿不到客户端 IP（ctx.ip 在路由层），这一行只能是空串；
+    // 带 IP 的那条是 backup.ts 的 data-import，两者互补。
+    assert.equal(row.ip, "", "API 层写审计拿不到 IP，别在这里编一个");
 });

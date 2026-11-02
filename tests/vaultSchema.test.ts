@@ -75,11 +75,14 @@ test("保险库：migrate() 在真实 SQLite 里建出 vault_keys / vault_entrie
     }
 });
 
-test("保险库：SCHEMA_VERSION 已升到 28（新步骤吃快路径，不升号老库永远建不出来）", () => {
+test("保险库：SCHEMA_VERSION 已升到 29（新步骤吃快路径，不升号老库永远建不出来）", () => {
     // 2026-10-25：迁移改成「已执行 step 集合」后版本串升到 27，
     // 为的是让老库跑一遍并拿到新增的两条索引（idx_notes_user_updated / idx_notes_site_recent）。
     // 2026-10-28：再加 `notes-fts-rowid` 这一步（把 FTS 行的 rowid 对齐到 notes.id，
     // 详见 notesNote.ts 的 FTS 定位改造），同样吃快路径，版本串必须走到 28，
     // 否则老库的 FTS 永远不会按 rowid 重建、写入路径与重建路径 rowid 语义不一致。
-    assert.equal(SCHEMA_VERSION, "28");
+    // 2026-11（C1）：再加 `rate-limit-bucket-rows`（限速计数从 configs 的大 JSON 搬到
+    // rate_limit_bucket 一桶一行）+ 两条索引。**同样吃快路径** —— 不升号的话老库上
+    // 新表永远不存在，十把限速锁会全部退化成「记不上数就放行」。所以版本串走到 29。
+    assert.equal(SCHEMA_VERSION, "29");
 });

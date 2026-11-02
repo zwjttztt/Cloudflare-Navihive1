@@ -615,10 +615,25 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const limited = await writeGate();
         if (limited) return limited;
         const body = await readJsonBody<{ kind?: unknown; notes?: unknown }>(request);
-        if (!body || !Array.isArray(body.notes)) {
+        const incoming = body?.notes;
+        if (!body || !Array.isArray(incoming)) {
             throw ApiError.badRequest("文件里没有笔记数据（这不是记事本导出的 JSON）");
         }
-        return Response.json(await api.importNotesData(body as never));
+
+        const result = await api.importNotesData(body as never);
+
+        // 数据面审计（第 5 条）：整份记事本一次性写库，是这个模块里唯一「一个请求改掉
+        // 整站笔记」的入口 —— 与删站点同一个量级，必须有痕。
+        //
+        // detail 只写**条数**：审计表要长期保留（默认 7 天、周清最长多留 7 天），
+        // 它不是第二份数据副本 —— 标题 / 正文 / 附件 URL 一个字都不许进来。
+        // writeAudit 内部整段 try/catch，所以这里不包 try、也不因它失败中断主流程；
+        // await 只是为了在响应发出去之前把这一行落定（Workers 里响应后的 promise 会被掐掉）。
+        // actor 取当前账号名（拿不到就是空串，单账号部署下 currentUserIdentity 回 guest）。
+        const actor = (await currentUserIdentity(api).catch(() => null))?.username ?? "";
+        await api.writeAudit("data.import", actor, ip, JSON.stringify({ notes: incoming.length }));
+
+        return Response.json(result);
     } else if (/^notes\/\d+\/share$/.test(path)) {
         const id = Number(path.split("/")[1]);
         const headers = { "Cache-Control": "no-store" };

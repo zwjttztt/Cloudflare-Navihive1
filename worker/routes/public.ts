@@ -85,6 +85,35 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         
     } = ctx;
 
+    // ---- 健康检查（Docker HEALTHCHECK / uptime 脚本 / 编排系统的探针）----
+    //
+    // ⚠️ 必须排在**最前面**，在鉴权中间件与 migrate() 之前（见 worker/index.ts 的分发
+    //    顺序：公开路由 → 鉴权 → 维护 → migrate）。探活是每 30 秒一次的常驻请求，
+    //    掉进 /api/init 那条分支就变成「每 30 秒跑一遍迁移检查 + 读维护模式配置」——
+    //    探活反倒成了这台机器上最稳定的负担，而它本来只想问一句「你还活着吗」。
+    //
+    // ⚠️ 响应体只有 `ok` 一个键。这两个都是**公开、未鉴权**的端点，带上表名 / 错误信息 /
+    //    版本号 / 迁移阶段就等于给任何扫描器免费送指纹。要细节去查日志与审计，不要查这里。
+    //    正因为消费者是 Docker / uptime 脚本而不是我们的客户端，这里也**不**走
+    //    errorResponse / ApiError：那些出口是按客户端契约设计的，探针只认状态码。
+    //
+    // ⚠️ 刻意**不加限速**：健康检查每 30 秒一次，套上限速闸门等于让探活把自己锁死，
+    //    表现是「容器一直 unhealthy → upgrader 自动回滚一个其实完全正常的镜像」。
+    if (path === "healthz" && method === "GET") {
+        // liveness：不碰数据库，只回答「进程还在、HTTP 栈通了」
+        return Response.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
+    }
+    if (path === "readyz" && method === "GET") {
+        // readiness：恰好一次 SELECT 1（见 configImpl.pingDb），库不通就是 503 而不是 500 ——
+        // 5xx 里的 500 说的是「我写错了」，503 说的才是「依赖没起来」。
+        //
+        // `.catch(() => false)` 是双保险：pingDb 自己已经整段 try/catch，但探针的语义
+        // 必须是「任何异常 = 依赖没起来 = 503」，不能因为将来有人改坏了那个方法，
+        // 就让 Docker 收到一个 500 而分不清「服务写错」和「库挂了」。
+        const ok = await api.pingDb().catch(() => false);
+        return Response.json({ ok }, { status: ok ? 200 : 503, headers: { "Cache-Control": "no-store" } });
+    }
+
     // ⚠️ 取图分支必须排在「取笔记」**前面**：`note-shares/attachments/<id>` 也满足
     // startsWith("note-shares/")，被上面那条抢走就会被当成 token 去查分享。
     if (/^note-shares\/attachments\/[0-9a-z-]+$/.test(path) && method === "GET") {

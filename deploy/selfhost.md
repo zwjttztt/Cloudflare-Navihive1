@@ -173,10 +173,11 @@ sudo systemctl enable --now navihive
 sudo systemctl status navihive
 ```
 
-探活用 `/api/init`（公开路由，无需登录，回 `{"ok":true,"initialized":true}`）：
+探活用 `/api/readyz`（公开路由，无需登录，库通就回 `{"ok":true}` 200、库不通回 503；
+不碰库的 liveness 是 `/api/healthz`）：
 
 ```bash
-curl -fsS http://127.0.0.1:8787/api/init
+curl -fsS http://127.0.0.1:8787/api/readyz
 ```
 
 > 升级就是 `git pull && npm run build && npm run build:server && sudo systemctl restart navihive`。
@@ -199,7 +200,7 @@ docker compose logs -f navihive        # 看到「NaviHive 自托管服务已启
 
 # 3) 验证
 curl -fsS http://127.0.0.1:8787/api/init     # → {"ok":true,"initialized":true,...}
-docker inspect --format='{{.State.Health.Status}}' navihive   # → healthy（探活打的就是 /api/init）
+docker inspect --format='{{.State.Health.Status}}' navihive   # → healthy（探活打的就是 /api/readyz，库打不开会是 unhealthy）
 ```
 
 几个和 systemd 接法不同、值得记住的点：
@@ -1075,8 +1076,9 @@ ss -tln | grep 8787        # 应只剩 127.0.0.1:8787
 
 ### 为什么还需要它
 
-镜像里已经有一条 HEALTHCHECK（打容器内的 `127.0.0.1:8787/api/init`），但它能回答的问题
-只有一个：**容器里的 Node 进程还活着吗**。它和服务在同一个网络命名空间里，压根不经过
+镜像里已经有一条 HEALTHCHECK（打容器内的 `127.0.0.1:8787/api/readyz`，会跑一条
+`SELECT 1`），但它能回答的问题只有两个：**容器里的 Node 进程还活着吗**、**容器里的库
+打不开吗**。它和服务在同一个网络命名空间里，压根不经过
 DNS、Cloudflare、宿主反代、证书这几层 —— 也就是说下面这些事它全都看不见：
 
 - 宿主网络断了 / 网卡换了 IP；

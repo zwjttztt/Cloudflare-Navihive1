@@ -42,6 +42,15 @@ export interface ConfigApi {
     setConfigs(entries: Record<string, string>): Promise<boolean>;
     deleteConfig(key: string): Promise<boolean>;
     canManageSharedConfigs(): Promise<boolean>;
+    /**
+     * 数据库连通性探针：只跑一条 `SELECT 1`，**不迁移、不建表、不读任何业务表**。
+     *
+     * 给 /api/readyz 用。为什么不复用 getConfig：那会走 migrate()（第一次访问要跑
+     * 一遍建表检查）与加解密分支 —— 一个每 30 秒一次的探活不该顺带触发迁移。
+     * 打不通（库文件被删 / 磁盘满 / 连接坏）返回 false，**绝不外抛**：探针的失败
+     * 语义是「不健康」而不是「这个请求 500」。
+     */
+    pingDb(): Promise<boolean>;
 }
 
 export const configImpl: ConfigApi = {
@@ -412,6 +421,27 @@ export const configImpl: ConfigApi = {
         if (uid === null) return true;
         const me = await this.getUserById(uid);
         return me?.role === "owner";
+    },
+
+    /**
+     * 数据库连通性探针（/api/readyz 的唯一数据来源）。
+     *
+     * 三条约束都是刻意的：
+     *  1. **不 migrate()**：迁移会读 configs / 建表，探活每 30 秒一次，那等于把
+     *     「探活」变成「每 30 秒跑一遍迁移检查」。`SELECT 1` 不碰任何表，也就不需要结构。
+     *  2. **只跑一条语句**：Docker HEALTHCHECK 每 30 秒一次 × 容器数，读放大压到 1。
+     *  3. **绝不外抛**：库打不开时这里返回 false，让调用方回 503（不是 500），
+     *     健康检查的消费者看得懂「依赖没起来」而不是「服务端出 bug 了」。
+     */
+    pingDb: async function (this: NavigationAPI ): Promise<boolean> {
+        try {
+            const row = await this.db.prepare("SELECT 1 AS ok").first<{ ok: number }>();
+            return Number(row?.ok) === 1;
+        } catch (error) {
+            // 只记 warn 不抛：健康检查每 30 秒一次，error 级别会把日志刷满
+            logger.warn("数据库探活失败:", { err: error, component: "config" })
+            return false;
+        }
     },
 };
 

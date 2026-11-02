@@ -95,4 +95,70 @@ export default tseslint.config(
       '@typescript-eslint/no-floating-promises': 'error',
     },
   },
+
+  // 分层依赖红线（两条，互为反向）。
+  //
+  // 起因是一个具体的坑：src/hooks/useBookmarkImport.ts 为了用一个 38 行的
+  // 并发限流纯函数，从 ../API/methods/transfer 值导入 —— 结果把 1600+ 行、
+  // 含 D1 SQL 的后端方法层整个拉进了前端依赖图。人眼 review 抓不住这种越界，
+  // 所以落成规则。函数已抽到 src/utils/concurrency.ts，transfer 保留再导出。
+  //
+  // 两个细节：
+  // 1) allowTypeImports 必须开着。`import type { OpsStats } from "../API/methods/audit"`
+  //    只带走类型，不产生运行时边，编译后被擦掉，是合法且推荐的用法
+  //    （StatsPanel.tsx 就靠这条）。封的是「值导入」。
+  // 2) 用 group 通配而不是 paths 白名单 —— paths 是精确名匹配，
+  //    漏一个 API/methods/xxx 就等于没防住，而方法层是会继续长新文件的。
+  //    （注意：本段用行注释而不是块注释 —— 块注释里出现 `**/` 会因为其中的
+  //    `*/` 提前闭合注释，把配置文件本身写坏，实测过。）
+  //    实测匹配走 gitignore 语义（ESLint 内部用 ignore 包），
+  //    `**/API/methods/*` 能命中 `../API/methods/notes/notesImpl` 这种多级路径。
+  {
+    // 前端：组件/钩子/页面不许直接引后端方法层。
+    // 要类型 → import type；要逻辑 → 先把纯函数抽到 src/utils/ 再引。
+    files: ['src/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [
+                '**/API/methods/*',
+                '**/API/methods',
+                '**/API/navigationApi',
+              ],
+              allowTypeImports: true,
+              message:
+                '组件/钩子不许直接引后端方法层（会把 D1 SQL 与整条后端依赖链拖进前端图）。要类型就用 import type；要逻辑就先抽到 src/utils/。',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // 反向：worker 只许依赖 src/API（业务层），不许回头依赖 UI 层。
+    // 刻意不封 src/API —— worker/routes/*.ts 引 ../../src/API/navigationApi
+    // 是既有的、必要的一条边，封了就得满地 disable。
+    files: ['worker/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [
+                '**/src/components/*',
+                '**/src/hooks/*',
+                '**/src/context/*',
+              ],
+              allowTypeImports: true,
+              message: 'worker 只许依赖 src/API（业务层），不许依赖 UI 层。',
+            },
+          ],
+        },
+      ],
+    },
+  },
 )

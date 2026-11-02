@@ -81,7 +81,7 @@ test("真实 SQLite：老库（rowid 与 notes.id 无关）升级后按新契约
     // 这是这次改造最关键的一条：**模拟已部署的老库**。
     // ⚠️ 必须同时把 schema.version 和 schema.steps 退掉 —— 只退版本号的话
     // runMigrations 会按「已执行集合」把每一步都跳过，整批迁移白跑
-    //（这个仓库栽过一次，见 migration.ts 里 STEPS_AT_V28 的注释）。
+    //（这个仓库栽过一次，见 migration.ts 里 STEPS_AT_V29 的注释）。
     const { db, api } = await fresh();
     const note = await api.createNote({ title: "数据库设计说明", content: "正文讲表结构和索引设计" });
 
