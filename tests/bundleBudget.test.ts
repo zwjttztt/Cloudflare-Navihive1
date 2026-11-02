@@ -234,9 +234,17 @@ const FIRST_SCREEN_BUDGET_GZIP_KB = 300;
  *   这 21.8 KB 全是首屏真要用到的 CSS 与主题 token，没有把弹窗硬拆出去骗指标；
  *   预算同步 900 → 920，把「离上限至少 3%」的信号重新立住（现余量 5.2%）。
  *   ⚠️ 下次再涨请先确认是「内容涨」还是「有组件被改回同步 import」。
+ *
+ * 858.5 / 283.2 —— 2026-11-02（27.0.0，D5）**照实下调**，不是口径变化：
+ *   根因是 `vite.config.ts` 的 `scanFirstScreenMui()` 跟着 `import type` 走，
+ *   把整棵懒加载弹窗树专用的 MUI 判成「首屏要用」并归进 mui-core，让
+ *   index.html 的 modulepreload 白预下载了约 30 KB。修法是让扫描器只看值绑定
+ *   （详见该文件里 STATIC_IMPORT_RE / clauseNames 上的注释）。运行时没有任何
+ *   模块被挪走，产物结构也没变，所以这是**真实回收**而非指标美化。
+ *   余量因此从 3.5% / 3.0% 回到 7.2% / 5.9%，后续 C5/D1 等首屏项有了空间。
  */
-const FIRST_SCREEN_BASELINE_RAW_KB = 874.2;
-const FIRST_SCREEN_BASELINE_GZIP_KB = 286.6;
+const FIRST_SCREEN_BASELINE_RAW_KB = 858.5;
+const FIRST_SCREEN_BASELINE_GZIP_KB = 283.2;
 
 interface FirstScreen {
     files: { name: string; rawKb: number; gzipKb: number }[];
@@ -298,12 +306,19 @@ test("真实首屏（index.html 的 script + modulepreload + css 合计）不超
 });
 
 // ⚠️ 标题里的百分比必须与下面的断言一致 —— 2026-10-24 全站复查发现这里写着 5%、
-// 实际断言是 3%，报告上「还有 5% 余量」是假的。
-// 设计意图确实是 5%（离上限还有多少增长空间），但**当前实测只有 3.3% / 5.0%**：
-// raw 871.3 KB 距 5% 线（857.1 KB）还差约 14 KB，靠抬预算把数字做漂亮是自欺欺人。
-// 所以这里如实写 3%，缺口留在这条注释里：真把首屏压下来之后，把断言和标题一起
-// 改回 0.05（同一处改，别只改一个）。
-test("**当前**真实首屏也要留 3% 余量，不只是基线留", t => {
+// 实际断言是 3%，报告上「还有 5% 余量」是假的。当时如实改回 3%，并在这里立下约定：
+// 真把首屏压下来之后，把断言和标题一起改回 0.05（同一处改，别只改一个）。
+//
+// ✅ 2026-11-02 达成（27.0.0）：实测 raw 858.7 KB / gzip 283.4 KB，余量 7.1% / 5.9%，
+// 5% 线（raw 876.2 KB / gzip 285.7 KB）是真跨过去了，不是靠抬预算把数字做漂亮。
+// 降掉的 29.9 KB / 7.8 KB 来自 mui-core 里的一批**白背**：扫描器顺着
+// `import type { NavCenterPanelId } from "./components/navigationCenter/model"`、
+// `import type { CommandItem } from "./CommandPalette"` 这类**类型导入**走进了整棵
+// 懒加载弹窗树，把弹窗专用的 Alert / Dialog / Switch / LinearProgress /
+// FormControlLabel 和 12 个 icons-material 判成「首屏要用」，归进 mui-core 后被
+// index.html 的 modulepreload 一起预下载 —— 而运行时那几条边根本不存在。
+// 修在 vite.config.ts 的 STATIC_IMPORT_RE / clauseNames（不再跟类型导入）。
+test("**当前**真实首屏也要留 5% 余量，不只是基线留", t => {
     // 和上面那条 index chunk 的余量用例同一个道理：基线只在真把首屏压下来时才更新，
     // 中间加进去的几 KB 它看不见。真正该红的是「现在离上限还有多远」。
     const fs = firstScreen();
@@ -314,10 +329,10 @@ test("**当前**真实首屏也要留 3% 余量，不只是基线留", t => {
     const rawHeadroom = (FIRST_SCREEN_BUDGET_RAW_KB - fs.rawKb) / fs.rawKb;
     const gzipHeadroom = (FIRST_SCREEN_BUDGET_GZIP_KB - fs.gzipKb) / fs.gzipKb;
     assert.ok(
-        rawHeadroom >= 0.03 && gzipHeadroom >= 0.03,
+        rawHeadroom >= 0.05 && gzipHeadroom >= 0.05,
         `当前真实首屏 ${fs.rawKb.toFixed(1)} KB / gzip ${fs.gzipKb.toFixed(1)} KB，` +
             `离预算只剩 ${(rawHeadroom * 100).toFixed(1)}% / ${(gzipHeadroom * 100).toFixed(1)}%` +
-            `（各留至少 3%；设计目标是 5%，未达成 —— 见本用例上方的注释）。`
+            `（各留至少 5% —— 见本用例上方的注释）。`
     );
 });
 

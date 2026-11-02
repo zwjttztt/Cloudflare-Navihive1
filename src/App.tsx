@@ -194,7 +194,7 @@ import {
 } from "@mui/material";
 import ChunkBoundary from "./components/ChunkBoundary";
 // 记事本加载骨架：做成**懒块**（动态 import），不写进 index.html 的 preload，
-// 因此不计入首屏预算（那条 3% 余量红线盯的是首屏字节，骨架只在打开记事本时才按需下载）。
+// 因此不计入首屏预算（那条 5% 余量红线盯的是首屏字节，骨架只在打开记事本时才按需下载）。
 // 由 ChunkBoundary 的 loadingFallback 引用——见 ChunkBoundary 头注。
 const NotesLoadingFallback = lazy(() => import("./components/NotesLoadingFallback"));
 // 局部渲染兜底：拦在「站点列表 / 登录页」这一层，别让一张卡片崩了整页变成错误页

@@ -13,7 +13,7 @@
 //
 // ⚠️ 两条别踩的线：
 //   1. 本组件与九个面板**都必须只走动态 import** —— 它挂在首屏的按钮后面，
-//      静态 import 会把整套外壳焊进首屏（首屏 gzip 预算只剩约 3% 余量）。
+//      静态 import 会把整套外壳焊进首屏（首屏 gzip 预算只剩约 6% 余量）。
 //      守卫：tests/navigationCenterLazyGuard.test.ts。
 //   2. 弹出层的无障碍命名只能写在 `slotProps.paper` 上（写 <Dialog> 顶层会
 //      落到 Modal 根）。这件事由 settingsWorkspace/SettingsWorkspaceDialog 负责，

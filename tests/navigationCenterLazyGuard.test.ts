@@ -1,8 +1,8 @@
 // tests/navigationCenterLazyGuard.test.ts
 // 「设置」中心的**懒加载边界守卫**（2026-10-29 统一弹窗改造）。
 //
-// 为什么单独写一条守卫：首屏 gzip 预算只剩约 3% 余量（真实首屏 884.287 KB /
-// gzip 289.736 KB，预算 920 / 300 KB，见 tests/bundleBudget.test.ts）。
+// 为什么单独写一条守卫：首屏 gzip 预算只剩约 6% 余量（真实首屏 858.5 KB /
+// gzip 283.2 KB，预算 920 / 300 KB，见 tests/bundleBudget.test.ts）。
 // 中心是一个**两层**懒加载结构：
 //   第一层：中心弹窗本身 —— 由 App 用 lazy(() => import(...)) + ChunkBoundary when 挂载；
 //   第二层：八个业务面板 —— 由中心内部按 activeId 分发，只有被选中那一个才下载。
@@ -138,7 +138,7 @@ test("入口文件只用动态 import 引入中心外壳与八个面板", () => 
         offenders,
         [],
         "中心与面板只能走 lazy(() => import(...))：静态 import 会把它们焊进首屏，" +
-            "而首屏 gzip 预算只剩约 3% 余量"
+            "而首屏 gzip 预算只剩约 6% 余量"
     );
 });
 

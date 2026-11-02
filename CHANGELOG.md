@@ -6,6 +6,52 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-11-02 · 性能：首屏少下载 30 KB，余量 3% 回到 7%（27.0.1）
+
+审计 D5 项。**`src/` 一行业务代码没改**，改的是「谁算首屏」这件事本身。
+
+### 根因：首屏扫描器跟着 `import type` 走
+
+`vite.config.ts` 的 `scanFirstScreenMui()` 是**源码层静态扫描器**（不是 rolldown 的模块图），它算出的 MUI 集合决定哪些 `@mui/material` 文件归进 `mui-core` 块；而 `mui-core` 是入口静态依赖，会进 `index.html` 的 `modulepreload` —— 全额计入真实首屏。
+
+问题是它不看「这条 import 运行时存不存在」，于是三条**类型导入**被当成了静态边：
+
+| 位置 | 语句 |
+|---|---|
+| `src/App.tsx:125` | `import type { NavCenterPanelId } from "./components/navigationCenter/model"` |
+| `src/components/OverlayHost.tsx:19` | `import type { CommandItem } from "./CommandPalette"` |
+| `src/hooks/useAppCommands.ts:12` | `import type { CommandItem } from "../components/CommandPalette"` |
+
+扫描器顺着它们走进**整棵懒加载弹窗树**（导航中心九屏 + 命令面板），把那些弹窗专用的组件判成「首屏要用」：`Alert`、`Dialog/DialogActions/DialogContent/DialogTitle`、`Switch`、`LinearProgress`、`FormControlLabel`，外加 12 个 `@mui/icons-material`（Lock / Logout / Palette / Storage / Insights / OpenInNew / Bolt / WarningAmberRounded / VisibilityOutlined / VisibilityOffOutlined 等）。**它们一个都不在真正的入口静态图里**，纯属白背。
+
+### 修法
+
+`STATIC_IMPORT_RE` 删掉 `(?:type\s+)?`（不再匹配 `import type … from` / `export type … from`），`clauseNames()` 把 `{ useTheme, type SxProps }` 里的 `type` 绑定**整条丢掉**（旧代码只是 `.replace(/^type\s+/, "")` 剥前缀，名字照样被当组件去查）。两条都写了「为什么」和实测数据在原地。
+
+归错方向是安全的：值导入才真的把模块拖进来，漏判只是少一点分包稳定性，字节不涨。
+
+### 结果
+
+| 块 | raw | gzip |
+|---|---|---|
+| `mui-core` | 331.2 → **300.1** KB（−31.1） | 102.4 → **94.1** KB（−8.3） |
+| `index` | 252.1 → 253.1 KB（+1.0，几个模块落回自然分包） | 82.9 → 83.3 KB |
+| **真实首屏** | 888.6 → **858.5** KB | 291.2 → **283.2** KB |
+| **余量** | 3.5% → **7.2%** | 3.0% → **5.9%** |
+
+首屏 JS 仍是 5 个块（那条「不超过 8 个」的请求数判据不受影响）；`precache-manifest` 双向对齐、无缺失文件，`ConfirmDialog` 仍在 core 里（离线删除链路不受影响）。
+
+### 门禁收紧（这次不只改代码）
+
+`tests/bundleBudget.test.ts` 的余量断言 **3% → 5%**，用例标题同步改 —— 按 2026-10-24 那次留下的约定：「真把首屏压下来之后，把断言和标题一起改回 0.05，同一处改，别只改一个」。基线常量同时照实下调到 858.5 / 283.2（该文件对这种下调的要求是「若是有意压下去的，把基线更新掉」）。
+
+顺带把四处**现在时**的过期说法改掉（`src/App.tsx`、`src/components/NavigationCenterDialog.tsx`、`tests/navigationCenterLazyGuard.test.ts` 的头注与断言消息）。历史叙述里那些「当时只剩 3%」保留原样 —— 那是那天的真事。
+
+### 还留在桌上的两块肉（这次没动，风险高一档）
+
+1. **dnd-kit 占 `vendor` 的 78%（≈59 KB raw / 28 KB gzip）**。看着像能懒加载，其实不行：`useSortable` 在 `SiteCard` / `GroupCard` 的**渲染期**就要跑，不是「进排序模式」才跑。真要砍得把「可排序卡片外壳」抽成懒组件、非排序态渲另一套 DOM —— 会动卡片结构与 CSS，必须配视觉回归 + a11y 审计。
+2. **`@mui/material/Select`（≈8 KB）**是被 `HeaderSearchBox` 的 `TextField` 带进来的：MUI 的 `TextField.mjs` 内部静态 `import Select`（它要支持 `select` prop），而搜索框只用一个普通文本框。换 `OutlinedInput` 能省 8~10 KB，但会改搜索框的 DOM 结构与视觉。
+
 ## 2026-11-02 · 性能 + 安全 + 重构：独立审计的第 2 批（27.0.0）
 
 第 2 批 7 项（C1–C7），顺手把 D3 的迁移记账一起落地 —— 它们都动数据库层，分开推要跑两轮迁移。**本版零首屏字节变化**，改的全是主线程之外的路径：限速怎么存、密钥怎么派生、鉴权读几次库、迁移失败记不记得住。

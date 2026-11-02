@@ -225,18 +225,41 @@ function scanFirstScreenMui(): { material: Set<string>; icons: Set<string> } {
         material.add(file.slice(materialRoot.length + 1).split(path.sep).join("/"));
     };
 
+    /**
+     * 花括号子句里的**值**绑定名。
+     *
+     * ⚠️ 2026-11-02（D5 首屏余量）：`type ` 前缀的绑定必须整条丢掉，不能只剥前缀。
+     * TS/rolldown 会把 `import { type X }` 里的 X 擦干净，它不产生任何模块图边；
+     * 只有值绑定才真的把目标模块拖进来。混在值里的 `{ useTheme, type SxProps }`
+     * 按名字去查会把 SxProps 当成组件名，一路查到无关的整棵组件闭包。
+     */
     const clauseNames = (clause: string | undefined): string[] => {
         if (!clause || !clause.startsWith("{")) return [];
         return clause
             .slice(1, -1)
             .split(",")
-            .map(s => s.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0].trim())
+            .map(s => s.trim())
+            .filter(s => s.length > 0 && !/^type\s/.test(s))
+            .map(s => s.split(/\s+as\s+/)[0].trim())
             .filter(Boolean);
     };
 
     // 子句只能是花括号块 / * as x / 单个标识符，花括号内不会嵌套 —— 用惰性匹配防跨语句误捕
+    //
+    // ⚠️ 2026-11-02（D5 首屏余量）：这里**刻意不匹配** `import type ... from` /
+    // `export type ... from`（旧版有个 `(?:type\s+)?`，已删）。理由和 clauseNames 里
+    // 那条一样：类型导入在运行时不存在，它不建立任何模块图边。
+    //
+    // 这个差别不是理论洁癖 —— 实测首屏 raw −29.9 KB / gzip −7.8 KB（其中 mui-core
+    // 块自己 331.2 → 300.2 KB、102.4 → 94.1 KB）。当时 App.tsx 只有一句
+    // `import type { NavCenterPanelId } from "./components/navigationCenter/model"`，
+    // OverlayHost / useAppCommands 各有一句 `import type { CommandItem } from
+    // "./CommandPalette"`：扫描跟着这三条类型边走进整个懒加载弹窗树，把那些弹窗
+    // 专用的 Alert / Dialog / Switch / LinearProgress / FormControlLabel 和 12 个
+    // icons-material 全判成「首屏要用」→ 归进 mui-core → index.html 的 modulepreload
+    // 把它们一起预下载了。而运行时那三条边根本不存在（打包产物里没有这些模块），纯属白背。
     const STATIC_IMPORT_RE =
-        /\b(?:import|export)\s+(?:type\s+)?(\{[\s\S]*?\}|\*[\s\S]*?|\w+)(?:\s*,\s*(\{[\s\S]*?\}))?\s*from\s*["']([^"']+)["']/g;
+        /\b(?:import|export)\s+(\{[\s\S]*?\}|\*[\s\S]*?|\w+)(?:\s*,\s*(\{[\s\S]*?\}))?\s*from\s*["']([^"']+)["']/g;
     const SIDE_EFFECT_RE = /(?:^|[;\r\n])\s*import\s*["']([^"']+)["']/g;
 
     /**
