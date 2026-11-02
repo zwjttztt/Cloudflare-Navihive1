@@ -193,6 +193,10 @@ import {
     CssBaseline,
 } from "@mui/material";
 import ChunkBoundary from "./components/ChunkBoundary";
+// 记事本加载骨架：做成**懒块**（动态 import），不写进 index.html 的 preload，
+// 因此不计入首屏预算（那条 3% 余量红线盯的是首屏字节，骨架只在打开记事本时才按需下载）。
+// 由 ChunkBoundary 的 loadingFallback 引用——见 ChunkBoundary 头注。
+const NotesLoadingFallback = lazy(() => import("./components/NotesLoadingFallback"));
 // 局部渲染兜底：拦在「站点列表 / 登录页」这一层，别让一张卡片崩了整页变成错误页
 // （见 components/RenderBoundary.tsx 头注）。刻意不用 ChunkBoundary：它的文案是给
 // 「chunk 没下载下来」写的，对渲染期异常是误导。
@@ -381,6 +385,10 @@ function App() {
             ["deleteAccount", dialogChunks.deleteAccount],
             ["tagBar", dialogChunks.tagBar],
             ["siteSkeleton", dialogChunks.siteSkeleton],
+            // 记事本整块最贵（357KB + 编辑器 + markdown），刻意排最尾：
+            // 只在前面 23 个常用小件都备齐、且浏览器确实闲下来之后才取，不跟首屏抢带宽；
+            // 桌面 hover 笔记按钮已能提前取，这里兜底「开了页面没碰过按钮」的路径。
+            ["notesOverlay", dialogChunks.notesOverlay],
         ]);
     }, [isAuthenticated]);
 
@@ -2162,8 +2170,11 @@ function App() {
                         里面同时装着 useNotes 这个 hook 与视图，两者一起出首屏。
                         （以前只 lazy 了视图，hook 还留在 App 顶层，首屏照样背着它。） */}
                     {notesOpen && (
-                        <ChunkBoundary>
-                        <Suspense fallback={null}>
+                        // 记事本整页级懒块：弱网真会等几秒，挂骨架当加载信号
+                        // （ChunkBoundary 的 loadingFallback，默认仍是 null）。
+                        // 原本内层那个 <Suspense fallback={null}> 是冗余的 ——
+                        // ChunkBoundary 自带 Suspense，删掉让骨架直接由它兜住。
+                        <ChunkBoundary loadingFallback={<NotesLoadingFallback />}>
                             <NotesOverlay
                                 api={api}
                                 // 站点设置里点「相关笔记」时带上目标笔记 id
@@ -2182,7 +2193,6 @@ function App() {
                                 // 不再跳到导航站的配置弹窗 —— 两边配置毫无交集。
                                 accountName={currentUser?.username}
                             />
-                        </Suspense>
                         </ChunkBoundary>
                     )}
 

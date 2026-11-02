@@ -15,6 +15,8 @@ import SettingsIcon from "@mui/icons-material/Settings";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
 import StickyNote2Icon from "@mui/icons-material/StickyNote2";
+import { dialogChunks } from "../utils/dialogChunks";
+import { prefetchChunk } from "../utils/lazyPrefetch";
 
 // <=899.98px 才出现（.98 是为了吃掉 899.5 这类亚像素宽度）。
 // 900~1343.98px 由顶栏的「分组」按钮接管分组入口，>=1344px 由左栏接管。
@@ -66,6 +68,9 @@ export default function MobileTabBar({
         onClick: (event: React.MouseEvent<HTMLElement>) => void;
         active?: boolean;
         badge?: number;
+        /** 交互（按下/悬停/聚焦）时预取的懒块：移动端无 hover，主要靠 pointerdown 抢跑 +
+         *  记事本骨架兜底（见 NotesLoadingFallback）。设置 tab 取中心弹窗、笔记 tab 取整页块。 */
+        prefetch?: { key: string; load: () => Promise<unknown> };
     }[] = [
         { key: "search", label: "搜索", icon: <SearchIcon fontSize='small' />, onClick: onSearch },
         { key: "groups", label: "分组", icon: <DashboardIcon fontSize='small' />, onClick: onGroups, badge },
@@ -79,6 +84,7 @@ export default function MobileTabBar({
                       icon: <StickyNote2Icon fontSize='small' />,
                       onClick: () => onNotes(),
                       badge: notesBadge,
+                      prefetch: { key: "notesOverlay", load: dialogChunks.notesOverlay },
                   },
               ]
             : []),
@@ -97,8 +103,13 @@ export default function MobileTabBar({
                   },
               ]
             : []),
-        { key: "more", label: "设置", icon: <SettingsIcon fontSize='small' />, onClick: onMore },
+        { key: "more", label: "设置", icon: <SettingsIcon fontSize='small' />, onClick: onMore, prefetch: { key: "navigationCenter", load: dialogChunks.navigationCenter } },
     ];
+
+    // 交互触发预取：返回 handler 或 undefined（无 prefetch 的 tab 不挂事件）。
+    // 幂等（lazyPrefetch 内部 prefetched Set），pointerdown 抢跑触碰前就开始取块。
+    const prefetchHandler = (spec?: { key: string; load: () => Promise<unknown> }) =>
+        spec ? () => prefetchChunk(spec.key, spec.load) : undefined;
 
     return (
         <Paper
@@ -132,6 +143,9 @@ export default function MobileTabBar({
                     type='button'
                     className='nav-tabbar-btn'
                     onClick={item.onClick}
+                    onPointerDown={prefetchHandler(item.prefetch)}
+                    onPointerEnter={prefetchHandler(item.prefetch)}
+                    onFocus={prefetchHandler(item.prefetch)}
                     aria-label={item.label}
                     aria-pressed={item.active ? true : undefined}
                     sx={{

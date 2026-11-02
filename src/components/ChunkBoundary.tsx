@@ -37,6 +37,14 @@ interface Props {
      * （比如维护模式横幅，它要一直在才能自己轮询到维护状态）。
      */
     when?: boolean;
+    /**
+     * 懒块**加载中**的占位（可选）。默认 null —— 2026-10-17 用户当时要求去除
+     * 转圈：三层预取把「点击时下载」提前到点击前，常用弹窗首开基本 0 请求、
+     * 无需加载指示。但 NotesOverlay 是整页级懒块（357KB + 编辑器），弱网真会
+     * 等几秒，所以这里做成**可选**：只有显式传 loadingFallback 的调用点（NotesOverlay）
+     * 才显示骨架，其余 30+ 弹窗维持原 null 行为，不闪转圈。
+     */
+    loadingFallback?: ReactNode;
 }
 
 interface State {
@@ -155,11 +163,17 @@ export default class ChunkBoundary extends Component<Props, State> {
         if (!mounted) return null;
         if (!error) {
             return (
-                // fallback 保持 null（2026-10-17 用户要求去除转圈）：三层预取把
-                // 「点击时下载」提前到点击前，正常路径首开就是 0 请求、无需加载指示；
-                // 真网抖动时宁可短暂空窗，也不闪转圈。
+                // 外层 Suspense（fallback=null）兜底：loadingFallback 可能是**懒组件**
+                // （NotesOverlay 的骨架走动态 import，不进首屏预算），它自己的块还没下来时
+                // 会先短暂挂起，由外层接住显示 null，等骨架块就绪再换成骨架；绝不会
+                // 因为「fallback 自己也在转圈」而把异常漏到错误边界。
+                // 默认 loadingFallback 为 null（见 Props 注释）：2026-10-17 用户当时要求
+                // 去除转圈，常用弹窗首开基本 0 请求、无需加载指示；只有 NotesOverlay 这类
+                // 整页级懒块显式传入骨架，弱网加载也有「正在打开」的结构信号。
                 <Suspense fallback={null}>
-                    {this.props.children}
+                    <Suspense fallback={this.props.loadingFallback ?? null}>
+                        {this.props.children}
+                    </Suspense>
                 </Suspense>
             );
         }
