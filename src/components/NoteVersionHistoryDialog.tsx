@@ -29,7 +29,7 @@ import type { NoteRevision } from "../API/types";
 import { computeLineDiff } from "../utils/noteDiff";
 import { formatWhen, formatWhenFull } from "../utils/noteTime";
 import { DialogEmptyState } from "./DialogListRow";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
 
 export interface NoteVersionHistoryDialogProps {
     open: boolean;
@@ -126,7 +126,8 @@ export default function NoteVersionHistoryDialog({
                 </Tooltip>
             </DialogTitle>
 
-            <DialogContent dividers sx={{ p: 0 }}>
+            {/* 版本行自己带内边距，正文整块贴边：外壳的 pt:0 正好是想要的，px/pb 归零 */}
+            <DialogContent dividers sx={{ ...dialogContentSx, px: 0, pb: 0 }}>
                 {revisions === null ? (
                     <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
                         <CircularProgress size={22} aria-label='正在读取历史版本' />

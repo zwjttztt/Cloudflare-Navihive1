@@ -1572,6 +1572,8 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
    （触控目标守卫已上提到上方「真触屏」段；这里只留真正跟
    「屏宽」有关的部分 —— 弹窗贴底、320px 内边距、safe-area 让位）
    ============================================================ */
+/* 宽度档位来自 src/theme/mediaQueries.ts 的 QUERY_BELOW_600（= MUI down('sm')，
+   599.95 那个 `.95` 尾巴是 MUI 生成的边界，别改成 `.98`） */
 @media (max-width: 599.95px) {
     /* 设置 / 编辑类弹窗在小屏走底部面板：
        拇指够得到，也比居中弹窗少一次「抬头找按钮」。
@@ -1616,6 +1618,7 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
     /* 320px 宽（iPhone SE 一类）：再收一层内边距，别让内容顶到边上
        （选择器带前缀的理由同上：压过 emotion 运行时注入的同名单类样式） */
     @media (max-width: 359.98px) {
+        /* 超窄屏档位：src/theme/mediaQueries.ts 的 QUERY_BELOW_360 */
         .MuiDialog-container .MuiDialog-paper {
             padding-left: 0;
             padding-right: 0;
@@ -1632,8 +1635,12 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
     }
 }
 
-/* 横屏矮屏（手机横过来 / 分屏）：弹窗最高只留 88%，正文自己滚 */
-@media (max-height: 480px) and (max-width: 899.95px) {
+/* 横屏矮屏（手机横过来 / 分屏）：弹窗最高只留 88%，正文自己滚。
+   宽度用的是站内「小屏」那一档 899.98（src/theme/mediaQueries.ts 的
+   QUERY_BELOW_900 / QUERY_LANDSCAPE_SHORT）—— 「横屏矮屏」与「底栏出现」
+   必须是同一条线。这里原来写的是 899.95（MUI down('md') 的尾巴），
+   在 899.96~899.98 这 0.03px 的带子上会出现「底栏已经出来、弹窗却还按大屏算高度」。 */
+@media (max-height: 480px) and (max-width: 899.98px) {
     .MuiDialog-container .MuiDialog-paper:not(.MuiDialog-paperFullScreen) {
         max-height: 88dvh;
     }

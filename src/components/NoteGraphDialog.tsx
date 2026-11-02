@@ -27,8 +27,8 @@ import { resolveWikiLinks, extractWikiLinks } from "../utils/noteWikiLink";
 import TextField from "@mui/material/TextField";
 import { readActiveAccount, scopedKey } from "../utils/accountScope";
 import useMediaQuery from "@mui/material/useMediaQuery";
-import { useTheme } from "@mui/material/styles";
-import { dialogTitleSx } from "./dialogShell";
+import { dialogContentSx, dialogTitleSx } from "./dialogShell";
+import { QUERY_BELOW_600 } from "../theme/mediaQueries";
 
 function graphPreference(key: string): string | null {
     try { return localStorage.getItem(scopedKey(`notes.graph.${key}`, readActiveAccount())); }
@@ -234,9 +234,11 @@ export default function NoteGraphDialog({
         return set;
     }, [graph.edges, hover]);
 
-    // 断点是 sm 下沿（<600px）：和全局 CSS 里「小屏走底部面板」同一条线
-    const theme = useTheme();
-    const isNarrow = useMediaQuery(theme.breakpoints.down("sm"));
+    // 断点是 sm 下沿（<600px）：和全局 CSS 里「小屏走底部面板」同一条线。
+    // 值取自 src/theme/mediaQueries.ts 的 QUERY_BELOW_600 —— 与
+    // theme.breakpoints.down("sm") 逐位相等（599.95），换成手写常量只为
+    // 「站内所有小屏判断都指向同一个出处」，语义没有变化
+    const isNarrow = useMediaQuery(QUERY_BELOW_600);
 
     return (
         <Dialog
@@ -285,7 +287,7 @@ export default function NoteGraphDialog({
                     <CloseIcon fontSize='small' />
                 </IconButton>
             </DialogTitle>
-            <DialogContent sx={{ pt: 0.5 }}>
+            <DialogContent sx={{ ...dialogContentSx, pt: 0.5 }}>
                 <TextField size='small' fullWidth value={query} onChange={e => setQuery(e.target.value)} label='筛选节点标题' />
                 <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", my: 1 }}>
                     <label>着色 <select aria-label='图谱着色' value={groupBy} onChange={e => setGroupBy(e.target.value as typeof groupBy)}><option value='none'>默认</option><option value='folder'>文件夹</option><option value='tag'>标签</option></select></label>

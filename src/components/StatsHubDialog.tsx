@@ -29,7 +29,7 @@ import InsightsIcon from "@mui/icons-material/Insights";
 import type { NavigationClient } from "../API/client";
 import VisitsPanel from "./VisitsPanel";
 import StatsPanel from "./StatsPanel";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
 
 /** 面板输入：与弹窗共享，尺寸与外壳由调用方负责 */
 export interface StatsHubPanelProps {
@@ -119,7 +119,7 @@ export default function StatsHubDialog({
                 </IconButton>
             </DialogTitle>
 
-            <DialogContent dividers sx={{ pt: 0, minHeight: 240 }}>
+            <DialogContent dividers sx={{ ...dialogContentSx, minHeight: 240 }}>
                 <StatsHubPanel {...panel} />
             </DialogContent>
 

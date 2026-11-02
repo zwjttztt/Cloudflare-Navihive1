@@ -17,10 +17,12 @@ import StarBorderIcon from "@mui/icons-material/StarBorder";
 import StickyNote2Icon from "@mui/icons-material/StickyNote2";
 import { dialogChunks } from "../utils/dialogChunks";
 import { prefetchChunk } from "../utils/lazyPrefetch";
+import { QUERY_BELOW_900 } from "../theme/mediaQueries";
 
-// <=899.98px 才出现（.98 是为了吃掉 899.5 这类亚像素宽度）。
+// <=899.98px 才出现（值来自 src/theme/mediaQueries.ts 的 QUERY_BELOW_900，
+// 那里的 `.98` 是为了吃掉 899.5 这类亚像素宽度）。
 // 900~1343.98px 由顶栏的「分组」按钮接管分组入口，>=1344px 由左栏接管。
-const TABBAR_SHOW_QUERY = "(max-width: 899.98px)";
+const TABBAR_SHOW_QUERY = QUERY_BELOW_900;
 
 interface MobileTabBarProps {
     onSearch: () => void;

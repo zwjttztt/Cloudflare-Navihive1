@@ -6,6 +6,51 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-11-02 · 重构 + 修复：弹窗正文统一，断点收成一个真源（28.0.0）
+
+审计第 2 批 C5 项。两件事：**给剩下的 19 个弹窗套上公共外壳**，以及**把断点从「5 个小数尾巴」收成一个人能讲清的真源**。
+
+### 弹窗正文：19 个文件、21 处 `<DialogContent`
+
+`src/components/dialogShell.ts` 里的三区外壳（`dialogPaperSx` / `dialogTitleSx` / `dialogContentSx` / `dialogActionsSx`）此前只有 11 个文件在用，剩下 19 个各写各的内边距 —— 同一个「确定」按钮在不同弹窗里高度不一样，就是从这里来的。
+
+现在全部套上。**但不是无脑替换**，三个判断点值得记下来：
+
+- **`helperText` 选择器会互相整块覆盖**。`dialogContentSx` 里有一条 `"& .MuiFormHelperText-root": { overflowWrap: "anywhere", wordBreak: "break-word" }`（帮助文字里常带长 URL / 长 token，窄屏会整段伸出输入框）。而 AccountDialog / AddSiteDialog / ConfigPanelBody / SiteSettingsModal 四个文件**本地也写了同一个选择器** —— `{...dialogContentSx, 本地同名键}` 会把外壳那条整块替换掉，等于「套上了，但外壳存在的理由丢了，而且看不出来」。这四处把断词那两行显式并进本地对象，并注明来源。
+- **`p: 2` 不要用来覆盖外壳的 `pt: 0`**。`{...dialogContentSx, p: 2}` 能不能生效取决于 emotion 把 `padding` 排在 `padding-top` 之后 —— 读代码的人看不出结果。改成显式 `pt: 2, px: 2, pb: 2`，像素与改造前逐位相同。`p: 0` 同理。
+- **`pt: 0` 依赖「上面有标题区」**。所以逐个文件确认了有没有标题行；6 个「纯套用」的都核过确实有 `<DialogTitle sx={dialogTitleSx}>`。剩下的按各自的 `pt` / `flex` 需求做展开覆盖，12 处每处都在行内写了为什么偏离。
+
+顺带补了 `TagManagerDialog.tsx:115` —— 同一文件里另有一处 `<DialogContent>` 写着 `{pt: 0, pb: 1}` 而没走外壳，标签名一长那里就会缺断词。
+
+### 断点：`.95` 和 `.98` 是两套语义，不要「统一」
+
+全站曾有 5 个小数尾巴（359.98 / 599.95 / 599.98 / 899.95 / 899.98），审计原文也把它们当成「随手写的数字，收敛成 2 个常量」。**核下来不是**：
+
+- **`.95` = 对齐 MUI `theme.breakpoints.down()`**。MUI 把 `down('sm')` 编译成 `(max-width: 599.95px)`（600 − 0.05）。手写的媒体查询必须**逐位相等**，写成 `.98` 会让 599.96~599.98 这 0.02px 里「CSS 认为是大屏、MUI 认为是小屏」。
+- **`.98` = 手写档位，为了吃掉亚像素宽度**（1920 屏放大到 110% 时视口上报 899.5，`max-width: 899px` 会漏掉它）。站内「小屏」这个概念一律用这一档。
+
+一律改成 `.98` 是错的。所以新增 `src/theme/mediaQueries.ts` 作为真源，把两套语义分别写成常量并在注释里讲清来历：`QUERY_BELOW_600`（599.95，对齐 MUI）/ `QUERY_BELOW_900`（899.98）/ `QUERY_BELOW_360`（359.98）/ 以及三对互补上界 `QUERY_AT_LEAST_900`、`QUERY_COMPACT_DESKTOP`、`QUERY_GROUP_RAIL_MIN`、加上 `QUERY_LANDSCAPE_SHORT` 和能直接当样式键用的 `MQ_BELOW_600`。
+
+**修掉的真 bug**：`src/index.css` 的「横屏矮屏」段写着 `max-width: 899.95px`，而「底栏出现」是 `899.98px` —— 在 899.96~899.98 这 0.03px 的带子里，底栏已经出来了，弹窗却还按大屏算高度。这两个判断是同一件事的两面（手机一横过来同时成立），统一到 `899.98`。
+
+**顺带收掉的第三套**：`useThemeController.ts` 里有 6 处 `@media (max-width:600px)` —— 无偏移，且 600px 本身落在 MUI 的 `sm` 区间内，于是 600px 宽时「小屏舒适内边距」和「sm 及以上」两套样式同时生效。改成 `MQ_BELOW_600`（= 599.95）。
+
+### 新增守卫：`tests/mediaBreakpoints.test.ts`（4 条）
+
+CSS 读不到 TS 常量，`index.css` 里只能写字面量 —— 两份数字**必然**存在，这才需要守卫：
+
+1. 抽出 `src/index.css` 里所有 `max-width` / `min-width` 的 px 字面量，与真源导出的常量集合比对，**多一个就红**（白名单是从常量集合算出来的，不是手抄；报错会直接告诉你「该用哪个常量名」）；
+2. 断言三条核心档位确实还在 CSS 里被用着（防止整段 `@media` 被删后测试「空对空」绿着）；
+3. 断言互补关系没被改坏（`899.98 + 0.02 = 900`、`1343.98 + 0.02 = 1344`；横屏矮屏段的宽度字面量必须等于 `QUERY_BELOW_900` —— 就是钉住上面那个 bug）；
+4. `script/ci-smoke.mjs` 里的 `matchMedia` 字面量（mjs 引不到 TS）也逐个数比对。
+
+反验过一次：临时往 `index.css` 追加 `@media (max-width: 767px)`，用例如期红并报出 `767px`，随后还原。
+
+### 没动的两处（有理由）
+
+- **`HeaderActions` / `DisplayControls` 的门槛走 MUI 的 `display: { md: … }`**，由 `theme.breakpoints.values.md` 派生，本身就是单一真源、值正好等于 `QUERY_AT_LEAST_900`。只有注释里的裸数字换成了常量名。
+- **`GroupNavRail` 的 1344 仍是算出来的**（`RAIL_CONTENT_MAX_WIDTH + 2 * (EDGE + GUTTER)`），没有反过来引用常量 —— 那会把「布局常量」和「断点常量」耦合起来，属设计决定。守卫目前保不住「栏宽常量改了而 1343.98 没跟着改」，已记入待办。
+
 ## 2026-11-02 · 性能：首屏少下载 30 KB，余量 3% 回到 7%（27.0.1）
 
 审计 D5 项。**`src/` 一行业务代码没改**，改的是「谁算首屏」这件事本身。

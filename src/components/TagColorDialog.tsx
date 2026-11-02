@@ -20,7 +20,7 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { FOLDER_COLORS, isFolderColor } from "../utils/folderAppearance";
 import DialogCloseButton from "./DialogCloseButton";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
 
 export interface TagColorDialogProps {
     open: boolean;
@@ -68,7 +68,8 @@ export default function TagColorDialog({ open, tag, onSave, onClose }: TagColorD
                 标签颜色{tag?.name ? ` · ${tag.name}` : ""}
                 <DialogCloseButton onClose={onClose} label='关闭标签颜色' />
             </DialogTitle>
-            <DialogContent sx={{ pt: "4px!important" }}>
+            {/* 4px 上内边距要压过 MUI 的「标题 + 正文」相邻归零规则，仍用 !important */}
+            <DialogContent sx={{ ...dialogContentSx, pt: "4px!important" }}>
                 <Typography variant='caption' sx={{ display: "block", mb: 1, color: "text.secondary" }}>
                     颜色只用来区分，不影响排序与搜索。
                 </Typography>

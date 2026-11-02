@@ -34,7 +34,7 @@ import type { SiteAi } from "../context/AiContext";
 import DialogCloseButton from "./DialogCloseButton";
 import { SECRET_IGNORE_ATTRS, secretInputSx, secretInputType } from "../utils/secretInput";
 import { generatePassword } from "../utils/passwordGenerator";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
 
 export interface AddSiteDialogProps {
     open: boolean;
@@ -102,12 +102,18 @@ export default function AddSiteDialog(props: AddSiteDialogProps) {
 
                 <DialogContent
                     sx={{
+                        ...dialogContentSx,
                         pt: 2,
                         pb: 1,
                         // 整体收紧，避免出现上下滚动
                         "& .MuiInputBase-input": { fontSize: 14 },
                         "& .MuiInputLabel-root": { fontSize: 14 },
-                        "& .MuiFormHelperText-root": { fontSize: 12 },
+                        "& .MuiFormHelperText-root": {
+                            // 断词从外壳继承：这里经常贴长 URL / 长 token
+                            overflowWrap: "anywhere",
+                            wordBreak: "break-word",
+                            fontSize: 12,
+                        },
                     }}
                 >
                     <Stack spacing={1.5}>

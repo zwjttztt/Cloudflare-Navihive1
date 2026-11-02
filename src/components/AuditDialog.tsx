@@ -29,7 +29,7 @@ import BugReportIcon from "@mui/icons-material/BugReport";
 import { NavigationClient } from "../API/client";
 import DialogCloseButton from "./DialogCloseButton";
 import { DialogEmptyState, DialogListRow } from "./DialogListRow";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
 
 // 2026-10-29：业务抽成命名导出的 `AuditPanel`。弹窗关闭时 MUI 本来就不渲染子树，
 // 所以面板里的 `open` 判断等价于「挂载了」，抽出去后直接用挂载时机即可 ——
@@ -403,7 +403,9 @@ export default function AuditDialog({
                 审计日志
                 <DialogCloseButton onClose={onClose} label='关闭审计日志' />
             </DialogTitle>
-            <DialogContent dividers sx={{ p: 2, minHeight: 240 }}>
+            {/* 正文四边都留 16px（覆盖外壳的 pt:0 / pb:1.5）：
+                审计行是多列密排，贴边会挤。断词规则仍从外壳来 */}
+            <DialogContent dividers sx={{ ...dialogContentSx, pt: 2, px: 2, pb: 2, minHeight: 240 }}>
                 <AuditPanel client={client} retentionDays={retentionDays} />
             </DialogContent>
             <DialogActions sx={dialogActionsSx}>

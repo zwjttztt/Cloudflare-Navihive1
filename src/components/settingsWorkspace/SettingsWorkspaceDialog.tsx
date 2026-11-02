@@ -31,6 +31,7 @@ import DialogCloseButton from "../DialogCloseButton";
 import ConfirmDialogGate from "../ConfirmDialogGate";
 import { dialogPaperTokens } from "../dialogShell";
 import { WorkspaceNavSignalContext } from "./SettingsWorkspaceNav";
+import { QUERY_BELOW_600 } from "../../theme/mediaQueries";
 
 /**
  * 窄屏（<600px）走 MUI `Dialog fullScreen`，不是底部抽屉。
@@ -39,7 +40,7 @@ import { WorkspaceNavSignalContext } from "./SettingsWorkspaceNav";
  * 会被软键盘与二级确认弹窗持续挤压；fullScreen 仍保留 MUI Dialog 的
  * focus trap 与焦点归还，只是把纸面铺满一屏。
  */
-const FULL_SCREEN_QUERY = "(max-width: 599.95px)";
+const FULL_SCREEN_QUERY = QUERY_BELOW_600;
 
 export interface SettingsWorkspaceDialogProps {
     open: boolean;

@@ -838,6 +838,12 @@ for (const vp of VIEWPORTS) {
       const rail = document.querySelector('.nav-group-rail');
       const bar = document.querySelector('.nav-mobile-tabbar');
       // 900~1343.98px 这一档：左栏没有、底栏也没有，靠顶栏的「分组」按钮兜住
+      // ⚠️ 下面三条手写查询串必须与 src/theme/mediaQueries.ts 逐位一致：
+      //    qRail   ← GroupNavRail 的 min-width:1344px（CSS 里，对应 QUERY_GROUP_RAIL_MIN）
+      //    qBar    ← 第 2 个导出 QUERY_BELOW_900
+      //    qGroups ← 第 5 个导出 QUERY_COMPACT_DESKTOP
+      // 这是 mjs，import 不到 TS 常量，只能写字面量 ——
+      // tests/mediaBreakpoints.test.ts 会断言这三个数字都在白名单里。
       const groupsBtn = [...document.querySelectorAll('button')].find(
           b => b.innerText.trim().startsWith('分组')
       );

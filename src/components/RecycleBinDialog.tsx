@@ -27,7 +27,7 @@ import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import { NavigationClient } from "../API/client";
 import { fmtDateTime } from "../utils/format";
 import ConfirmDialog from "./ConfirmDialog";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
 
 interface RecycleItem {
     id: number;
@@ -323,7 +323,8 @@ export default function RecycleBinDialog({
                 回收站
                 <DialogCloseButton onClose={onClose} label='关闭回收站' />
             </DialogTitle>
-            <DialogContent dividers sx={{ p: 2, minHeight: 200 }}>
+            {/* 正文四边都留 16px（覆盖外壳的 pt:0 / pb:1.5）：回收站行是多列密排，贴边会挤 */}
+            <DialogContent dividers sx={{ ...dialogContentSx, pt: 2, px: 2, pb: 2, minHeight: 200 }}>
                 <RecyclePanel
                     client={client}
                     onChanged={onChanged}

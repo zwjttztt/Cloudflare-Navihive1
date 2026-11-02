@@ -22,11 +22,11 @@ import {
     TableCell,
     Chip,
     useMediaQuery,
-    useTheme,
 } from "@mui/material";
 import InstallDesktopIcon from "@mui/icons-material/InstallDesktop";
 import DialogCloseButton from "./DialogCloseButton";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
+import { QUERY_BELOW_600 } from "../theme/mediaQueries";
 
 interface Shortcut {
     keys: string[];
@@ -73,8 +73,9 @@ export interface ShortcutsPanelProps {
  * 所以这里不重复放 DialogTitle / 「知道了」按钮，避免中心里套一个会关掉中心的弹窗。
  */
 export function ShortcutsPanel({ canInstall = false, onInstallApp }: ShortcutsPanelProps) {
-    const theme = useTheme();
-    const isNarrow = useMediaQuery(theme.breakpoints.down("sm"));
+    // 窄屏（<600px）把「组合键」列的宽度收窄：值来自 src/theme/mediaQueries.ts
+    // 的 QUERY_BELOW_600，与 theme.breakpoints.down("sm") 逐位相等（599.95）
+    const isNarrow = useMediaQuery(QUERY_BELOW_600);
 
     return (
         <Box>
@@ -202,7 +203,7 @@ export default function ShortcutsDialog({ open, onClose, canInstall = false, onI
                 <DialogCloseButton onClose={onClose} />
             </DialogTitle>
 
-            <DialogContent sx={{ pt: "12px !important", pb: 1, px: 3 }}>
+            <DialogContent sx={{ ...dialogContentSx, pt: "12px !important", pb: 1, px: 3 }}>
                 <ShortcutsPanel canInstall={canInstall} onInstallApp={onInstallApp} />
             </DialogContent>
 

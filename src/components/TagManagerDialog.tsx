@@ -112,7 +112,9 @@ export default function TagManagerDialog({
                     </Tooltip>
                 </DialogTitle>
 
-                <DialogContent sx={{ pt: 0, pb: 1 }}>
+                {/* pt:0 贴着标题（本文件 :325 那处走的是公共外壳，这里也补上，
+                    否则标签名一长，helperText 里的 token 在窄屏会伸出输入框） */}
+                <DialogContent sx={{ ...dialogContentSx, pt: 0, pb: 1 }}>
                     {onAiSuggest ? (
                         <Button
                             size='small'

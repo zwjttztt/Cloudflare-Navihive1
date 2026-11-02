@@ -46,7 +46,7 @@ import { pickExistingTags, pickRecommendedTags } from "../utils/tagSuggest";
 import { useAppConfig } from "../context/appConfigStore";
 import SiteNotesSection from "./SiteNotesSection";
 import { Section } from "./dialogSection";
-import { dialogActionsSx, dialogPaperTokens, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogPaperTokens, dialogTitleSx } from "./dialogShell";
 import {
     formDataKey,
     secretInputSx,
@@ -530,12 +530,18 @@ export default function SiteSettingsModal({
             >
                 <DialogContent
                     sx={{
+                        ...dialogContentSx,
                         pt: 2,
                         pb: 1,
                         // 整体收紧，避免出现上下滚动
                         "& .MuiInputBase-input": { fontSize: 14 },
                         "& .MuiInputLabel-root": { fontSize: 14 },
-                        "& .MuiFormHelperText-root": { fontSize: 12 },
+                        // 断词从外壳继承：登录凭据那块常贴长 URL / token
+                        "& .MuiFormHelperText-root": {
+                            overflowWrap: "anywhere",
+                            wordBreak: "break-word",
+                            fontSize: 12,
+                        },
                     }}
                 >
                     {/* 分组骨架照参考样式（dialogSection 的 Section）：原来是一整列平铺
@@ -1083,7 +1089,7 @@ export default function SiteSettingsModal({
                     <CloseIcon fontSize='small' />
                 </IconButton>
             </DialogTitle>
-            <DialogContent>
+            <DialogContent sx={dialogContentSx}>
                 <TextField
                     id='notes-expanded'
                     name='notes'

@@ -28,7 +28,7 @@ import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import { pickBulkTagSuggestions } from "../utils/tagSuggest";
 import { parseTagInput, toggleTagInInput } from "../utils/tagInput";
 import DialogCloseButton from "./DialogCloseButton";
-import { dialogActionsSx, dialogPaperSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogPaperSx, dialogTitleSx } from "./dialogShell";
 
 export interface BulkGroupOption {
     id: number;
@@ -292,7 +292,7 @@ export default function BulkActionBar({
                     给 {count} 个网站打标签
                     <DialogCloseButton onClose={() => setTagOpen(false)} label='关闭打标签弹窗' />
                 </DialogTitle>
-                <DialogContent sx={{ pt: 0 }}>
+                <DialogContent sx={dialogContentSx}>
                     {/* MUI 会把「标题 + 内容」相邻时的内容区上内边距归零，
                         浮起的 label 需要往上探出约 9px，这里补一层上内边距免得被裁 */}
                     <Box sx={{ pt: 1.5 }}>

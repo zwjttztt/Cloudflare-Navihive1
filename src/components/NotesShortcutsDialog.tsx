@@ -9,7 +9,7 @@ import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, Typogra
 import { Kbd } from "./Kbd";
 import { EDITOR_SHORTCUTS } from "../utils/editorShortcuts";
 import DialogCloseButton from "./DialogCloseButton";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
 
 export interface NotesShortcutsDialogProps {
     open: boolean;
@@ -24,7 +24,7 @@ export default function NotesShortcutsDialog({ open, onClose }: NotesShortcutsDi
                 键盘快捷键
                 <DialogCloseButton onClose={onClose} label='关闭快捷键说明' />
             </DialogTitle>
-            <DialogContent>
+            <DialogContent sx={dialogContentSx}>
                 <Typography>Ctrl / ⌘ K：编辑器内插入链接，编辑器外打开命令面板</Typography>
                 <Typography>Ctrl / ⌘ S：保存当前笔记</Typography>
                 {EDITOR_SHORTCUTS.filter(shortcut => shortcut.combo).map(shortcut => (

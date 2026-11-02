@@ -44,7 +44,7 @@ import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import DialogCloseButton from "./DialogCloseButton";
 import { SECRET_IGNORE_ATTRS, secretInputSx, secretInputType } from "../utils/secretInput";
 import { generatePassword } from "../utils/passwordGenerator";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
 import {
     changeMasterPassword,
     deleteEntry,
@@ -267,7 +267,7 @@ export function VaultPanel({ client, onNotify, withDialog = false, onClose }: Va
     const inner = (
         <>
             <Divider />
-            <DialogContent>
+            <DialogContent sx={dialogContentSx}>
                 <Stack spacing={2} sx={{ pt: 1 }} onPointerDown={armIdle} onKeyDown={armIdle}>
                     {error && <Alert severity='error' onClose={() => setError("")}>{error}</Alert>}
 

@@ -15,7 +15,7 @@ import { Group } from "../API/http";
 import DialogCloseButton from "./DialogCloseButton";
 import { useNotify } from "../context/NotifyContext";
 import { copyToClipboard } from "../utils/clipboard";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
 
 interface EditGroupDialogProps {
     open: boolean;
@@ -124,7 +124,7 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
                 {isCreate ? "新增分组" : "编辑分组"}
                 <DialogCloseButton onClose={onClose} label={isCreate ? "关闭新增分组" : "关闭编辑分组"} />
             </DialogTitle>
-            <DialogContent>
+            <DialogContent sx={dialogContentSx}>
                 <Box sx={{ mb: 2, mt: 1 }}>
                     <TextField
                         label='分组名称'

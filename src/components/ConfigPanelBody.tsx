@@ -30,6 +30,7 @@ import {
 } from "@mui/material";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import VersionUpgradeSection from "./VersionUpgradeSection";
+import { dialogContentSx } from "./dialogShell";
 import { DEFAULT_ICON_API, DEFAULT_THUMB_API } from "../utils/iconApi";
 import type { FontScale, RadiusStyle } from "../context/uiPrefsStore";
 
@@ -183,13 +184,21 @@ export function ConfigPanel({
         <>
                 <DialogContent
                     sx={{
+                        ...dialogContentSx,
                         px: 3,
                         pt: 1,
                         pb: 2,
                         flex: 1,
                         minHeight: 0,
                         // 说明文字统一收紧：默认 helperText 的行高和上间距太占地方
-                        "& .MuiFormHelperText-root": { mt: 0.5, fontSize: 11.5, lineHeight: 1.5 },
+                        // （断词那两行从外壳继承，长 URL / 长 token 不会撑破框）
+                        "& .MuiFormHelperText-root": {
+                            overflowWrap: "anywhere",
+                            wordBreak: "break-word",
+                            mt: 0.5,
+                            fontSize: 11.5,
+                            lineHeight: 1.5,
+                        },
                         // 滑块默认上下各留一段内边距，压掉一半换密度
                         "& .MuiSlider-root": { py: 0.75 },
                     }}

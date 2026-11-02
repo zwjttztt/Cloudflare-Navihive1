@@ -155,8 +155,11 @@ export default function HeaderActions({
             ) : (
                 <>
                     {/* 新增：主按钮 + 下拉。
-                        显示门槛从 sm(600px) 提到 md(900px)：底部导航栏管到 899.98px，
-                        600~899px 这一段顶部和底栏会同时出现「新增 / 更多」，同一个动作两个入口。 */}
+                        显示门槛从 sm(600px) 提到 md(900px)：底部导航栏管到
+                        QUERY_BELOW_900（src/theme/mediaQueries.ts，899.98px），
+                        600~899px 这一段顶部和底栏会同时出现「新增 / 更多」，同一个动作两个入口。
+                        这里用的是 MUI 的 `md`（theme.breakpoints 派生，= min-width:900px），
+                        与 QUERY_AT_LEAST_900 同值 —— 走 MUI 断点表就不必再引用手写常量。 */}
                     <ButtonGroup
                         variant='contained'
                         size='small'

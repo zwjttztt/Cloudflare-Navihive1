@@ -124,8 +124,10 @@ export default function DisplayControls({
             }}
         >
             {/* 「只看星标」：筛选类，和视图那一堆显示偏好分开摆。
-                小屏（<=899.98px）底栏已经有一颗管同一件事的星标，顶部这颗就收起来，
-                免得同一个筛选在两处各有一个按钮、状态还各记一份 */}
+                小屏（QUERY_BELOW_900 = 899.98px，见 src/theme/mediaQueries.ts）
+                底栏已经有一颗管同一件事的星标，顶部这颗就收起来，
+                免得同一个筛选在两处各有一个按钮、状态还各记一份。
+                下面的 `md` 是 MUI 断点表派生的 min-width:900px，与 QUERY_AT_LEAST_900 同值 */}
             <Box
                 sx={{
                     display: { xs: "none", md: "flex" },

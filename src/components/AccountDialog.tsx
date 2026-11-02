@@ -33,7 +33,7 @@ import { Section } from "./dialogSection";
 import type { AccountInfo, SessionInfo } from "../API/http";
 import type { Site } from "../API/types";
 import PasswordHealthPanel from "./PasswordHealthDialog";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
 import {
     INACTIVE_DISABLE_DAYS_DEFAULT,
     INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
@@ -360,10 +360,19 @@ export function AccountPanel({
             </Tabs>
             <DialogContent
                 sx={{
+                    ...dialogContentSx,
                     px: 3,
                     pt: 1,
                     pb: 2,
-                    "& .MuiFormHelperText-root": { mt: 0.5, fontSize: 11.5, lineHeight: 1.5 },
+                    // 本弹窗表单密集，帮助文字比外壳更紧（上间距 / 字号 / 行高）；
+                    // 断词那两行继续沿用 dialogContentSx 的规则，别在这里丢掉
+                    "& .MuiFormHelperText-root": {
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                        mt: 0.5,
+                        fontSize: 11.5,
+                        lineHeight: 1.5,
+                    },
                 }}
             >
                 {currentUser ? (
@@ -865,7 +874,7 @@ export function AccountPanel({
             fullWidth
         >
             <DialogTitle sx={dialogTitleSx}>验证身份后生成恢复私钥</DialogTitle>
-            <DialogContent sx={{ px: 3, pt: 0.5, pb: 1 }}>
+            <DialogContent sx={{ ...dialogContentSx, px: 3, pt: 0.5, pb: 1 }}>
                 {/* 一句说清就行：小屏上弹窗高度有限，文字一多底部按钮会被挤出可视区 */}
                 <DialogContentText variant='body2' sx={{ mb: 2 }}>
                     私钥等同于重置密码的万能钥匙，请输入<strong>当前账号密码</strong>验证身份。

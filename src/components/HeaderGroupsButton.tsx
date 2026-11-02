@@ -11,9 +11,12 @@ import { useEffect } from "react";
 import { Box, Button, useMediaQuery } from "@mui/material";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import { headerControlSx } from "../constants";
+import { QUERY_COMPACT_DESKTOP } from "../theme/mediaQueries";
 
-// 上界与 GroupNavRail 的 min-width:1344px 互补，下界与 MobileTabBar 的 max-width:899.98px 互补
-const SHOW_QUERY = "(min-width: 900px) and (max-width: 1343.98px)";
+// 上界与 GroupNavRail 的 min-width:1344px 互补，下界与 MobileTabBar 的
+// max-width:899.98px 互补 —— 值统一定义在 src/theme/mediaQueries.ts，
+// 不要在别处再写一遍字面量
+const SHOW_QUERY = QUERY_COMPACT_DESKTOP;
 
 export interface HeaderGroupsButtonProps {
     /** 点一下把菜单挂到这个按钮上 */

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createTheme } from "@mui/material/styles";
 import type { ThemeMode } from "../components/ThemeToggle";
+import { MQ_BELOW_600 } from "../theme/mediaQueries";
 
 /**
  * 主题控制器：把「深浅模式状态 + 跟随系统监听 + 切换逻辑 + MUI 主题对象创建」
@@ -159,7 +160,7 @@ export function useThemeController(accent: string) {
                                 // 且从此跟着 .dark class 走，与其它面板同一个开关。
                                 backgroundColor: "var(--surface-modal)",
                                 // 小屏别贴边
-                                "@media (max-width:600px)": { margin: 12 },
+                                [MQ_BELOW_600]: { margin: 12 },
                             },
                         },
                     },
@@ -171,7 +172,7 @@ export function useThemeController(accent: string) {
                     MuiButton: {
                         styleOverrides: {
                             root: {
-                                "@media (max-width:600px)": {
+                                [MQ_BELOW_600]: {
                                     minHeight: 36,
                                     paddingInline: 12,
                                 },
@@ -198,7 +199,7 @@ export function useThemeController(accent: string) {
                     MuiIconButton: {
                         styleOverrides: {
                             root: {
-                                "@media (max-width:600px)": {
+                                [MQ_BELOW_600]: {
                                     padding: 6,
                                     minWidth: 36,
                                     minHeight: 36,
@@ -209,7 +210,7 @@ export function useThemeController(accent: string) {
                     MuiInputBase: {
                         styleOverrides: {
                             root: {
-                                "@media (max-width:600px)": {
+                                [MQ_BELOW_600]: {
                                     "& .MuiInputBase-input": { padding: "10px 12px" },
                                 },
                                 // 输入框**不**补外圈 outline：
@@ -227,7 +228,7 @@ export function useThemeController(accent: string) {
                     },
                     MuiDivider: {
                         styleOverrides: {
-                            root: { "@media (max-width:600px)": { margin: "8px 0" } },
+                            root: { [MQ_BELOW_600]: { margin: "8px 0" } },
                         },
                     },
                     // 弹窗遮罩统一（2026-10-25）：以前走 MUI 默认 rgba(0,0,0,.5)，
@@ -242,7 +243,7 @@ export function useThemeController(accent: string) {
                     MuiMenu: {
                         defaultProps: { disableScrollLock: true },
                         styleOverrides: {
-                            paper: { "@media (max-width:600px)": { minWidth: 200 } },
+                            paper: { [MQ_BELOW_600]: { minWidth: 200 } },
                         },
                     },
                 },

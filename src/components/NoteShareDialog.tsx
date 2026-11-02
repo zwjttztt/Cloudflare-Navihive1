@@ -20,7 +20,7 @@ import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import type { NoteImportStats, NotesImportPayload, NoteShare, NoteShareListItem, NoteStats } from "../API/types";
 import ConfirmDialog from "./ConfirmDialog";
 import DialogCloseButton from "./DialogCloseButton";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
 import { fmtDateTime } from "../utils/format";
 
 export interface NoteShareApi {
@@ -239,7 +239,7 @@ export default function NoteShareDialog({
                 分享笔记
                 <DialogCloseButton onClose={onClose} label='关闭分享弹窗' disabled={busy !== null} />
             </DialogTitle>
-            <DialogContent>
+            <DialogContent sx={dialogContentSx}>
                 <Typography variant='body2' color='text.secondary' sx={{ mb: 2 }}>
                     {noteTitle
                         ? `「${noteTitle}」· 管理这条笔记的只读公开链接`

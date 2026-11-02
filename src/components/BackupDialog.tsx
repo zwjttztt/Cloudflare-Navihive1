@@ -24,7 +24,7 @@ import {
     LinearProgress,
 } from "@mui/material";
 import DialogCloseButton from "./DialogCloseButton";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
 import { fmtDateTime } from "../utils/format";
 
 /** 面板输入：与弹窗共享。尺寸 / 标题 / 关闭按钮一律由调用方（外壳或弹窗）负责 */
@@ -730,6 +730,7 @@ export default function BackupDialog({
 
             <DialogContent
                 sx={{
+                    ...dialogContentSx,
                     pt: 1,
                     flex: 1,
                     minHeight: 0,

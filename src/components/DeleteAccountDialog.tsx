@@ -10,7 +10,7 @@
 import { Dialog, DialogActions, DialogContent, DialogTitle, Button, Typography, Alert, CircularProgress } from "@mui/material";
 import { PasswordField } from "./PasswordField";
 import DialogCloseButton from "./DialogCloseButton";
-import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { dialogActionsSx, dialogContentSx, dialogTitleSx } from "./dialogShell";
 
 interface DeleteAccountDialogProps {
     open: boolean;
@@ -44,7 +44,7 @@ export default function DeleteAccountDialog({
                 注销账号
                 <DialogCloseButton onClose={onClose} label='关闭注销弹窗' disabled={busy} />
             </DialogTitle>
-            <DialogContent>
+            <DialogContent sx={dialogContentSx}>
                 <Alert severity='warning' sx={{ mb: 2 }}>
                     注销后，这个账号的<strong>全部分组、卡片与保存的账号密码都会被删除</strong>，
                     且无法恢复。此操作不可撤销。
