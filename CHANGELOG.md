@@ -6,6 +6,40 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-11-03 · 新增 + 工程：429 限流可感知，离线队列跨标签页互斥（28.2.0）
+
+独立审计 C6 项。两件都是「已经有一半、只差最后一步」的事。
+
+### 429 可感知：把 `Retry-After` 从「读完即丢」变成按秒倒计时
+
+服务端多处 429 早就回了 `Retry-After`（登录守卫、注册/恢复、写守卫都带），但客户端读完就丢——用户只看到一句「操作过于频繁」，不知道要等多久，也不知道等到了没有，只能反复点，还把限流窗口一次次续期。
+
+- `ApiErrorInfo` / `ApiError` 加 `retryAfter?: number`：秒数是「还要等多久」的唯一权威来源，丢了就只能一辈子写「稍后再试」。
+- `client.ts` 的 429 分支从响应头解析（`parseRetryAfter` **同时认 delta-seconds 与 HTTP-date**——中间隔着 CDN/反代，改形状不该让前端静默退化），能取到才带、取不到就留空，不编 0。
+- 广播走 `transport.ts` 的 `notifyRateLimited`（与 401 的 `notifyUnauthorized` 同一套范式：传输层只发事件，不碰 UI 状态）。**广播在 throw 之前**——监听器是同步的。
+- 新组件 `RateLimitBanner`：底部提示条「操作过于频繁，请 N 秒后再试」+ 逐秒倒计时，到 0 自动消失；连续被限流取更晚的窗口，不会把倒计时越改越短。没有限流事件时渲染 null，常驻挂载不占位。
+
+服务端一行没动：`grep -rn "Retry-After" worker/` 复核到 8 处写头，与审计结论一致。
+
+### 离线队列：跨标签页 flush 加 `navigator.locks`（降级到 localStorage 租约）
+
+原来的多标签页保护只有两半：storage 事件合并（防「别页刚入队被覆盖写抹掉」）+ 服务端 `opId` 幂等（防「重复发做两遍」）。缺的是**同一时刻只让一个标签页重放**——两个标签页各有一份内存副本，同时 flush 会让 `sending` 状态互相覆盖，`drop` 的整份覆盖写盘还会把刚划掉的条目又捡回来。
+
+- `flushOfflineQueue` 外面套一层 `navigator.locks.request("navihive-offline-queue")`，锁内**复查** offline / flushing / 队列空（等锁期间另一页可能已经做完）。
+- 没有 Web Locks（老浏览器 / 非安全上下文）降级到 localStorage 租约：30s TTL、按**账号**分片，写不了 localStorage 就放行（那点互斥性由 `opId` 幂等兜着）。
+- `navigator.locks` **调用时**读，不在模块加载时缓存——否则单测装不上替身，降级分支永远测不到。
+- 循环体语义一行未改：退避、sending 租期、临时 id 翻译、失败列表全原样。
+
+### 验证
+
+- `grep -rn "rateLimited" src/`：0 → 1 行真实代码（`client.ts` 的 `API_ERROR_CODES.rateLimited`）。
+- 新增 16 条用例：`rateLimit.dom.test.tsx` 10 条（429 带头/无头/HTTP-date/过去日期/乱码/非 429；组件不占位/文案/不缩短/0 秒忽略/归零自隐）+ `offlineQueueCrossTab.test.ts` 6 条（有锁：`requested=2`、`entered=2`、`peak=1`、去重 opId 全集、队列清空；无锁：别人持租约时 `calls=0` 且一条不丢、过期租约可抢、并发不重叠、按账号分片）。
+- 全量单测 **3762 / 3761 pass / 0 fail / 1 skipped**；typecheck 0；eslint 0 error / 27 存量 warning；build 成功；`check:budget` 10/10；`audit:a11y` 双视口 0 违规；smoke 全通过。
+
+### 预算：index chunk 266 → 270 KB（首屏 gzip 仍 5.1% 余量）
+
+新代码 +2.51 KB（API 层 1.73 KB + Banner 0.78 KB），两笔都在故障路径上（被限流那一刻 / 联网重放那一刻），lazy 只会把「下载 chunk」加进那一刻。改之前基线其实已经过期 2.9 KB（250.01 → 实测 253.16，落在 5% 容差里没人发现），余量本已只剩 5.07%。抬到 270 后余量 5.60%，「谁再往首屏塞东西」的信号照旧抓得住；首屏 gzip 866.1 / 285.4（预算 920 / 300）没动。
+
 ## 2026-11-02 · 修复 + 工程：移动端触控目标达标，审计加双视口 fail-closed 闸门（28.1.0）
 
 独立审计 D1 项：**移动端触控目标**。这件事之前从没被自动审计量过——`a11y-audit.mjs` 原有四段扫描面全在桌面视口跑（没开 `Emulation.setDeviceMetricsOverride`、没开触控仿真），桌面读数根本推不出真机。

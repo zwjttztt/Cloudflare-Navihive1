@@ -140,6 +140,34 @@ export function notifyUnauthorized(): void {
 }
 
 /**
+ * 429「稍后再来」的全局广播事件名（与 UNAUTHORIZED_EVENT 同一套范式）。
+ *
+ * 为什么要有它：服务端多处 429 都回了 `Retry-After`，但那个头在 client 里读完就丢，
+ * 界面只能给一句「操作太频繁」——用户既不知道要等多久，也不知道等到了没有。
+ * 现在把秒数带上广播出去，由 RateLimitBanner 按秒倒计时。
+ *
+ * 为什么载荷只放 retryAfter 不放整条 ApiError：事件是**跨层**的公共契约，
+ * 塞进错误对象等于让每个监听者都能拿到 code/details/requestId，进而有人会去
+ * 按 message 做分支 —— 那正是 isAuthError 那批改动刚清理掉的反模式。
+ * 界面要的只有「还要等多久」。
+ */
+export const RATE_LIMITED_EVENT = "navihive:rate-limited";
+
+/** 限流广播的载荷 */
+export interface RateLimitedDetail {
+    /** 还要等多少秒（来自 Retry-After，已规整为整数秒） */
+    retryAfter: number;
+}
+
+/** 广播一次「被限流了」。SSR / 测试环境没有 window 时安静跳过 */
+export function notifyRateLimited(retryAfter: number): void {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(
+        new CustomEvent<RateLimitedDetail>(RATE_LIMITED_EVENT, { detail: { retryAfter } })
+    );
+}
+
+/**
  * 裸 fetch 出口统一取错误文案。
  *
  * 登录 / 注册 / 恢复 / 邀请码 / 注销账号 / 导入这几个端点不走 `request()`

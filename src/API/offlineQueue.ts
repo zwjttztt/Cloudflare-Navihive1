@@ -663,6 +663,123 @@ let flushing = false;
  */
 let replaying = false;
 
+// ---------------- 跨标签页 flush 协调（2026-11-03，C6）----------------
+/**
+ * 进程内的 `flushing` 只能挡住同一个页面：两个标签页各有一份内存副本、各自监听
+ * 自己的 online 事件，可能**同时**重放同一批操作。三条防线各管一件事，缺一不可：
+ *   · storage 事件合并（本文件 345 行）→ 保证「别页刚入队的条目不被覆盖写抹掉」；
+ *   · opId 幂等键（服务端去重）→ 保证「同一条重复发不会做两遍」；
+ *   · **这把锁** → 保证「同一时刻只有一个标签页在重放」。
+ * 前两条都不能替代第三条：两条 `sending` 状态互相覆盖会让租期重算，
+ * 而「成功一条就整份覆盖写盘」的 drop 会让后写的那页把先写那页刚划掉的条目
+ * 又捡回来（重放 → 划掉 → 捡回，无限循环）。
+ *
+ * 优先用 Web Locks（真互斥、无 TTL、页面崩溃自动释放）；老浏览器 / 非安全上下文
+ * 没有 navigator.locks 时退化成 localStorage 租约 —— 尽力而为，**不做原子 CAS**
+ * （读写之间仍有窗口），但比完全没有强：窗口是毫秒级，而一次 flush 是秒级。
+ */
+const QUEUE_LOCK_NAME = "navihive-offline-queue";
+/** 租约有效期：比一次正常 flush 宽裕（12 条待发操作 × 每个几百毫秒），比用户耐心短 */
+const LEASE_TTL_MS = 30_000;
+const LEASE_KEY_BASE = "navihive.offlineQueue.lease";
+
+/**
+ * 本标签页的身份（租约归属判定用）。
+ *
+ * 为什么不复用 opId 的生成器（newOperationId）：那个带自增计数，同一次会话里的
+ * 两个 id 一定不同，但这里要的是「这个页面」的稳定身份 —— 每次 flush 都换一个
+ * 身份的话，自己刚拿到的租约就认不出来了（releaseLease 会静默跳过）。
+ */
+function newTabId(): string {
+    const cryptoObj = globalThis.crypto as Crypto | undefined;
+    if (cryptoObj && typeof cryptoObj.randomUUID === "function") return cryptoObj.randomUUID();
+    return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+const TAB_ID: string = newTabId();
+
+/** 租约键按账号分片：不同账号的队列本来就互不相干，别互相挡 */
+function leaseKey(): string {
+    return scopedKey(LEASE_KEY_BASE, accountUid);
+}
+
+interface QueueLease {
+    tabId: string;
+    until: number;
+}
+
+function readLease(): QueueLease | null {
+    try {
+        const raw = globalThis.localStorage?.getItem(leaseKey());
+        if (!raw) return null;
+        const parsed: unknown = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return null;
+        const o = parsed as Partial<QueueLease>;
+        if (typeof o.tabId !== "string" || typeof o.until !== "number") return null;
+        return { tabId: o.tabId, until: o.until };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * 抢租约。返回 false = 别的标签页正在重放，本次跳过。
+ *
+ * 「已过期」和「是我自己的」都算可抢：前者说明持有者已经没了（关页/崩溃），
+ * 后者是上次 flush 没走到 finally（极端情况）留下的自锁，不该把自己永久挡在外面。
+ */
+function tryAcquireLease(): boolean {
+    const now = Date.now();
+    const cur = readLease();
+    if (cur && cur.tabId !== TAB_ID && cur.until > now) return false;
+    try {
+        globalThis.localStorage?.setItem(
+            leaseKey(),
+            JSON.stringify({ tabId: TAB_ID, until: now + LEASE_TTL_MS })
+        );
+        return true;
+    } catch {
+        // 写不了 localStorage（隐私模式）：退化成「谁都能 flush」，
+        // 至少不挡住正常流程 —— 丢到的那点互斥性由 opId 幂等键兜着
+        return true;
+    }
+}
+
+function releaseLease(): void {
+    const cur = readLease();
+    if (cur?.tabId !== TAB_ID) return;
+    try {
+        globalThis.localStorage?.removeItem(leaseKey());
+    } catch {
+        /* 忽略：清不掉也只是留个 30 秒后自动过期的租约 */
+    }
+}
+
+/**
+ * 在「跨标签页互斥」的前提下执行重放。
+ *
+ * 拿不到锁/租约就直接跳过（返回 onSkip），**不排队死等**：拿到锁的那个标签页
+ * 会把同一批操作做掉，本页等下去只是白占一个持有者 —— 而 flush 的调用点
+ * （online 事件、启动、定时）全是「尽力而为」语义，没人等着这个返回值。
+ *
+ * ⚠️ navigator.locks 必须在**调用时**读，不要在模块加载时缓存成常量：
+ * 单测要在 globalThis 上装替身，缓存了就永远测不到降级分支。
+ */
+async function withQueueLock<T>(fn: () => Promise<T>, onSkip: T): Promise<T> {
+    const nav = globalThis.navigator as (Navigator & { locks?: LockManager }) | undefined;
+    const locks = nav?.locks;
+    if (locks && typeof locks.request === "function") {
+        // 真互斥：浏览器保证同名 exclusive 锁同时只有一个持有者，
+        // 且**页面崩溃时自动释放**（不像租约要等 30 秒过期）
+        return (await locks.request(QUEUE_LOCK_NAME, { mode: "exclusive" }, fn)) as T;
+    }
+    if (!tryAcquireLease()) return onSkip;
+    try {
+        return await fn();
+    } finally {
+        releaseLease();
+    }
+}
+
 /**
  * 服务端明确拒绝（4xx / success=false）的错误：重试没有意义，留在队列里只会
  * 一遍遍撞同一堵墙，还占着角标。与「还连不上」区分开，后者才继续等下次 online。
@@ -720,91 +837,101 @@ function reclaimStuckSending(): void {
  *
  * 状态机是 pending → sending →（服务端确认后）从存储删除：
  * 成功一条才划掉一条，中途关页面 / 崩溃时剩下的还在盘上，不会凭空消失。
+ *
+ * ⚠️ 整个临界区在跨标签页锁里跑（见 withQueueLock）：两个标签页同时 flush
+ * 会把同一批操作各发一遍，而「成功一条就整份覆盖写盘」的 drop 会让后写的那页
+ * 把先写那页刚划掉的条目捡回来。拿不到锁就直接返回 0 —— 拿到锁的那页会做掉。
  */
 export async function flushOfflineQueue(api: MutationApi): Promise<number> {
     if (isOffline() || flushing || queue.length === 0) return 0;
-    flushing = true;
-    replaying = true;
-    let done = 0;
-    try {
-        reclaimStuckSending();
-        // 最多重放一轮：仍失败的会被推迟或进失败列表，等下一次 online，不会在这里死循环
-        const pending = [...queue];
-        for (const op of pending) {
-            if (isOffline()) break;
-            // 退避未到期的不碰：刚失败过就再锤一遍只会把服务端拖得更惨
-            if (op.nextAttemptAt && op.nextAttemptAt > Date.now()) continue;
-            if (op.state === "sending") continue;
+    return withQueueLock(async () => {
+        // 锁内复查：等锁 / 抢租约的这段时间里，另一标签页可能已经把队列清空，
+        // 本页也可能已经重新入队并被自己的另一次 flush 抢了先（flushing）。
+        // 少了这次复查，第二个进入者会对空队列再跑一轮、或者把同一批发第二遍。
+        if (isOffline() || flushing || queue.length === 0) return 0;
+        flushing = true;
+        replaying = true;
+        let done = 0;
+        try {
+            reclaimStuckSending();
+            // 最多重放一轮：仍失败的会被推迟或进失败列表，等下一次 online，不会在这里死循环
+            const pending = [...queue];
+            for (const op of pending) {
+                if (isOffline()) break;
+                // 退避未到期的不碰：刚失败过就再锤一遍只会把服务端拖得更惨
+                if (op.nextAttemptAt && op.nextAttemptAt > Date.now()) continue;
+                if (op.state === "sending") continue;
 
-            try {
-                const fn = (api as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[op.kind];
-                if (typeof fn !== "function") {
-                    drop(op);
-                    continue;
-                }
-                // 账号变了就不许再补发：这条操作属于别人，写进当前账号就是串号，直接丢弃
-                if (op.uid !== undefined && op.uid !== accountUid) {
-                    drop(op);
-                    continue;
-                }
-                // 带上这条操作自己的幂等 ID：服务端可能已经执行过（只是响应没回到本机），
-                // 同一个 ID 过去它会回放上次结果，而不是再做一个重复站点。
-                // 用完即清，别让后面手动的操作被误合并。
-                if (typeof api.setIdempotencyKey === "function") {
-                    api.setIdempotencyKey(op.opId ?? null);
-                }
-
-                // 先标 sending 再落盘：页面此刻关掉的话，下次启动能靠租期把它收回来重发，
-                // 而不是像「先取出再执行」那样凭空消失。
-                op.state = "sending";
-                op.sentAt = Date.now();
-                saveQueueMerged();
-
-                // 占位 id 这里翻译：离线新建的分组拿到的真实 id 要回填到后续操作里，
-                // 否则站点会挂在一个本地才有的负数分组上。
-                const res = await fn.apply(api, translateTempIds(op.args));
-
-                // returnsSuccess 类方法：返回假也视为没成功。
-                // 有的方法（importData）返回的是带 success 字段的对象，对象本身恒为真，
-                // 得看里面的 success 才算数。
-                const def = MUTATION_METHODS.find(m => m.name === op.kind);
-                if (def?.returnsSuccess && isFailedResult(res)) {
-                    scheduleRetry(op, "服务端未接受该操作");
-                    continue;
-                }
-
-                // 新建类操作拿到了真实 id：记下 占位id → 真实id。
-                // 后面「在这个分组下加的站点」「编辑这张卡片」重放时才有号可用。
-                if (op.tempId !== undefined && res && typeof res === "object") {
-                    const realId = (res as { id?: unknown }).id;
-                    if (typeof realId === "number") {
-                        tempIdMap[String(op.tempId)] = realId;
-                        writeJson(tempMapKey, tempIdMap);
+                try {
+                    const fn = (api as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[op.kind];
+                    if (typeof fn !== "function") {
+                        drop(op);
+                        continue;
                     }
-                }
+                    // 账号变了就不许再补发：这条操作属于别人，写进当前账号就是串号，直接丢弃
+                    if (op.uid !== undefined && op.uid !== accountUid) {
+                        drop(op);
+                        continue;
+                    }
+                    // 带上这条操作自己的幂等 ID：服务端可能已经执行过（只是响应没回到本机），
+                    // 同一个 ID 过去它会回放上次结果，而不是再做一个重复站点。
+                    // 用完即清，别让后面手动的操作被误合并。
+                    if (typeof api.setIdempotencyKey === "function") {
+                        api.setIdempotencyKey(op.opId ?? null);
+                    }
 
-                // 服务端确认了才从盘上划掉（acked）
-                drop(op);
-                done++;
-            } catch (err) {
-                if (isRejectedByServer(err)) {
-                    // 服务端明确拒绝：重试没有意义，进失败列表让用户自己决定
+                    // 先标 sending 再落盘：页面此刻关掉的话，下次启动能靠租期把它收回来重发，
+                    // 而不是像「先取出再执行」那样凭空消失。
+                    op.state = "sending";
+                    op.sentAt = Date.now();
+                    saveQueueMerged();
+
+                    // 占位 id 这里翻译：离线新建的分组拿到的真实 id 要回填到后续操作里，
+                    // 否则站点会挂在一个本地才有的负数分组上。
+                    const res = await fn.apply(api, translateTempIds(op.args));
+
+                    // returnsSuccess 类方法：返回假也视为没成功。
+                    // 有的方法（importData）返回的是带 success 字段的对象，对象本身恒为真，
+                    // 得看里面的 success 才算数。
+                    const def = MUTATION_METHODS.find(m => m.name === op.kind);
+                    if (def?.returnsSuccess && isFailedResult(res)) {
+                        scheduleRetry(op, "服务端未接受该操作");
+                        continue;
+                    }
+
+                    // 新建类操作拿到了真实 id：记下 占位id → 真实id。
+                    // 后面「在这个分组下加的站点」「编辑这张卡片」重放时才有号可用。
+                    if (op.tempId !== undefined && res && typeof res === "object") {
+                        const realId = (res as { id?: unknown }).id;
+                        if (typeof realId === "number") {
+                            tempIdMap[String(op.tempId)] = realId;
+                            writeJson(tempMapKey, tempIdMap);
+                        }
+                    }
+
+                    // 服务端确认了才从盘上划掉（acked）
                     drop(op);
-                    pushFailed(
-                        op,
-                        err instanceof Error ? err.message : "服务端拒绝了该操作"
-                    );
-                    continue;
+                    done++;
+                } catch (err) {
+                    if (isRejectedByServer(err)) {
+                        // 服务端明确拒绝：重试没有意义，进失败列表让用户自己决定
+                        drop(op);
+                        pushFailed(
+                            op,
+                            err instanceof Error ? err.message : "服务端拒绝了该操作"
+                        );
+                        continue;
+                    }
+                    // 连不上 / 5xx 之类：退避后等下次 online
+                    scheduleRetry(op, err instanceof Error ? err.message : String(err));
                 }
-                // 连不上 / 5xx 之类：退避后等下次 online
-                scheduleRetry(op, err instanceof Error ? err.message : String(err));
             }
+        } finally {
+            flushing = false;
+            replaying = false;
         }
-    } finally {
-        flushing = false;
-        replaying = false;
-    }
-    return done;
+        return done;
+    }, 0);
 }
 
 /** 可识别的「已离线、已入队」错误，让上层显示温和提示而不是硬失败 */

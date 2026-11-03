@@ -205,6 +205,10 @@ import RenderBoundary from "./components/RenderBoundary";
 // 见 docs/site-audit-2026-10-15.md P1）；读屏播报区是常驻的 AriaLiveRegion
 const SnackbarHost = lazy(() => import("./components/SnackbarHost"));
 import AriaLiveRegion from "./components/AriaLiveRegion";
+// 429 限流的倒计时提示条。同步 import 而不是 lazy：它自身没有任何依赖（只有 MUI 的
+// Alert/Button，首屏早就有了），而 lazy 会在「刚被限流」那一刻多一次 chunk 请求 ——
+// 限流时最不该做的就是再发请求。组件默认渲染 null，常驻挂载不占位。
+import RateLimitBanner from "./components/RateLimitBanner";
 const ShortcutsDialog = lazy(() => import("./components/ShortcutsDialog"));
 
 // 根据环境选择使用真实API还是模拟API
@@ -1727,6 +1731,10 @@ function App() {
 
             {/* 读屏播报区常驻：live region 要先于内容存在，读屏才会念出来 */}
             <AriaLiveRegion message={liveMessage} />
+
+            {/* 429 限流倒计时：始终挂载，内部自订阅 RATE_LIMITED_EVENT、无事件时渲染 null。
+                与断网横幅同一条纪律 —— 别嵌进任何条件渲染里（分享对话框那个坑）。 */}
+            <RateLimitBanner />
 
             {/* 顶部提示条：有提示才挂载，且整块懒加载（Snackbar 不进首屏关键路径） */}
             {snackbarOpen && (

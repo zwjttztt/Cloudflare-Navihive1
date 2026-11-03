@@ -18,7 +18,7 @@
 // ⚠️ 别在 clientMethods/*.ts 里 import 本文件的值（会成环），只 import 类型。
 
 import { DEFAULT_TOKEN_TTL } from "./http";
-import { IDEMPOTENCY_HEADER } from "./httpConstants";
+import { IDEMPOTENCY_HEADER, RETRY_AFTER_HEADER } from "./httpConstants";
 import { REQUEST_ID_HEADER } from "../../shared/requestId";
 import { NoteConflictError } from "../utils/noteConflict";
 import { API_ERROR_CODES, ApiError, parseApiError } from "./apiError";
@@ -26,6 +26,7 @@ import {
     clearSessionCookie,
     conflictNoteFrom,
     hasSessionCookie,
+    notifyRateLimited,
     notifyUnauthorized,
     purgeLegacyToken,
     REQUEST_TIMEOUT_MS,
@@ -103,6 +104,30 @@ export function timeoutForEndpoint(endpoint: string, explicit?: number): number 
     return /upload|download|backup|import|export|restore|icon/i.test(endpoint)
         ? 0
         : REQUEST_TIMEOUT_MS;
+}
+
+/**
+ * 解析 `Retry-After`（RFC 9110 §10.2.3 允许两种形状）。
+ *
+ * 既认 delta-seconds（`"30"`），也认 HTTP-date（`"Wed, 21 Oct 2015 07:28:00 GMT"`）——
+ * 服务端现在回的是秒数，但中间隔着一层 CDN / 反向代理，改形状不需要通知前端。
+ * 只认数字的话，某天响应头变成日期，界面就会永远停在「稍后再试」，而且**不会报错**。
+ *
+ * 认不出（空串、乱码、过去的日期以外的一切）一律返回 undefined ——
+ * 拿不到就别编一个数字：编 0 会让提示条瞬间消失（等于没做），
+ * 编一个猜的值则是在骗用户「再等 30 秒就好了」。留空让界面退化成「稍后再试」。
+ */
+function parseRetryAfter(raw: string): number | undefined {
+    const t = raw.trim();
+    if (!t) return undefined;
+    if (/^\d+$/.test(t)) {
+        const n = Number(t);
+        return Number.isFinite(n) ? n : undefined;
+    }
+    const at = Date.parse(t);
+    if (Number.isNaN(at)) return undefined;
+    // 日期已经过去时给 0（"现在就可以重试"），不返回负数
+    return Math.max(0, Math.ceil((at - Date.now()) / 1000));
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging -- 同名 class/interface 合并是刻意的 mixin 写法，两个声明都在本仓库内、受我们控制
@@ -207,6 +232,11 @@ export class NavigationClient implements ClientThis {
         // 「Cannot read properties of undefined」。（真踩过：2026-10-28 这一批）
         const requestId = response.headers?.get(REQUEST_ID_HEADER) || undefined;
 
+        // 429 的等待秒数：服务端用 Retry-After 告诉我们「多久后再来」，读完别丢。
+        // 与 requestId 同理，`?.` 不是防御性冗余 —— 单测里的假响应没有 headers。
+        const retryAfterRaw = response.headers?.get(RETRY_AFTER_HEADER) ?? null;
+        const retryAfter = retryAfterRaw === null ? undefined : parseRetryAfter(retryAfterRaw);
+
         // 非 2xx：优先解析服务端返回的 message/error，让用户看到具体原因（如「密码强度不足」）
         let errorPayload: unknown;
         try {
@@ -258,12 +288,36 @@ export class NavigationClient implements ClientThis {
             });
         }
 
+        // 429：服务端回了带 Retry-After 的「稍后再来」。带上剩余秒数，并广播一次全局事件，
+        // 让界面上出现按秒倒计时的提示条（与 401 的 notifyUnauthorized 同一套做法：
+        // client 是纯传输层，不直接碰 UI 状态）。广播必须在 throw 之前 —— 监听器是同步的，
+        // 放到 throw 之后就永远执行不到了。
+        // ⚠️ 没有 Retry-After 时不广播：没有秒数就没有倒计时可显示，此时弹一条
+        // 「稍后再试」的提示条只是噪声，通用 toast 已经把那句话说过了。
+        if (response.status === 429) {
+            if (retryAfter !== undefined) notifyRateLimited(retryAfter);
+            throw new ApiError({
+                code: parsed?.code || API_ERROR_CODES.rateLimited,
+                // ⚠️ 服务端给了 message 时仍要照通用分支的规矩补上 `(HTTP 429)`：
+                // 这是既有测试钉住的形状（tests/apiClient.dom.test.tsx「服务端只给
+                // error 字段时也能读出来」），也是用户截图里能看出状态码的唯一位置。
+                // 只有**没有** message（HTML 错误页 / 空体）时才换成一句人话 ——
+                // 那时通用分支会给出「API错误: 429」，对上层的限流提示没有帮助。
+                message: reason ? `${reason} (HTTP 429)` : "操作过于频繁，请稍后再试",
+                status: 429,
+                ...(retryAfter !== undefined ? { retryAfter } : {}),
+                ...(parsed?.details === undefined ? {} : { details: parsed.details }),
+                ...(requestId ? { requestId } : {}),
+            });
+        }
+
         // 其它状态码：message 与历史完全一致（既有 UI 与测试都依赖它），
         // 只是额外带上 code，UI 想分流时不用再 includes 匹配字符串
         throw new ApiError({
             code: parsed?.code || "unknown",
             message: reason ? `${reason} (HTTP ${response.status})` : `API错误: ${response.status}`,
             status: response.status,
+            ...(retryAfter !== undefined ? { retryAfter } : {}),
             ...(parsed?.details === undefined ? {} : { details: parsed.details }),
             ...(requestId ? { requestId } : {}),
         });

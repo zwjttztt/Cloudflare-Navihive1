@@ -11,3 +11,15 @@
 
 /** 幂等键请求头：worker/idempotency.ts 读它做重放闸门，前端写它做重放标记 */
 export const IDEMPOTENCY_HEADER = "Idempotency-Key";
+
+/**
+ * 限流重试请求头（RFC 9110 §10.2.3）：服务端在 429 上告诉我们「多少秒后再来」。
+ *
+ * 这一条的方向和上面相反 —— worker 是**写**的一方（loginGuard / routes/public /
+ * routes/data 的写守卫在 429 上挂它，值可能是 delta-seconds，也可能是 HTTP-date），
+ * 前端是**读**的一方（client.ts 的 429 分支解析后塞进 ApiError.retryAfter）。
+ * 同一个头名两端各写一遍同样会静默失效：前端去读 `RetryAfter` 或 `retry-after`
+ * 都能"拿到 null"而不报错，界面于是永远退化成「稍后再试」。
+ * 头名大小写不敏感（Headers.get 归一化），这里取小写只是与前端读取侧一致。
+ */
+export const RETRY_AFTER_HEADER = "retry-after";

@@ -9,9 +9,11 @@
 // 有了 code，UI 分流就不再拿 message 做 includes 匹配：
 // 409 + conflict → 弹冲突框（而不是「保存失败」）；
 // 401 + unauthenticated → 跳登录；
-// 429 + rate_limited → **目前只弹通用 toast「操作太频繁」**。服务端多处 429 都回了
-//   `Retry-After`，但 src/ 侧没有任何消费者（响应头读完即丢），按剩余秒数倒计时的
-//   重试按钮还没实现 —— 别照着这行注释去找它。
+// 429 + rate_limited → 弹一条通用 toast，同时按服务端 `Retry-After` 的剩余秒数在
+//   底部挂一条倒计时提示条（src/components/RateLimitBanner.tsx）。秒数在
+//   client.ts 的 429 分支读出、塞进下面的 ApiErrorInfo.retryAfter，再由
+//   transport.ts 的 notifyRateLimited 广播给界面 —— 传输层不碰 UI 状态，
+//   与 401 的 notifyUnauthorized 是同一套做法。
 
 // 错误码收敛到 shared/（前后端共用一份，见 shared/apiErrorCodes.ts 的说明）。
 // 这里 import 引入本地作用域（isAuthError 要用），再 re-export 保持既有 import 路径不变。
@@ -33,6 +35,15 @@ export interface ApiErrorInfo {
      * （老部署 / 请求根本没到服务端，比如超时）。
      */
     requestId?: string;
+    /**
+     * 服务端 429 的 Retry-After（秒）。只有 429 且响应带了该头时才有值。
+     *
+     * 为什么要带出来而不是在 client 里读掉就算：这个数字是「还要等多久」的**唯一**
+     * 权威来源（服务端按自己的窗口算的，客户端自己猜不准）。界面要按它做倒计时，
+     * 调用方要按它决定「按钮多久之后才可点」—— 丢了就只能一辈子写「稍后再试」。
+     * 认不出（没有该头 / 值不是数字也不是 HTTP-date）时留空，别编一个 0 出来。
+     */
+    retryAfter?: number;
 }
 
 /** 带 code 的错误。extends Error，所以既有 `e.message` 的用法全部照旧工作 */
@@ -41,6 +52,7 @@ export class ApiError extends Error {
     readonly status: number;
     readonly details?: unknown;
     readonly requestId?: string;
+    readonly retryAfter?: number;
 
     constructor(info: ApiErrorInfo) {
         super(info.message);
@@ -49,6 +61,7 @@ export class ApiError extends Error {
         this.status = info.status;
         this.details = info.details;
         this.requestId = info.requestId;
+        this.retryAfter = info.retryAfter;
     }
 
     /** 是不是某一类错误（比 code === "xxx" 好看一点） */

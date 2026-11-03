@@ -103,7 +103,20 @@ function findProjectDir(): string {
 // 抬到 266 后余量 5.77%，「谁再往首屏塞东西」这个信号照旧抓得住。
 // 真要腾这 0.5 KB，正确的刀还是上面那条「合并 ErrorBoundary」（约 1.3 KB），
 // 同样该单独成一轮、配齐回归。
-const BUDGET_KB = 266;
+// ⚠️ 266 → 270（2026-11-03，C6：429 倒计时 + 离线队列跨标签页锁）。
+// 实测 index 253.16 → **255.67 KB**（+2.51 KB），两笔都 lazy 不了：
+//   · `API/client.ts` 的 429 分支与 `parseRetryAfter`、`API/offlineQueue.ts` 的
+//     Web Locks / 租约协调（合计约 1.73 KB）—— 前者跑在「任何请求被限流」那一刻，
+//     后者跑在「联网要重放队列」那一刻，**都是故障路径**：那时再去下载 chunk
+//     既来不及也会同样失败（与上面 P0-1、离线队列上限那两次同一个处境）；
+//   · `components/RateLimitBanner.tsx`（约 0.78 KB，含 MUI Alert 的整块实测成本）——
+//     它必须常驻挂载才接得住事件，改成 lazy 只会把「下载 chunk」加进首屏（多一个请求）。
+// 顺带记一笔：改之前基线 250.01 就已经过期 2.9 KB（实测 253.16），只因为落在 5%
+// 漂移容差内没人发现 —— 也就是说余量本已只剩 5.07%，又是贴线状态。
+// 抬到 270 后余量 5.60%，「谁再往首屏塞东西」这个信号照旧抓得住。
+// 真要腾这 2 KB，刀还是那两条旧账：合并 RenderBoundary 与根 ErrorBoundary（约 1.3 KB）、
+// 再把 `clientMethods/*` 里首屏用不到的方法拆一轮 —— 都该单独成一轮、配齐回归。
+const BUDGET_KB = 270;
 /**
  * 基线：每次真的把首屏压下来之后都要跟着更新，否则这条用例会一路放任包变大。
  * 222.61 KB —— LoginForm 改 lazy 之后（见 git log）
@@ -163,7 +176,10 @@ const BUDGET_KB = 266;
 // 250.01 —— 2026-10-29 P0-1：加载失败面板（SiteListErrorState）进首屏，见上面预算那段。
 // 这是「为了修一个 P0 而必须付的首屏成本」，不是悄悄涨上来的：抬预算的理由与实测字节
 // 都写在 BUDGET_KB 上面那几行，改这条基线时请连着那段一起读。
-const BASELINE_KB = 250.01;
+//
+// 255.67 —— 2026-11-03 C6：429 倒计时与离线队列跨标签页锁进首屏（+2.51 KB），
+// 理由同上那段。两者都在故障路径上，lazy 反而更糟。
+const BASELINE_KB = 255.67;
 
 function indexChunk(): { name: string; kb: number } | null {
     const assets = join(findProjectDir(), "dist", "client", "assets");
