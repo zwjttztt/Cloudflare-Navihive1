@@ -395,6 +395,60 @@ export async function startSiteServer(port = 0) {
                 return;
             }
 
+            // ---- 密码保险库 / 审计日志 / 回收站（2026-11-03 D4 加） ----
+            //
+            // 为什么必须补这三组：末尾那条兜底 `{ success: true }` 对它们是**非法形状** ——
+            //   · `getVaultKeys` 把任何真值对象当成「已建过库」，面板会停在解锁屏
+            //     （真解锁要跑 PBKDF2 + 真密文，桩做不到）→ 量到的是一屏点不动的表单；
+            //   · `getAuditLog` 读 `log`、`getRecycleBin` 读 `items`，兜底体里都没有，
+            //     组件各自 `|| []` 兜成空数组 → 面板永远是「没有记录 / 回收站是空的」，
+            //     那是最容易「全绿」的假态（和附件抽屉那次的坑一模一样）。
+            // 三组都只读、不写库，与本节其余部分同一底线。
+            if (pathname === "/api/vault/keys") {
+                // null = 还没建库。VaultPanel 的 phase 于是落到 setup，
+                // 渲染「建库」屏（这是本任务覆盖的那一屏，见报告里的边界说明）
+                res.end("null");
+                return;
+            }
+            if (pathname === "/api/vault/entries") {
+                // 没解锁就没有条目；只给形状，不给密文
+                res.end("[]");
+                return;
+            }
+            if (pathname === "/api/audit") {
+                // getAuditLog 的返回形状：{ success, log: [{id, action, actor, ip, detail, created_at}], hasMore }
+                res.end(
+                    JSON.stringify({
+                        success: true,
+                        hasMore: false,
+                        log: [
+                            { id: 3, action: "login_success", actor: "owner", ip: "127.0.0.1", detail: "登录成功", created_at: "2026-11-03T09:00:00.000Z" },
+                            { id: 2, action: "site_create", actor: "owner", ip: "127.0.0.1", detail: "新增站点", created_at: "2026-11-03T08:30:00.000Z" },
+                            { id: 1, action: "backup_config", actor: "owner", ip: "127.0.0.1", detail: "改备份配置", created_at: "2026-11-03T08:00:00.000Z" },
+                        ],
+                    })
+                );
+                return;
+            }
+            if (pathname === "/api/recycle") {
+                // getRecycleBin 的返回形状：{ success, items: [{id, kind, name, deletedAt}] }
+                // ⚠️ deletedAt 是 **unix 秒**（界面里 fmtDateTime(deletedAt * 1000)），
+                //    不是毫秒。给毫秒会让每行显示成「57770 年」那种假日期 ——
+                //    桩不该凭空造出一个现实中不存在的状态。
+                const at = iso => Math.floor(Date.parse(iso) / 1000);
+                res.end(
+                    JSON.stringify({
+                        success: true,
+                        items: [
+                            { id: 101, kind: "site", name: "旧站点", deletedAt: at("2026-11-02T10:00:00Z") },
+                            { id: 102, kind: "group", name: "归档分组", deletedAt: at("2026-11-02T09:00:00Z") },
+                            { id: 103, kind: "site", name: "测试卡片", deletedAt: at("2026-11-01T09:00:00Z") },
+                        ],
+                    })
+                );
+                return;
+            }
+
             res.end(JSON.stringify({ success: true }));
             return;
         }

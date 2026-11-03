@@ -1,0 +1,489 @@
+{
+  "counts": {
+    "buttons": 48,
+    "groupPanels": 2,
+    "cards": 3,
+    "railDots": 0
+  },
+  "elements": {
+    ".nav-root": [
+      {
+        "rect": [
+          0,
+          0,
+          864,
+          900
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgb(255, 255, 255)",
+          "fontSize": "16px",
+          "radius": "0px",
+          "display": "block",
+          "visibility": "visible"
+        }
+      }
+    ],
+    ".nav-group-rail": [],
+    ".nav-group-panel": [
+      {
+        "rect": [
+          24,
+          191,
+          816,
+          218
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(255, 255, 255, 0.42)",
+          "fontSize": "16px",
+          "radius": "22px",
+          "display": "block",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          24,
+          449,
+          816,
+          218
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(255, 255, 255, 0.42)",
+          "fontSize": "16px",
+          "radius": "22px",
+          "display": "block",
+          "visibility": "visible"
+        }
+      }
+    ],
+    ".nav-group-accent-bar": [
+      {
+        "rect": [
+          49,
+          231,
+          3,
+          20
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgb(177, 96, 41)",
+          "fontSize": "16px",
+          "radius": "6px",
+          "display": "block",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          49,
+          489,
+          3,
+          20
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgb(146, 112, 34)",
+          "fontSize": "16px",
+          "radius": "6px",
+          "display": "block",
+          "visibility": "visible"
+        }
+      }
+    ],
+    ".nav-card-in": [
+      {
+        "rect": [
+          49,
+          286,
+          245,
+          98
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(0, 0, 0, 0)",
+          "fontSize": "16px",
+          "radius": "22px",
+          "display": "block",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          310,
+          286,
+          245,
+          98
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(0, 0, 0, 0)",
+          "fontSize": "16px",
+          "radius": "22px",
+          "display": "block",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          49,
+          544,
+          245,
+          98
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(0, 0, 0, 0)",
+          "fontSize": "16px",
+          "radius": "22px",
+          "display": "block",
+          "visibility": "visible"
+        }
+      }
+    ],
+    ".nav-card-icon": [
+      {
+        "rect": [
+          66,
+          303,
+          36,
+          36
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(255, 255, 255, 0.94)",
+          "fontSize": "16px",
+          "radius": "11px",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          327,
+          303,
+          36,
+          36
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(255, 255, 255, 0.94)",
+          "fontSize": "16px",
+          "radius": "11px",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          66,
+          561,
+          36,
+          36
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(255, 255, 255, 0.94)",
+          "fontSize": "16px",
+          "radius": "11px",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      }
+    ],
+    ".nav-card-actions": [],
+    ".nav-star-btn": [
+      {
+        "rect": [
+          225,
+          295,
+          25,
+          25
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.66)",
+          "background": "rgba(255, 255, 255, 0.82)",
+          "fontSize": "18px",
+          "radius": "50%",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          486,
+          295,
+          25,
+          25
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.66)",
+          "background": "rgba(255, 255, 255, 0.82)",
+          "fontSize": "18px",
+          "radius": "50%",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          225,
+          553,
+          25,
+          25
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.66)",
+          "background": "rgba(255, 255, 255, 0.82)",
+          "fontSize": "18px",
+          "radius": "50%",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      }
+    ],
+    ".nav-header-compact": [],
+    ".nav-header-divider": [],
+    ".nav-settings-btn": [
+      {
+        "rect": [
+          258,
+          294,
+          28,
+          28
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.54)",
+          "background": "rgba(255, 255, 255, 0.82)",
+          "fontSize": "18px",
+          "radius": "50%",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          518,
+          294,
+          28,
+          28
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.54)",
+          "background": "rgba(255, 255, 255, 0.82)",
+          "fontSize": "18px",
+          "radius": "50%",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          258,
+          552,
+          28,
+          28
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.54)",
+          "background": "rgba(255, 255, 255, 0.82)",
+          "fontSize": "18px",
+          "radius": "50%",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      }
+    ],
+    ".nav-tag-bar": [],
+    "[role='dialog']": [
+      {
+        "rect": [
+          32,
+          90,
+          800,
+          720
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(255, 255, 255, 0.94)",
+          "fontSize": "16px",
+          "radius": "22px",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      }
+    ],
+    ".MuiDialog-paper": [
+      {
+        "rect": [
+          32,
+          90,
+          800,
+          720
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(255, 255, 255, 0.94)",
+          "fontSize": "16px",
+          "radius": "22px",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      }
+    ],
+    "[data-workspace-nav]": [
+      {
+        "rect": [
+          41,
+          199,
+          175,
+          36
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(0, 0, 0, 0)",
+          "fontSize": "13.5px",
+          "radius": "21px",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          41,
+          237,
+          175,
+          36
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(0, 0, 0, 0)",
+          "fontSize": "13.5px",
+          "radius": "21px",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          41,
+          275,
+          175,
+          36
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(0, 0, 0, 0)",
+          "fontSize": "13.5px",
+          "radius": "21px",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      }
+    ],
+    ".MuiTextField-root": [
+      {
+        "rect": [
+          24,
+          81,
+          816,
+          36
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(0, 0, 0, 0)",
+          "fontSize": "16px",
+          "radius": "0px",
+          "display": "inline-flex",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          45,
+          151,
+          175,
+          40
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(0, 0, 0, 0)",
+          "fontSize": "16px",
+          "radius": "0px",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          249,
+          253,
+          486,
+          40
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(0, 0, 0, 0)",
+          "fontSize": "16px",
+          "radius": "0px",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      }
+    ],
+    ".MuiButton-root": [
+      {
+        "rect": [
+          27,
+          129,
+          84,
+          32
+        ],
+        "style": {
+          "color": "rgba(0, 0, 0, 0.87)",
+          "background": "rgba(0, 0, 0, 0)",
+          "fontSize": "13px",
+          "radius": "11px",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "style": {
+          "color": "rgb(255, 255, 255)",
+          "background": "rgb(25, 118, 210)",
+          "fontSize": "14px",
+          "radius": "14.08px",
+          "display": "inline-flex",
+          "visibility": "visible"
+        }
+      },
+      {
+        "rect": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "style": {
+          "color": "rgb(255, 255, 255)",
+          "background": "rgb(25, 118, 210)",
+          "fontSize": "13px",
+          "radius": "0px",
+          "display": "inline-flex",
+          "visibility": "visible"
+        }
+      }
+    ],
+    ".MuiAlert-root": []
+  },
+  "dark": false
+}

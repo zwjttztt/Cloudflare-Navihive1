@@ -46,6 +46,33 @@ const VIEWPORTS = [
 ];
 
 /**
+ * 「设置」中心里那三屏（保险库 / 回收站 / 审计）共用的采集面。
+ *
+ * 一律用**稳定**选择器，不用 emotion hash：
+ *   - `[role="dialog"]` / `.MuiDialog-paper`：中心外壳（SettingsWorkspaceDialog）
+ *   - `[data-workspace-nav]`：左栏条目（SettingsWorkspaceNav 的稳定 data 属性）。
+ *     手机视口点进面板后左栏会卸载，所以这一档在 mobile 基线上是 0 个 —— 那是
+ *     预期形态，不是缺测。
+ *   - `.MuiTextField-root` / `.MuiButton-root` / `.MuiAlert-root`：面板正文里的
+ *     表单、按钮、提示条（回收站与审计的行控件也落在这里）。
+ *
+ * ⚠️ 采集时机**不靠选择器自己稳**，靠调用方先等正文文字就绪（waitForText /
+ *    waitForExtraText）再采。理由：`.MuiButton-root` 的个数会随列表数据从 0 涨到 N
+ *    （每行一个按钮），`.MuiListItem-root` 更是纯行数。它们只在「数据已经落地」
+ *    之后才是稳定量 —— 文字闸门就是用来保证这个前提的。
+ *    三屏都**没有**收 `.MuiListItem-root`：行数完全相同、又多了 0→3 的抖动面，
+ *    收益不值这个风险。
+ */
+const NAV_CENTER_SELECTORS = [
+    "[role='dialog']",
+    ".MuiDialog-paper",
+    "[data-workspace-nav]",
+    ".MuiTextField-root",
+    ".MuiButton-root",
+    ".MuiAlert-root",
+];
+
+/**
  * 场景。
  *
  * 原来只有首页三档，注释里写的原因是「只读桩只实现了首页要用的接口，
@@ -81,6 +108,64 @@ const SCENES = [
         // 公开页控件极少，waitRendered 的默认门槛（25 个按钮）永远等不到
         minButtons: 1,
         extraSelectors: ["[data-s]", "[data-share-brand='1']"],
+    },
+
+    // ---------------- 2026-11-03 D4：补 4 个高危面 ----------------
+    //
+    // 审计第 19 项列了 5 个「有实现、没基线」的缺口。这一批补其中 4 个
+    // （登录页是浮层、不是弹窗，且不属于「3 类高风险弹窗」，另议）。
+    // 这四屏的共同点：**用户点得到、但以前的视觉回归从来看不见它们** ——
+    // 一旦跑位 / 变色，只有真用户才会发现。
+    {
+        // 暗色记事本：notes-light 的暗色对照。
+        // P2-7 把硬编码色收敛成 token 之后，「暗色下某个 token 没覆盖」正是这类回归的
+        // 典型 —— 亮色全绿、暗色一处发白。所以选择器与 notes-light 保持**完全一致**，
+        // 差别只有 theme：这样两边 diff 一旦分叉，原因必然是主题而不是采集面。
+        name: "notes-dark",
+        theme: "dark",
+        openNotes: true,
+        extraSelectors: [
+            "[data-notes-root]",
+            "[data-nav-col='1']",
+            "[data-unfiled-notes='1']",
+            "[data-nav-footer='1']",
+        ],
+    },
+    {
+        // 密码保险库（设置中心 → 密码保险库）。桩里的 /api/vault/keys 回 null，
+        // 于是面板落在「建库」屏：Alert + 两个主密码输入框 + 创建按钮。
+        // ⚠️ 只覆盖「没建库 / 解锁」这一屏，**不覆盖解锁后的条目列表** ——
+        //    真解锁要跑 PBKDF2 并持有真密文，桩给不了（见报告里的边界说明）。
+        name: "vault",
+        theme: "light",
+        openNavCenterPanel: "vault",
+        waitForText: "主密码",
+        // 建库屏的实体按钮：用来确认「已经进到面板了」，不是还停在左栏列表步
+        waitForExtraText: ["创建保险库"],
+        extraSelectors: NAV_CENTER_SELECTORS,
+    },
+    {
+        // 回收站：已并入「数据安全」面板（数据保留 → 备份与恢复 → 回收站长页）。
+        // 等桩里的条目名出现，而不是只等「回收站」三个字 —— 后者在左栏标签和
+        // 分区标题里都有，骨架态也能匹配上，等于没等。
+        // ⚠️ 只等**站点页签**的两条（默认 tab=0）：分组条目在 tab=1，不切页签
+        //    根本不会渲染，把它写进来必然 20s 超时（第一版就是这么红的）。
+        name: "recycle",
+        theme: "light",
+        openNavCenterPanel: "backup",
+        waitForText: "回收站",
+        waitForExtraText: ["旧站点", "测试卡片"],
+        extraSelectors: NAV_CENTER_SELECTORS,
+    },
+    {
+        // 审计日志（owner 专属；桩的 /api/auth/me 已给 owner）。
+        // 同样等真实条目（detail 文案）出现，避免停在「读取中」的空壳上。
+        name: "audit",
+        theme: "light",
+        openNavCenterPanel: "audit",
+        waitForText: "审计",
+        waitForExtraText: ["登录成功", "新增站点"],
+        extraSelectors: NAV_CENTER_SELECTORS,
     },
 ];
 
@@ -183,6 +268,125 @@ async function waitAnimations(evaluate) {
             new Promise(r => setTimeout(() => r(true), 3000)),
         ]);
     })()`);
+}
+
+/**
+ * 轮询一个页面内布尔表达式，直到为真或超时。
+ *
+ * 与 `waitRendered` 分开：那个等的是「整页按钮数」，这里等的是**某一个具体条件**
+ * （dialog 挂上没 / 某段文字出现没）。条件不满足一律走 failMessage 抛出 ——
+ * 视觉回归量错东西比量不到更糟，所以宁可中断整轮，也不要记一个「一致」。
+ */
+async function waitForCondition(evaluate, expression, timeoutMs, failMessage) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        let ok = false;
+        try {
+            ok = await evaluate(expression);
+        } catch {
+            // 导航 / 重渲染中途 evaluate 可能抛，下一轮再试
+            ok = false;
+        }
+        if (ok) return true;
+        await sleep(250);
+    }
+    throw new Error(failMessage);
+}
+
+/**
+ * 打开「设置」中心并落到指定面板（D4，2026-11-03）。
+ *
+ * 三步全是「失败即抛错」：选择器漂了就不该继续量，量到的会是错的东西。
+ *   1. 点 `#navigation-button`（HeaderActions 的稳定 id，aria-haspopup="dialog"）
+ *   2. 等 `[role="dialog"]`（中心外壳，懒加载块，给 20s）
+ *   3. 点 `[data-workspace-nav="<id>"]`（SettingsWorkspaceNav 的稳定 data 属性）；
+ *      拿不到就把当前页面上所有 nav id 列进报错
+ *
+ * 手机视口（390）不需要额外动作：中心在 fullScreen 下先显示**列表步**，
+ * 点导航项本身就切到面板步（`SettingsWorkspaceDialog` 的 mobileStep）。
+ * `.click()` 在列表项上照样有效，不用先去找「全部选项」之类的中间层。
+ *
+ * @param {Function} evaluate 页面内执行
+ * @param {object} scene 带 openNavCenterPanel / waitForText / waitForExtraText
+ * @param {string} caseName 报错用的用例名
+ */
+async function openNavCenterPanel(evaluate, scene, caseName) {
+    const panelId = scene.openNavCenterPanel;
+    const mustHave = [scene.waitForText, ...(scene.waitForExtraText ?? [])].filter(Boolean);
+
+    // 1) 打开中心
+    const clicked = await evaluate(`(() => {
+        const btn = document.getElementById("navigation-button");
+        if (!btn) return "missing";
+        btn.click();
+        return "clicked";
+    })()`);
+    if (clicked !== "clicked") {
+        throw new Error(
+            caseName + ": 找不到 #navigation-button（" + clicked + "）—— 入口选择器漂了，先修脚本再谈回归"
+        );
+    }
+
+    // 2) 等中心外壳挂上（懒加载 chunk，20s 上限）
+    await waitForCondition(
+        evaluate,
+        `!!document.querySelector('[role="dialog"]')`,
+        20_000,
+        caseName + ': 20 秒内没出现 [role="dialog"] —— 中心没打开，或懒加载块没落地'
+    );
+
+    // 3) 点左栏导航项
+    const navResult = await evaluate(`(() => {
+        const want = ${JSON.stringify(panelId)};
+        const nodes = Array.from(document.querySelectorAll("[data-workspace-nav]"));
+        const seen = nodes.map(n => String(n.getAttribute("data-workspace-nav")));
+        const target = nodes.find(n => n.getAttribute("data-workspace-nav") === want);
+        if (!target) return { ok: false, seen: seen };
+        target.click();
+        return { ok: true, seen: seen };
+    })()`);
+    if (!navResult || navResult.ok !== true) {
+        const seen =
+            navResult && Array.isArray(navResult.seen) && navResult.seen.length > 0
+                ? navResult.seen.join("、")
+                : "（一个都没有）";
+        throw new Error(
+            caseName +
+                ': 左栏没有 data-workspace-nav="' +
+                panelId +
+                '"，页面上实际有的：' +
+                seen
+        );
+    }
+
+    // 4) 等面板正文真的就绪（不是骨架 / 不是报错态）
+    //    文字类判据而不是元素数：元素数在「读取中」和「读完了但 0 条」两种状态下可能一样。
+    const readyExpr = `(() => {
+        const text = document.body.innerText || "";
+        const need = ${JSON.stringify(mustHave)};
+        return need.every(t => text.indexOf(t) >= 0);
+    })()`;
+    try {
+        await waitForCondition(evaluate, readyExpr, 20_000, "__ready__");
+    } catch {
+        const diag = await evaluate(`(() => {
+            const text = document.body.innerText || "";
+            const need = ${JSON.stringify(mustHave)};
+            return {
+                missing: need.filter(t => text.indexOf(t) < 0),
+                head: text.replace(/\\s+/g, " ").slice(0, 240),
+            };
+        })()`);
+        const missing = diag && Array.isArray(diag.missing) ? diag.missing.join(" / ") : "（未知）";
+        const head = diag && diag.head ? diag.head : "";
+        throw new Error(
+            caseName +
+                ": 20 秒内面板正文没就绪（缺 " +
+                missing +
+                "）—— 停在骨架态或报错态，量到的会是空壳。当前正文开头：" +
+                head
+        );
+    }
 }
 
 /** 比对：几何给容差，其余（颜色 / 字号 / 数量）必须完全一致 */
@@ -322,6 +526,10 @@ async function main() {
                     if (!hasDialog) {
                         throw new Error(`${caseName}: 点了设置按钮但弹窗没出来 —— 界面坏了`);
                     }
+                }
+
+                if (scene.openNavCenterPanel) {
+                    await openNavCenterPanel(evaluate, scene, caseName);
                 }
 
                 await waitAnimations(evaluate);

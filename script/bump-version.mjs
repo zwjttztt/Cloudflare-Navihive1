@@ -43,7 +43,13 @@ function committedVersion() {
 
 /** 这一轮已暂存的改动规模（行数按 numstat 的增+删合计，二进制记 0 行） */
 function stagedScope() {
-    const out = git('git diff --cached --numstat HEAD -- . ":(exclude)package.json"');
+    // ⚠️ 视觉回归基线是**生成物**（pretty-print 的 JSON，一次补 4 个场景 × 3 视口
+    // 就是 5000+ 行）。按行数计会把「补基线」判成 major —— 版本号该反映「改了多少
+    // 东西」，不是「机器写了多少行」。所以基线路径不参与档位计算（文件照常提交）。
+    // 与上面 package.json 的排除同一个理由：版本 diff 要能被人读懂。
+    const out = git(
+        'git diff --cached --numstat HEAD -- . ":(exclude)package.json" ":(exclude)tests/visual-baseline"'
+    );
     let files = 0;
     let lines = 0;
     for (const row of out.split("\n")) {
