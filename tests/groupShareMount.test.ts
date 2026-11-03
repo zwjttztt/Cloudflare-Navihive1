@@ -29,6 +29,18 @@ const APP = path.join(
     "App.tsx"
 );
 
+// 2026-11（D6 拆 App.tsx）：顶部那一排浮层整块搬进了 components/app/AppOverlays.tsx，
+// GroupShareDialog 的挂载 JSX 跟着挂载点走了。守卫于是跟到新文件 —— 但**同时**要求
+// App.tsx 里真的在渲染 <AppOverlays />，否则这几条断言就可能对着一个孤儿文件跑空
+// （那才是最坏的情况：守卫还绿着，对话框其实早就不在树上了）。
+const OVERLAYS = path.join(
+    findRepoRoot(path.resolve(process.argv[1] ?? ".", "..")),
+    "src",
+    "components",
+    "app",
+    "AppOverlays.tsx"
+);
+
 /** 剥注释（与 lazyBoundary.test.ts 同一纪律：注释里的代码字样不能参与匹配） */
 function stripComments(text: string): string {
     return text
@@ -36,12 +48,23 @@ function stripComments(text: string): string {
         .replace(/(^|[^:'"`\\])\/\/[^\n]*/g, "$1");
 }
 
+/** 读「当前挂着 GroupShareDialog 的那个文件」，顺手确认它还接在 App 的渲染树上 */
+function readMountSource(): string {
+    const app = stripComments(fs.readFileSync(APP, "utf8"));
+    assert.ok(
+        app.includes("<AppOverlays"),
+        "App.tsx 里没有渲染 <AppOverlays /> —— 挂载块被搬走却没接回去，" +
+        "下面几条断言会跑空（对话框其实已经不在树上了）"
+    );
+    return fs.readFileSync(OVERLAYS, "utf8");
+}
+
 test("GroupShareDialog 挂载块不得嵌在 showOfflineBanner 条件渲染里", () => {
-    const text = stripComments(fs.readFileSync(APP, "utf8"));
+    const text = stripComments(readMountSource());
 
     // 定位 showOfflineBanner 条件块：从 `{showOfflineBanner` 起做花括号配对
     const start = text.indexOf("{showOfflineBanner");
-    assert.ok(start >= 0, "App.tsx 里找不到 showOfflineBanner 条件（改名了就同步改这里）");
+    assert.ok(start >= 0, "AppOverlays.tsx 里找不到 showOfflineBanner 条件（改名了就同步改这里）");
     let depth = 0;
     let end = -1;
     for (let i = start; i < text.length; i++) {
@@ -67,8 +90,9 @@ test("GroupShareDialog 挂载块不得嵌在 showOfflineBanner 条件渲染里",
     );
 });
 
-test("GroupShareDialog 挂载条件仍存在于 App.tsx 顶层（防测试跑空/被删）", () => {
-    const text = stripComments(fs.readFileSync(APP, "utf8"));
+test("GroupShareDialog 挂载条件仍存在于顶层渲染里（防测试跑空/被删）", () => {
+    // readMountSource 会先确认 App.tsx 真的在渲染 <AppOverlays />，再返回挂载块所在文件
+    const text = stripComments(readMountSource());
     const start = text.indexOf("{showOfflineBanner");
     let end = start > 0 ? start + text.slice(start).length : text.length;
     if (start >= 0) {
@@ -82,6 +106,6 @@ test("GroupShareDialog 挂载条件仍存在于 App.tsx 顶层（防测试跑空
         text.slice(Math.min(end + 1, text.length));
     assert.ok(
         outside.includes("shareGroupId !== null") && outside.includes("GroupShareDialog"),
-        "App.tsx 顶层找不到 GroupShareDialog 挂载条件（shareGroupId !== null）——挂载块被删了或移进别的条件里了"
+        "顶层找不到 GroupShareDialog 挂载条件（shareGroupId !== null）——挂载块被删了或移进别的条件里了"
     );
 });

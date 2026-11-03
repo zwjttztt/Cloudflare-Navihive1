@@ -5,4 +5,7 @@ node_modules/
 coverage/
 package-lock.json
 CHANGELOG.md
+# 归档里的更新日志是「按时间段的原始搬运」，格式化会改动换行与列表缩进，
+# 让「归档 + 现行 = 原文」这条核对失效。归档只读，不参与格式化。
+docs/archive/
 .workbuddy/

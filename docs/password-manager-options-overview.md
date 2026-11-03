@@ -1,7 +1,7 @@
 # 密码保管方案总览（NaviHive）
 
 > 本文是 `docs/password-manager-scope.md`（2026-10-04 拍板档）、`docs/password-manager-plan-B.md`
-> （B 的详细设计）、`docs/password-manager-analysis-2026-10-13.md`（深度分析）三份的**合并速览**，
+> （B 的详细设计）、`docs/archive/password-manager-analysis-2026-10-13.md`（深度分析）三份的**合并速览**，
 > 并用当前代码校正了其中一处过期判断。结论以原三份文档为准；本文供快速入门与汇报。
 
 ---
@@ -113,4 +113,4 @@
 ## 附：来源文档
 - `docs/password-manager-scope.md`（2026-10-04，拍板档，三档方案 + 四问）
 - `docs/password-manager-plan-B.md`（B 的密钥分层/表结构/解锁流程/工作量）
-- `docs/password-manager-analysis-2026-10-13.md`（深度分析，P0–P3 分期；⚠️ 其「站点密码明文」判断有误，见上文更正）
+- `docs/archive/password-manager-analysis-2026-10-13.md`（深度分析，P0–P3 分期；⚠️ 其「站点密码明文」判断有误，见上文更正）

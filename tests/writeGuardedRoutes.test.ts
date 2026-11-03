@@ -77,7 +77,11 @@ const WRITE_METHOD = /method === "(POST|PUT|DELETE|PATCH)"/g;
 
 /** 所有算作「已接闸门」的调用形态 */
 const GATE_CALLS = [
-    /await writeGate\(\)/,
+    // ⚠️ 不写 `writeGate\(\)`：`writeGate` 原本是 dispatchDataRoutes 里的闭包（零参），
+    // 2026-11 分发改成路由表之后 handler 都在模块级、拿不到那个闭包，于是它变成
+    // `writeGate(ctx)`（从 ctx 现算桶名，算式与调用时机都没变）。这里只认「调用了它」，
+    // 参数长什么样不是这条守卫关心的事。
+    /await writeGate\(/,
     /await enforceWriteGuard\(/,
     /await enforceConfigGuard\(/,
     /await enforceDavGuard\(/,

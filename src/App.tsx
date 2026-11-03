@@ -8,7 +8,6 @@ import {
     useRef,
     useCallback,
     lazy,
-    Suspense,
     type SetStateAction,
 } from "react";
 import { NavigationClient } from "./API/client";
@@ -25,13 +24,17 @@ import GroupNavRail from "./components/GroupNavRail";
 // 弹窗/面板类组件按需加载：首屏用不到它们，拆出去能让主包小一大截
 // （命令面板与书签导入已随 OverlayHost 一起搬走；命令条目的类型跟着
 //  useAppCommands 走，App 这边连类型都不必留）
-import ScrollProgress from "./components/ScrollProgress";
-import BackToTop from "./components/BackToTop";
+// 顶部那一排浮层（滚动进度条 / 维护横幅 / 分组分享 / 断网横幅 / 回到顶部 /
+// 读屏播报区 / 限流倒计时 / 提示条 / 背景装饰层）整块搬到了
+// components/app/AppOverlays.tsx（2026-11 D6）。
+// 它们全是 fixed / absolute、脱离文档流、与页面骨架没有布局关系，所以能整块搬；
+// 搬的时候一个节点都没动。九个组件的懒加载声明也跟着挂载点走了，别在这里找。
+import AppOverlays from "./components/app/AppOverlays";
 import { useOfflineBannerVisible } from "./hooks/useOfflineBannerVisible";
 // 二次确认走按需入口：它只在用户点了删除之后才出现，不该占首屏
 import ConfirmDialog from "./components/ConfirmDialogGate";
-// 提示条 / 背景装饰 / 浮层挂载点：三段纯渲染的 JSX，从 App 的渲染树里抽出来
-import BackgroundLayers from "./components/BackgroundLayers";
+// 浮层挂载点：纯渲染的 JSX，从 App 的渲染树里抽出来
+// （背景装饰层已随 AppOverlays 一起搬走，见上面那条 import）
 import OverlayHost from "./components/OverlayHost";
 import BuildBadge from "./components/BuildBadge";
 import { useDocumentEffects } from "./hooks/useDocumentEffects";
@@ -99,7 +102,6 @@ import HeaderGroupsButton from "./components/HeaderGroupsButton";
 // ⚠️ 注意 OverlayHost 里那五个（命令面板 / 书签导入 / 标签管理 / 两个 AI 弹窗）也走 lazy，
 //    但它们写在 OverlayHost 里 —— 别只在这里数 lazy( 的个数，得看每个组件的 import 语句本身。
 const AddSiteDialog = lazy(() => import("./components/AddSiteDialog"));
-const GroupShareDialog = lazy(() => import("./components/GroupShareDialog"));
 const EditGroupDialog = lazy(() => import("./components/EditGroupDialog"));
 // 账号管理（改账号密码 / 恢复密钥 / 邀请码 / 登录设备 / 注销）：从「设置」进入，懒加载
 const AccountDialog = lazy(() => import("./components/AccountDialog"));
@@ -123,15 +125,16 @@ const VaultDialog = lazy(() => import("./components/VaultDialog"));
 /** 记事本整块（hook + 视图）懒加载：打开之前一行代码都不进首屏 */
 const NotesOverlay = lazy(() => import("./components/NotesOverlay"));
 import type { NavCenterPanelId } from "./components/navigationCenter/model";
+// 「设置」中心的入参对象在这里显式标注类型（见 return 上方那段 navCenterArgs）：
+// 只在类型位置上用到，编译后被擦掉，不会把中心那块代码拽回首屏包。
+import type { NavCenterDialogArgs } from "./components/navCenterDialogProps";
+// App ↔ 记事本之间的两座桥（站点侧 / 笔记侧）：整块在 components/app/notesBridges.ts
+import { createNotesBridge, createNotesSiteLinkApi } from "./components/app/notesBridges";
+// bootstrap 里「分组」之外的落地（配置 / 链接健康 / 星标标签合并）：整块在 components/app
+import { applyBootstrapExtras } from "./components/app/applyBootstrapExtras";
 import HeaderClock from "./components/HeaderClock";
 import SiteListHeader from "./components/SiteListHeader";
-import { writeCollapsedGroupIds } from "./utils/collapse";
 import { loadPinyinMatcher } from "./utils/pinyin";
-import {
-    demoteLegacyDeadMarks,
-    mergeLinkHealth,
-    readDeadLinks,
-} from "./utils/linkHealth";
 import {
     switchAccountBoundary,
 } from "./utils/sessionBoundary";
@@ -142,15 +145,7 @@ import {
 } from "./utils/cardFocus";
 import { clearAddSiteParam, readAddSitePrefill } from "./utils/addSiteDeepLink";
 import { setSiteIndex } from "./utils/siteIndex";
-import {
-    LINK_HEALTH_CONFIG,
-    LINK_HEALTH_SYNC_CONFIG,
-    PREF_SYNC_CONFIG,
-    PREF_STARRED_CONFIG,
-    PREF_TAGS_CONFIG,
-    PREF_VISITS_CONFIG,
-    PREF_COLLAPSED_CONFIG,
-} from "./appDefaults";
+import { LINK_HEALTH_SYNC_CONFIG } from "./appDefaults";
 import { setUndoAccountUid } from "./utils/undoPersist";
 import SiteListBody from "./components/SiteListBody";
 // 加载失败面板：**必须静态引入**，不能 lazy —— 它出现的场合恰恰是「请求没成功」，
@@ -163,15 +158,9 @@ import SiteListErrorState from "./components/SiteListErrorState";
 const TagBar = lazy(() => import("./components/TagBar"));
 // 骨架屏只在 loading 时挂上，同理。
 const SiteListSkeleton = lazy(() => import("./components/SiteListSkeleton"));
-// 断网提示只在断网 / 刚恢复 / 有同步失败项时才看得见，其余时候渲染出来也是 null，
-// 没必要占首屏（实测 3.7 KB）。挂不挂由 useOfflineBannerVisible 决定，块按需下载。
-const OfflineBanner = lazy(() => import("./components/OfflineBanner"));
-// 维护模式横幅：服务端开着 maintenance.enabled 时挂出来（写操作会被 503 拦下）。
-//
-// ⚠️ 2026-10-13：这里原来是 lazy，实测**白多一次请求**。它必须常驻（要自己每 60 秒
-// 轮询维护状态），所以 lazy 省不掉下载 —— 只剩一个 790 字节的独立块，而这条链路上
-// 每个请求要另付 1~3 秒固定往返。改回静态 import：+0.9 KB 进 index，换少一次往返。
-import MaintenanceBanner from "./components/MaintenanceBanner";
+// 断网提示 / 维护横幅 / 提示条 / 限流条的懒加载与常驻决定，都跟着挂载点搬到了
+// components/app/AppOverlays.tsx（每条为什么 lazy、为什么常驻，注释一起搬过去了）。
+// ⚠️ 维护横幅那条「别改回 lazy」的结论仍然有效，只是现在写在那边。
 // 登录页是 lazy chunk（见 components/LoginScreen.tsx）：它不进首屏包，但登录页本身
 // 是首屏 —— 所以配合下面的「预热」，让它的 chunk 与认证检查那次请求并行下载：
 // 等 chunk 到位时正好渲染，用户感觉不到多等一次。
@@ -201,14 +190,9 @@ const NotesLoadingFallback = lazy(() => import("./components/NotesLoadingFallbac
 // （见 components/RenderBoundary.tsx 头注）。刻意不用 ChunkBoundary：它的文案是给
 // 「chunk 没下载下来」写的，对渲染期异常是误导。
 import RenderBoundary from "./components/RenderBoundary";
-// 顶部提示条：懒加载 + 有提示才挂载（Snackbar 那套不进首屏关键路径，
-// 见 docs/site-audit-2026-10-15.md P1）；读屏播报区是常驻的 AriaLiveRegion
-const SnackbarHost = lazy(() => import("./components/SnackbarHost"));
-import AriaLiveRegion from "./components/AriaLiveRegion";
-// 429 限流的倒计时提示条。同步 import 而不是 lazy：它自身没有任何依赖（只有 MUI 的
-// Alert/Button，首屏早就有了），而 lazy 会在「刚被限流」那一刻多一次 chunk 请求 ——
-// 限流时最不该做的就是再发请求。组件默认渲染 null，常驻挂载不占位。
-import RateLimitBanner from "./components/RateLimitBanner";
+// 顶部提示条 / 读屏播报区 / 429 限流条都在 components/app/AppOverlays.tsx 里挂载：
+// 提示条懒加载 + 有提示才挂（Snackbar 那套不进首屏关键路径，见
+// docs/site-audit-2026-10-15.md P1），播报区与限流条则常驻 —— 理由写在那边的挂载点上。
 const ShortcutsDialog = lazy(() => import("./components/ShortcutsDialog"));
 
 // 根据环境选择使用真实API还是模拟API
@@ -264,11 +248,13 @@ function App() {
     };
 
     // bootstrap 里「分组」之外的落地：配置、链接健康、星标 / 标签跨端合并。
-    // 用函数声明（会被提升），这样上面 useSites 调用时就能引用它，而它内部用到的
-    // applyConfigs / setDeadLinks 等虽在更后面定义，调用时才取值，不会触发 TDZ。
+    // 合并那 50 行整段在 components/app/applyBootstrapExtras.ts（2026-11 D6）——
+    // 摆在一堆 hook 调用中间没人读得下去。这里只剩「身份 / 恢复密钥」两步
+    // （要写 useAccountSession 的 state 与两个 ref，属于账号域的私有约定）与依赖清单。
+    //
+    // ⚠️ 仍然必须是**函数声明**（会被提升）：上面 useSites 调用时就要引用它，而依赖里
+    //    的 applyConfigs / setDeadLinks 等在更后面才定义 —— 靠「调用时才取值」躲开 TDZ。
     function applyRemoteExtras(data: BootstrapData) {
-        applyConfigs(data.configs);
-
         // ?full=1 把「我是谁」与「恢复密钥配没配」一起带回来了（见 worker/routes/data.ts）。
         // 落地之后启动就少两次并发请求；老服务端不带这两个字段，下面那两个 ref 保持 false，
         // useAccountSession 会照原样各问一次 —— 前后端不必同时上线。
@@ -282,53 +268,12 @@ function App() {
             recoveryFromBootstrapRef.current = true;
             setRecoveryConfigured(data.recovery.configured === true);
         }
-        // ---- 可选的多端同步：把服务端那份合并回本机 ----
-        // 都是「取并集 / 取较新」，所以重复合并不会丢数据，也不怕和上传打架
-        const incoming = data.configs || {};
-
-        if (incoming[LINK_HEALTH_SYNC_CONFIG] === "true" && incoming[LINK_HEALTH_CONFIG]) {
-            try {
-                mergeLinkHealth(JSON.parse(incoming[LINK_HEALTH_CONFIG]));
-            } catch {
-                // 云端那份坏了就当没有，不影响本机
-            }
-        }
-
-        // 旧判据（一次失败就标失效）留下的标记一律降级成「疑似」，否则用户升级完看到的
-        // 还是那几个天天在用却挂着「失效」的站。必须放在云端合并**之后**：合并进来的
-        // 旧记录同样要降级，不然开了同步的机器怎么都清不掉。
-        demoteLegacyDeadMarks();
-        setDeadLinks(readDeadLinks());
-
-        if (incoming[PREF_SYNC_CONFIG] === "true") {
-            try {
-                const remoteStarred = JSON.parse(incoming[PREF_STARRED_CONFIG] || "[]");
-                const remoteTags = JSON.parse(incoming[PREF_TAGS_CONFIG] || "{}");
-                mergeRemotePrefs(remoteStarred, remoteTags);
-            } catch {
-                // 同上
-            }
-
-            // 访问统计：换台设备登录，点过的热度不该从零开始重攒
-            try {
-                mergeRemoteVisits(JSON.parse(incoming[PREF_VISITS_CONFIG] || "{}"));
-            } catch {
-                // 同上
-            }
-
-            // 分组折叠是「当前状态」而非累计量，所以直接以服务端那份为准
-            // （本机刚改过的话，下面的上传会立刻把新状态推回去，不会来回打架）
-            try {
-                const remote = JSON.parse(incoming[PREF_COLLAPSED_CONFIG] || "null");
-                if (Array.isArray(remote)) {
-                    writeCollapsedGroupIds(
-                        remote.filter((id: unknown) => typeof id === "string")
-                    );
-                }
-            } catch {
-                // 同上
-            }
-        }
+        applyBootstrapExtras(data, {
+            applyConfigs,
+            setDeadLinks,
+            mergeRemotePrefs,
+            mergeRemoteVisits,
+        });
     }
 
     // 用 ref 镜像最新的 groups：事件回调可以保持稳定引用（配合 memo 减少无谓重渲染）
@@ -523,17 +468,13 @@ function App() {
 
 
 
-    // 全局提示条：状态与 notify 都挪进了 useNotify（App 只负责渲染 <Snackbar />）
-    const {
-        notify,
-        close: handleCloseSnackbar,
-        open: snackbarOpen,
-        message: snackbarMessage,
-        severity: snackbarSeverity,
-        duration: snackbarDuration,
-        action: snackbarAction,
-        liveMessage,
-    } = useNotify();
+    // 全局提示条：状态与 notify 都挪进了 useNotify（App 只负责渲染 <Snackbar />）。
+    // 整份返回值作为一个 prop 交给 AppOverlays —— open / message / severity / duration /
+    // action / close 这六件事永远一起用，拆成六个 prop 只是让首屏包多背一串压缩不掉的
+    // 属性名（首屏余量只剩 5%，见 components/app/AppOverlays.tsx 里那条注释）。
+    // 本组件内部真正要用的只有两个：notify（几十处提示）与 close（登出 / 换账号时收起）。
+    const snackbar = useNotify();
+    const { notify, close: handleCloseSnackbar } = snackbar;
     // 搜索关键词：普通浏览模式下即时筛选卡片
     const [searchQuery, setSearchQuery] = useState("");
 
@@ -1213,49 +1154,18 @@ function App() {
     /**
      * 记事本里「这篇笔记属于哪个站点」的反查（#477 双向绑定的笔记那一侧）。
      *
-     * 站名直接从内存里的分组树查（几十张卡的一次线性扫），不额外发请求 ——
-     * 为了显示一个名字去拉一遍 /api/sites 不值当。
-     *
-     * 跳转复用 jumpToSite：先关掉记事本层（它盖在页面上，先滚也看不见），
-     * 隔一小段再滚 —— 等那一层卸载、布局稳定下来，滚到的位置才是对的。
+     * 四个字段的实现整段在 components/app/notesBridges.ts（2026-11 D6）：
+     * 站名直接查内存里的分组树、不发请求，跳转复用 jumpToSite 这些取舍都写在那儿。
+     * 这里只负责「引用什么时候重算」—— 依赖与搬家前完全一致。
      */
     const notesSiteLinkApi = useMemo(
-        () => ({
-            resolve: (siteId: number) => {
-                for (const group of groups) {
-                    const hit = group.sites?.find(s => s.id === siteId);
-                    if (hit) return { id: hit.id, name: hit.name };
-                }
-                // 查不到 = 那张卡片已经被删了。悬空引用是刻意的（笔记要留下），
-                // 记事本那边会显示成「站点已删除」。
-                return null;
-            },
-            open: (siteId: number) => {
-                setNotesOpen(false);
-                window.setTimeout(() => jumpToSite(siteId), 60);
-            },
-            /**
-             * 笔记右键「绑定网站」的选择器要用这份清单（2026-10-23）。
-             * 直接从内存的分组树摊平，不发请求；带上 note_id / note_title 是为了
-             * 在选择器里提醒「这个站已经绑了『X』，绑上会把它换下来」。
-             */
-            list: () =>
-                groups.flatMap(group =>
-                    (group.sites ?? []).map(site => ({
-                        id: site.id,
-                        name: site.name,
-                        note_id: site.note_id ?? null,
-                        note_title: site.note_title ?? null,
-                    }))
-                ),
-            /**
-             * 绑定关系变了 → 重取卡片。写入本身在记事本那边（`onUpdate`），
-             * 这里只负责让卡片上的 note_id / note_title 跟上，别留旧状态。
-             */
-            refresh: () => {
-                void fetchDataRef.current({ silent: true });
-            },
-        }),
+        () =>
+            createNotesSiteLinkApi({
+                groups,
+                closeNotes: () => setNotesOpen(false),
+                jumpToSite,
+                refetchSites: () => void fetchDataRef.current({ silent: true }),
+            }),
         // eslint-disable-next-line react-hooks/exhaustive-deps -- api 是模块级单例，列进来是为了 api 被整体替换时能重算 —— 删掉反而会掩盖替换
         [groups, jumpToSite, api]
     );
@@ -1554,68 +1464,15 @@ function App() {
             // D2 双向绑定：给深层组件（站点设置）用的记事本桥 —— 搜一下 / 跳过去。
             // 走 context 而不是 props：App → GroupCard → SiteCard → SiteSettingsModal
             // 五层透传只为两个函数不划算。
-            notesBridge: {
-                search: async (query: string, limit = 50) => {
-                    try {
-                        const res = await api.notesSearch(query, limit);
-                        // ⚠️ 搜索端点只回**片段**（snippet），不回全文 ——
-                        // 站点那边拿它做「有没有提到这个站」的判据足够
-                        // （片段是围着命中位置截的，站名/网址就在里面），
-                        // 换来的是不用把所有笔记正文拉一遍。
-                        return (res?.results ?? []).map(hit => ({
-                            id: hit.id,
-                            title: hit.title || "",
-                            content: hit.snippet || "",
-                        }));
-                    } catch {
-                        // 老部署没有 notes/search 端点（404/500）：返回空，
-                        // 站点设置里那小节显示「还没有笔记提到它」，不弹错
-                        return [];
-                    }
-                },
-                open: (noteId: number) => {
+            // 六个方法的实现整段在 components/app/notesBridges.ts（2026-11 D6）。
+            notesBridge: createNotesBridge({
+                api,
+                onOpenNote: noteId => {
                     setNotesFocusId(noteId);
                     setNotesOpen(true);
                 },
-                // ---- #477 站点↔笔记绑定的三条写操作 ----
-                // 绑定关系存在笔记侧（notes.site_id），站点那边的 note_id / note_title
-                // 是查出来的，所以每次落库后都得重取一次卡片。
-                list: async () => {
-                    try {
-                        // summary 模式：正文只取开头一小段，这里只用到 id / 标题 / 绑定站点
-                        const rows = await api.listNotes({ summary: true });
-                        return rows.map(n => ({
-                            id: n.id,
-                            title: n.title || "",
-                            site_id: n.site_id ?? null,
-                        }));
-                    } catch {
-                        return [];
-                    }
-                },
-                bind: async (noteId: number, siteId: number | null) => {
-                    await api.updateNote(noteId, { site_id: siteId });
-                    void fetchDataRef.current({ silent: true });
-                },
-                createAndBind: async (siteId: number, title: string) => {
-                    // createNote 已经认 site_id，且服务端会在插入前把该站点上
-                    // 原来那篇解绑 —— 一步到位，不需要「先建再绑」两次往返
-                    const created = await api.createNote({ title, content: "", site_id: siteId });
-                    void fetchDataRef.current({ silent: true });
-                    return { id: created.id, title: created.title || title };
-                },
-                // 卡片上点「笔记」先弹预览（2026-10-23 用户要求）：预览要正文，
-                // 而站点列表里带的是标题，正文得按 id 单独取一次。
-                get: async (noteId: number) => {
-                    try {
-                        const note = await api.getNote(noteId);
-                        if (!note) return null;
-                        return { title: note.title || "", content: note.content || "" };
-                    } catch {
-                        return null;
-                    }
-                },
-            },
+                refetchSites: () => void fetchDataRef.current({ silent: true }),
+            }),
         }),
         // eslint-disable-next-line react-hooks/exhaustive-deps -- api 是模块级单例，列进来是为了 api 被整体替换时能重算 —— 删掉反而会掩盖替换
         [configs, api]
@@ -1692,6 +1549,101 @@ function App() {
         Number(configs["site.backgroundMaskOpacity"])
     );
 
+    // ---- 「设置」统一中心的入参（2026-11 D6）----
+    // 80 个字段全是本组件里的名字。原先这坨字面量内联在
+    //   <NavCenterDialogBundle args={{ … }} />
+    // 里面，把那段 JSX 的结构（ChunkBoundary 套 Bundle）整个埋掉了 —— 现在在 return
+    // 之前一次组装好，JSX 里只留 args={navCenterArgs}。
+    //
+    // 显式标注 NavCenterDialogArgs：少一个字段 / 多一个字段 / 拼错一个名字，都在这里
+    // 报错，而不是等到用户点开中心（那会儿已经在懒块里了）才发现。
+    //
+    // ⚠️ 刻意是**普通 const**，不许换成 useMemo、也不许提到模块级：
+    //    它现在是每次渲染新建的对象，引用恒变。加上记忆化会改变 NavCenterDialogBundle
+    //    的渲染时机（内部若有 React.memo，或依赖引用相等的 effect，就是行为变更）。
+    const navCenterArgs: NavCenterDialogArgs = {
+        api,
+        groups,
+        configs,
+        isAuthenticated,
+        currentUser,
+        navCenterPanel,
+        open: navCenterOpen,
+        onClose: handleMenuClose,
+        setBookmarkOpen,
+        clearVisits,
+        fetchData,
+        notify,
+        runLinkCheck,
+        handleSaveConfig,
+        tempConfigs,
+        setTempConfigs,
+        handleConfigInputChange,
+        handleConfigSliderChange,
+        pickAccent,
+        setAccentPreview,
+        radius,
+        setRadius,
+        fontScale,
+        setFontScale,
+        tempGlassBlur,
+        handleGlassBlurChange,
+        glassEffects,
+        setGlassEffects,
+        offlineFull,
+        setOfflineFull,
+        iconPrivacy,
+        setIconPrivacy,
+        liteMode,
+        setLiteMode,
+        savingConfig,
+        pinyinSearch,
+        setPinyinSearch,
+        prefSync,
+        handleTogglePrefSync,
+        handleToggleLinkHealthSync,
+        backupTab,
+        webdavConfig,
+        handleSaveWebdavConfig,
+        handleToggleAutoBackup,
+        buildExportData,
+        handleDownloadLocal,
+        handleImportBackup,
+        requestImportPreview,
+        handleToggleIncludeCredentials,
+        cronError,
+        aiConfigClient,
+        ai,
+        aiStatusText,
+        allSitesWithCreds,
+        authUsername,
+        authCurrentPassword,
+        authNewPassword,
+        setAuthUsername,
+        setAuthCurrentPassword,
+        setAuthNewPassword,
+        handleSaveAuthCredentials,
+        savingAuth,
+        recoveryConfigured,
+        handleGenerateRecoveryKey,
+        invite,
+        handleCreateInvite,
+        sessions,
+        handleRevokeSession,
+        handleRevokeOthers,
+        accountList,
+        handleExemptUser,
+        inactivePolicy,
+        handleSaveInactivePolicy,
+        handleSweepInactive,
+        setNavCenterOpen,
+        setDeleteAccountOpen,
+        canInstall,
+        handleInstallApp,
+        handleLogout,
+        handleAccountActivate,
+    };
+
     return (
         <AppConfigProvider value={appConfigValue}>
          <NotifyContext.Provider value={notify}>
@@ -1699,61 +1651,21 @@ function App() {
             <ThemeProvider theme={theme}>
             <CssBaseline />
 
-            {/* 顶部滚动进度条：固定贴在最上方，纯装饰 */}
-            <ScrollProgress />
-            {/* 维护模式横幅：服务端维护中时提示「能看不能改」。
-                同样与断网横幅平级 —— 别嵌进任何条件渲染里（分享对话框那个坑） */}
-            <MaintenanceBanner client={api} />
-            {/* 分组分享（2026-10-11 阶段④）：创建/更新/撤销/复制链接。
-                ⚠️ 必须与断网横幅平级——2026-10-11 曾被误嵌进 showOfflineBanner
-                条件内，导致在线时（横幅恒不显示）点「分享分组」永远弹不出对话框。 */}
-            {shareGroupId !== null && typeof api.createGroupShare === "function" && (
-                <Suspense fallback={null}>
-                    <GroupShareDialog
-                        open
-                        groupId={shareGroupId}
-                        groupName={shareGroupName}
-                        onClose={() => setShareGroupId(null)}
-                        api={api as never}
-                        onNotify={notify}
-                    />
-                </Suspense>
-            )}
-            {/* 断网 / 恢复的浮动提示：断网或有失败项时才挂上（块按需下载） */}
-            {showOfflineBanner && (
-                <ChunkBoundary>
-                    <OfflineBanner />
-                </ChunkBoundary>
-            )}
-
-            {/* 回到顶部：滚过一屏才出现 */}
-            <BackToTop />
-
-            {/* 读屏播报区常驻：live region 要先于内容存在，读屏才会念出来 */}
-            <AriaLiveRegion message={liveMessage} />
-
-            {/* 429 限流倒计时：始终挂载，内部自订阅 RATE_LIMITED_EVENT、无事件时渲染 null。
-                与断网横幅同一条纪律 —— 别嵌进任何条件渲染里（分享对话框那个坑）。 */}
-            <RateLimitBanner />
-
-            {/* 顶部提示条：有提示才挂载，且整块懒加载（Snackbar 不进首屏关键路径） */}
-            {snackbarOpen && (
-                <Suspense fallback={null}>
-                    <SnackbarHost
-                        open={snackbarOpen}
-                        message={snackbarMessage}
-                        severity={snackbarSeverity}
-                        duration={snackbarDuration}
-                        action={snackbarAction}
-                        onClose={handleCloseSnackbar}
-                    />
-                </Suspense>
-            )}
-
-            <BackgroundLayers
-                imageUrl={backgroundImageUrl}
-                maskOpacity={backgroundMaskOpacity}
+            {/* 顶部九个浮层：滚动进度条 / 维护横幅 / 分组分享 / 断网横幅 / 回到顶部 /
+                读屏播报区 / 429 限流条 / 提示条 / 背景装饰层 —— 整块在
+                components/app/AppOverlays.tsx（2026-11 D6）。
+                ⚠️ 那边有三条踩过坑的纪律（分享对话框必须与断网横幅平级、
+                限流条始终挂载、播报区先于内容存在），改顺序前先去读一遍。 */}
+            <AppOverlays
+                api={api}
+                snackbar={snackbar}
+                backgroundImageUrl={backgroundImageUrl}
+                backgroundMaskOpacity={backgroundMaskOpacity}
                 darkMode={darkMode}
+                shareGroupId={shareGroupId}
+                shareGroupName={shareGroupName}
+                onCloseGroupShare={() => setShareGroupId(null)}
+                showOfflineBanner={showOfflineBanner}
             />
 
             <Box
@@ -2018,88 +1930,7 @@ function App() {
                         「更多」都开它。九个业务面板在它内部再分一层 lazy，所以这里
                         只在 open 时挂载 —— 关着的时候连外壳那块都不下。 */}
                     <ChunkBoundary when={navCenterOpen}>
-                    <NavCenterDialogBundle args={{
-                        api,
-                        groups,
-                        configs,
-                        isAuthenticated,
-                        currentUser,
-                        navCenterPanel,
-                        open: navCenterOpen,
-                        onClose: handleMenuClose,
-                        setBookmarkOpen,
-                        clearVisits,
-                        fetchData,
-                        notify,
-                        runLinkCheck,
-                        handleSaveConfig,
-                        tempConfigs,
-                        setTempConfigs,
-                        handleConfigInputChange,
-                        handleConfigSliderChange,
-                        pickAccent,
-                        setAccentPreview,
-                        radius,
-                        setRadius,
-                        fontScale,
-                        setFontScale,
-                        tempGlassBlur,
-                        handleGlassBlurChange,
-                        glassEffects,
-                        setGlassEffects,
-                        offlineFull,
-                        setOfflineFull,
-                        iconPrivacy,
-                        setIconPrivacy,
-                        liteMode,
-                        setLiteMode,
-                        savingConfig,
-                        pinyinSearch,
-                        setPinyinSearch,
-                        prefSync,
-                        handleTogglePrefSync,
-                        handleToggleLinkHealthSync,
-                        backupTab,
-                        webdavConfig,
-                        handleSaveWebdavConfig,
-                        handleToggleAutoBackup,
-                        buildExportData,
-                        handleDownloadLocal,
-                        handleImportBackup,
-                        requestImportPreview,
-                        handleToggleIncludeCredentials,
-                        cronError,
-                        aiConfigClient,
-                        ai,
-                        aiStatusText,
-                        allSitesWithCreds,
-                        authUsername,
-                        authCurrentPassword,
-                        authNewPassword,
-                        setAuthUsername,
-                        setAuthCurrentPassword,
-                        setAuthNewPassword,
-                        handleSaveAuthCredentials,
-                        savingAuth,
-                        recoveryConfigured,
-                        handleGenerateRecoveryKey,
-                        invite,
-                        handleCreateInvite,
-                        sessions,
-                        handleRevokeSession,
-                        handleRevokeOthers,
-                        accountList,
-                        handleExemptUser,
-                        inactivePolicy,
-                        handleSaveInactivePolicy,
-                        handleSweepInactive,
-                        setNavCenterOpen,
-                        setDeleteAccountOpen,
-                        canInstall,
-                        handleInstallApp,
-                        handleLogout,
-                        handleAccountActivate,
-                    }} />
+                    <NavCenterDialogBundle args={navCenterArgs} />
                     </ChunkBoundary>
 
                     {/* 账号管理：改账号密码 / 恢复密钥 / 邀请码 / 登录设备 / 注销。

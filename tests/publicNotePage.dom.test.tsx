@@ -1,7 +1,7 @@
 // src/components/PublicNotePage.tsx 的直测（131 行，此前零覆盖）。
 //
 // 为什么是它：这是**匿名访客的唯一入口**（/s/<token>），而覆盖率体检
-// （docs/coverage-checkup-2026-10-13.md）把它列为分享 UI 三件套零覆盖之一。
+// （docs/archive/coverage-checkup-2026-10-13.md）把它列为分享 UI 三件套零覆盖之一。
 // 它不走 client.request（公开页没有登录态），自己裸 fetch + 自己解析错误 ——
 // 整条链路只有它自己在用，改坏了没有第二处能兜住。
 //

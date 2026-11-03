@@ -250,7 +250,7 @@ ssl_verify_client on;
 | 6 | 观察一周，确认同步稳定后再把域名 B 设为主用 | 1 周（等待） |
 
 前置依赖：方案 ② 的东京端就是上一份文档的自托管版
-（见 `docs/selfhost-plan-2026-10-14.md`，含 SQLite 适配器与 Node 入口的完整代码）。
+（见 `docs/archive/selfhost-plan-2026-10-14.md`，含 SQLite 适配器与 Node 入口的完整代码）。
 
 ---
 

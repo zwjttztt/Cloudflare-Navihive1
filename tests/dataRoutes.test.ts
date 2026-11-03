@@ -371,7 +371,7 @@ test("站点排序：合法数据落到 api，且结果原样返回（含「哪�
     assert.equal(log.orders.length, 1);
 });
 
-// ---- CRUD 审查修复（2026-10-13，见 docs/crud-audit-2026-10-13.md） ----
+// ---- CRUD 审查修复（2026-10-13，见 docs/archive/crud-audit-2026-10-13.md） ----
 
 test("编辑站点：group_id 指向别人的分组要拒绝（单条路径的越权洞）", async () => {
     const { res, log } = await call("sites/1", "PUT", {}, { group_id: 999 });

@@ -4,7 +4,7 @@
 - 复查范围：`src/components/NotesPage.tsx`（3040 行）、`src/hooks/useNotes.ts`、`src/API/methods/{notes,recycle,transfer}.ts`、`src/utils/markdown*.ts`
 - 方法：**逐项读当前代码** + **真实 Chrome 复验**（`harness/audit-notes-batch4.mjs`，本地 5192 分类桩数据）
   + **inkstone 现网重新实测**（`harness/ink-features.mjs`，1360×760，登录后清点导航与顶栏）
-- 上一版报告：`docs/notes-inkstone-gap-2026-10-06.md`（该文的「缺」项已随三批推进过时，本轮不重复沿用）
+- 上一版报告：`notes-inkstone-gap-2026-10-06.md`（该文的「缺」项已随三批推进过时，本轮不重复沿用）
 
 ---
 

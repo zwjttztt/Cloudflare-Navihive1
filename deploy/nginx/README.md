@@ -4,7 +4,7 @@
 改成「家宽 → 东京 VPS（50–90ms）→ CF 日本边缘（2–10ms）」。
 **不改一行业务代码，不迁数据，回滚只需改一条 DNS。**
 
-预计耗时：半天。前置阅读：`docs/vps-reverse-proxy-2026-10-14.md`（原理与收益测算）。
+预计耗时：半天。前置阅读：`docs/archive/vps-reverse-proxy-2026-10-14.md`（原理与收益测算）。
 
 ---
 
@@ -240,7 +240,7 @@ Worker 侧 2026-10-14 已改成按 `Sec-Fetch-Site` 判定（不再看 Host）�
    （nginx 默认只压 `text/html`，列得再全也压不到 JSON 的老说法就是这么来的）。
    两份配置都列了它 —— 改压缩相关的东西，先看那一行。
 
-> 2026-10-28 复核：`docs/engineering-review-2026-10-28.md` 里「自托管 API 响应从未压缩，
+> 2026-10-28 复核：`docs/archive/engineering-review-2026-10-28.md` 里「自托管 API 响应从未压缩，
 > 因为全仓 `gzip_proxied` 0 次」这条归因是错的（批次一之前自托管那份配置就有
 > `gzip on` + `gzip_types … application/json`，见 `git show b8bfd22` 的 diff：
 > 唯一的功能性新增就是 `gzip_proxied any` 这一行）。

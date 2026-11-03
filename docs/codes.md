@@ -81,7 +81,7 @@
   - `tests/attachmentUpload.dom.test.tsx:3`
 
 ### V2 — 仅见于审计报告，代码中未作为内部代号使用
-`audit-report-2026-11-01.md` 的 V2 = 「设置中心 B1/B4 未做」（B1 全站设置 3 Tab 摊左栏、B4 首屏滚动比预算）；`quality-review-2026-10-25.md` 的 V2 = 列表 loading 态缺失。二者均为**文档章节号**，**代码中无 V2 内部代号**，含义见对应文档。
+`audit-report-2026-11-01.md` 的 V2 = 「设置中心 B1/B4 未做」（B1 全站设置 3 Tab 摊左栏、B4 首屏滚动比预算）；`docs/archive/quality-review-2026-10-25.md` 的 V2 = 列表 loading 态缺失。二者均为**文档章节号**，**代码中无 V2 内部代号**，含义见对应文档。
 
 ## 方案代号（中文「方案 X」形式，亦属内部代号）
 

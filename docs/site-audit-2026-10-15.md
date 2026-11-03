@@ -125,7 +125,7 @@ Cloudflare Access 之类的前置认证访问；至少确认面板自身密码�
 
 | 项 | 状态 | 建议 |
 |---|---|---|
-| C 档密码库对账 | `docs/password-manager-analysis-2026-10-13.md` 与代码现状未对账（早前报告两条结论有错） | 对账一遍再决定要不要单独加密 `sites.password` 列；当前密码已加密（enc$ 前缀），缺口是「备份明文」而非「库内明文」 |
+| C 档密码库对账 | `docs/archive/password-manager-analysis-2026-10-13.md` 与代码现状未对账（早前报告两条结论有错） | 对账一遍再决定要不要单独加密 `sites.password` 列；当前密码已加密（enc$ 前缀），缺口是「备份明文」而非「库内明文」 |
 | FTS 降级 UI 提示 | 文档化的建议项，刻意未做 | FTS 不可用时用户无感知；可在搜索框下加一行降级说明 |
 | 回收站清理节流 | 文档化的建议项，刻意未做 | 回收站大批量删除时无节流，大站点可能卡 |
 | 未跟踪项 | `.github/workflows/docker-publish.yml`、`harness/` 未入库 | 定去向：入库或删 |

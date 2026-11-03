@@ -1,7 +1,7 @@
 // src/components/PublicGroupPage.tsx 的直测（158 行，此前零覆盖）。
 //
 // 为什么是它：公开分组页（2026-10-11 阶段④，/sg/<token>）的匿名访客入口，
-// 覆盖率体检（docs/coverage-checkup-2026-10-13.md）里分享 UI 三件套零覆盖之一。
+// 覆盖率体检（docs/archive/coverage-checkup-2026-10-13.md）里分享 UI 三件套零覆盖之一。
 //
 // ⚠️ 它和 PublicNotePage 的**错误码形状不一样**，这是本文件最要钉住的东西：
 //   笔记分享的 need-password 在 worker 里被转成 **HTTP 401 + 顶层 needPassword**；

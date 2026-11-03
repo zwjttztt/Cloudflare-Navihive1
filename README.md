@@ -84,7 +84,10 @@
    用第 1 步的一键部署按钮可以**跳过本步** —— 按钮会自动创建 D1 / KV 并把 ID 写进配置。
    （D1 的 ID 是公开标识符、不是密钥，写进 Git 不泄露数据，见 `wrangler.jsonc:39-42` 的注释。）
 
-4. 初始化数据库：Cloudflare 控制台 → D1 → `navigation-db` → SQL 控制台，粘贴运行根目录的 `init_table.sql`（可删掉示例数据段再跑）。
+4. **不需要手工建表**：第一个请求进来就会跑一次 `api.migrate()`，把表与索引补齐到当前 schema
+   （权威且唯一的定义在 `src/API/methods/internals.ts` 的迁移步骤里，逐块说明见 [`docs/architecture.md` §2](docs/architecture.md)）。
+   根目录的 `init_table.sql` 是**历史脚本**：只建 3 张表、一条索引都没有。别再往控制台里粘它 ——
+   粘了不会报错，但你会以为「表已经建好了」，而事实是它只建了其中一小部分。
 5. 部署完成得到 `https://<worker名>.<你的子域>.workers.dev`，首次登录后**立即改密码**，并给备份设独立口令。
 
 > ⚠️ **用 Workers Builds（连接 GitHub 自动部署）时，`wrangler.jsonc` 的 `name` 必须与 Cloudflare dashboard 上的 Worker 名完全一致**，否则部署失败（`validate that the Worker name matches...`，code 10013）。secret 是按 Worker 存的，换名要重配。
@@ -152,6 +155,10 @@ docker compose up -d --build
   且它与 `AUTH_SECRET` 解耦 —— 轮换服务端密钥不影响已有备份。**建议务必设置备份密码。**
 - `NAVIHIVE_TRUST_XFF`：本地 `wrangler dev` 时默认不信任 X-Forwarded-For（防伪造绕过限速），仅当确认反代会覆盖 XFF 时设 `1`。
 
+> 发现问题（漏洞 / 密钥泄漏 / 可疑行为）怎么报、密钥按什么顺序换：见 [`SECURITY.md`](SECURITY.md)。
+> 其中「`NAVIHIVE_TRUST_XFF` 与 `NAVIHIVE_TRUST_X_REAL_IP` 必须成对设置」和「换 `AUTH_SECRET` 之前先导备份」
+> 这两条一旦搞反，代价是限速全线失效或库里的加密字段全部读不出来。
+
 ### 自托管（Docker / Node）专用变量
 
 这几个不写进 `wrangler.jsonc`，只在自托管形态生效；默认值都是从代码里读出来的（不是猜的）。
@@ -210,15 +217,20 @@ npm run e2e       # API 端到端
 npm run audit:a11y && npm run audit:contrast   # 可访问性 / 对比度审计
 ```
 
-> 本地 D1 是空库也没关系：每个请求进来都会先跑一次 `api.migrate()` 补齐表结构（同一 isolate 内只跑一次），
-> 不需要手动执行 `init_table.sql` —— 那个脚本只给线上 D1 用。数据落在 `.wrangler/state/`，想清空就删这个目录。
+> 本地 D1 是空库也没关系：每个请求进来都会先跑一次 `api.migrate()` 补齐表结构（同一 isolate 内只跑一次）。
+> **两种形态都不需要手工执行 `init_table.sql`** —— 它是只建 3 张表的历史脚本，权威 schema 在 `src/API/methods/internals.ts`。
+> 数据落在 `.wrangler/state/`，想清空就删这个目录。
 >
 > ⚠️ 为什么强调**只用 npm**：仓库提交的锁文件是 `package-lock.json`，`pnpm-lock.yaml` 从来没有进过版本库。
 > 用 pnpm / yarn 装出来的依赖树没有任何锁文件约束（`^` 范围当天全取最新），而 `node_modules` 不会出现在 diff 里，
 > 这种偏差事后完全查不出来 —— 出问题的人复现不了 CI 的环境。锁文件因此**故意不被 gitignore**：
 > 真有人用 pnpm，多出来的 `pnpm-lock.yaml` 会立刻在 `git status` 里露出来。
 
-> 仓库的合入门禁：`npm run ci` 一条命令跑完全部门禁（约 20 步，清单以 `package.json` 的 `ci` 字段为唯一来源，含视觉回归 `audit:visual` 与自托管冒烟 `smoke:selfhost`）；CHANGELOG 随版本更新（`script/bump-version.mjs` 按变更规模自动跳 patch/minor/major）。
+> 仓库的合入门禁：`npm run ci` 一条命令跑完全部。
+> **清单与顺序的唯一来源是 `package.json` 的 `scripts.ci` 字段** —— 本文件刻意不复述步骤名、也不写条数：
+> 复述过（当时写着「7 项」，实际 20 步），复述的那一刻就开始过时，而且没有任何东西会报错。
+> 想知道这次会跑哪些检查，`npm pkg get scripts.ci` 比任何文档都准。
+> CHANGELOG 随版本更新（`script/bump-version.mjs` 按变更规模自动跳 patch/minor/major）。
 
 ## 🗂️ 项目结构
 
@@ -237,13 +249,14 @@ npm run audit:a11y && npm run audit:contrast   # 可访问性 / 对比度审计
 ├── tests/                  # 单测 / DOM 测试 / 静态守卫
 ├── script/ scripts/        # 构建、测试、运维脚本（单测 runner、恢复令牌、改密）
 ├── deploy/                 # 自托管手册、nginx 配置、compose 模板
-├── docs/                   # 设计文档与历史排查报告
-├── init_table.sql          # Cloudflare D1 初始化脚本
+├── docs/                   # 设计文档与历史排查报告。**先看 [`docs/README.md`](docs/README.md) 的索引**
+├── docs/archive/           # 历史快照归档（只读，别当现状；当前有效文档留在 docs/ 顶层）
+├── init_table.sql          # 历史建表脚本（仅 3 张表无索引；运行时自动建表，不需要手工执行）
 ├── Dockerfile / docker-compose.yml
 └── wrangler.jsonc          # Cloudflare 配置（D1 / KV / assets / cron）
 ```
 
-完整文档索引见 [`docs/README.md`](docs/README.md)（长期文档 / 运维手册 / 历史报告三态分类）。
+完整文档索引见 [`docs/README.md`](docs/README.md)（长期文档 / 运维手册 / 历史报告三态分类）。要动手改代码，先看 [`CONTRIBUTING.md`](CONTRIBUTING.md) 与 [`docs/contributing.md`](docs/contributing.md)。
 
 ## 📄 许可证与致谢
 

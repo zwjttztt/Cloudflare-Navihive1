@@ -1,7 +1,11 @@
-// 数据主干路由：首屏 bootstrap、分组 CRUD、站点 CRUD、批量删除、批量排序。
+// 数据主干路由：首屏 bootstrap、分组 CRUD、站点 CRUD、批量删除、批量排序、记事本与附件。
 //
 // 从 worker/index.ts 拆出来。这是站点日常读写量最大的一组，
 // 读到的数据已经按 ctx.api 上绑定的账号过滤过（见 NavigationAPI.setCurrentUser）。
+//
+// 2026-11：分发从一条 860 行的 `if / else if` 长链改成了**有序路由表 + 首匹配胜出**
+// （见文件下半部分的 DATA_ROUTES）。改的理由不是「表看起来高级」，而是那条链已经
+// 长到没法确认「新分支插在正确位置」—— 而这张表里**位置就是语义**，见表上方的说明。
 import type { Group, Note, NoteFolder, NoteTag, Site } from "../../src/API/http";
 import { NoteConflictError } from "../../src/utils/noteConflict";
 import { ApiError, API_ERROR_CODES, errorResponse, type ApiErrorStatus } from "../lib/apiError";
@@ -319,7 +323,7 @@ const IDEMPOTENT_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
  *
  * 与 `POST /api/sites` 里「目标分组必须是自己的」是同一个洞：绑定关系存在
  * 笔记那一侧（`notes.site_id`），如果这里不校验，任何人都能把自己的笔记挂到
- * **别人的站点 id** 上。危害不只是脏数据 —— 那位用户在自��的卡片上会看到
+ * **别人的站点 id** 上。危害不只是脏数据 —— 那位用户在自己的卡片上会看到
  * 一篇莫名其妙的笔记标题，点开还能读到正文，等于一个反向的信息泄露口。
  *
  * getSite 走 scopeSql，读不到（不存在 / 不是自己的）一律 400：
@@ -352,11 +356,1187 @@ function quotaError(quota: { status: number; error: string }): ApiError {
 }
 
 /**
+ * 写操作限速闸门：分组 / 站点 / 笔记的增删改与批量操作都要先过这一道。
+ * 放行返回 null，撞上限速返回已经填好 Retry-After 的 429，调用处直接 return 出去。
+ * GET 一律不过闸 —— 读不消耗 D1 写入配额，也不该因为「翻了几页」就把人锁住。
+ *
+ * 原来它是 dispatchDataRoutes 里的一个闭包（吃 request / api / trustXFF 那三个局部量）；
+ * 分发改成表驱动之后 handler 都在模块级，所以改成从 ctx 现算 —— 算出来的
+ * 桶名与调用时机跟以前一模一样，只是不再依赖某次调用的作用域。
+ *
+ * ⚠️ trustXFF / trustXRealIp 必须原样传下去（两个都传，别只传一个）：
+ * 漏传时默认 false，反代后面所有人会落进同一个桶，一个人刷满额度全站被 429。
+ */
+const writeGate = (ctx: RouteCtx): Promise<Response | null> => {
+    const {
+        request,
+        api,
+        trustXFF,
+        trustXRealIp,
+    } = ctx;
+    return enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF, trustXRealIp));
+};
+
+// ============================================================================
+// 各分支的 handler（下半部分那张表的 run）
+//
+// ⚠️ 这些都是从原来的 if / else if 链里**整段搬出来**的分支体，只把
+//    `path` / `method` / `request` / `api` 这些原来由 dispatch 解构出来的局部量
+//    改成从 ctx 解构。分支内部的判断、顺序、状态码、文案、头一个都没动。
+// ============================================================================
+
+/** `GET bootstrap`：一次请求返回分组 + 站点 + 配置，供前端首屏与刷新使用 */
+async function handleBootstrap(ctx: RouteCtx): Promise<Response> {
+    const { request, url, api } = ctx;
+
+    // 带上弱 ETag：浏览器下次会在 If-None-Match 里回传，
+    // 数据没变就只回一个 304 空包，省掉整份 JSON 的下载与解析
+    // （站点多的时候这一份能到几百 KB）。
+    const data = await api.getBootstrap();
+
+    // ?full=1：顺带把「我是谁」与「恢复密钥配没配」一起回给前端。
+    //
+    // 这两问原本是 bootstrap 之后**并发**发出的两个请求（auth/me 与
+    // auth/recovery-status，见 src/hooks/useAccountSession）。并发归并发，
+    // 在这条链路上每个请求还是要各付一次 1~3 秒的固定往返，能省就省。
+    //
+    // 不带 full 的旧客户端拿到的还是原来那个形状 —— 所以前后端不需要同时上线：
+    // 老前端照常发那两个请求，新前端省掉它们。
+    // 两处身份取值共用 account.ts 的 currentUserIdentity，避免形状漂移。
+    const full = url.searchParams.get("full") === "1";
+    const payload: Record<string, unknown> = full
+        ? {
+              ...(data as unknown as Record<string, unknown>),
+              me: (await currentUserIdentity(api).catch(() => null)) ?? undefined,
+              recovery: {
+                  configured: await api.hasRecoveryKey().catch(() => false),
+              },
+          }
+        : (data as unknown as Record<string, unknown>);
+
+    const body = JSON.stringify(payload);
+    const etag = weakEtag(body);
+    // no-cache（每次都要问一趟服务器）而不是 no-store（不许存），
+    // 否则浏览器手头没有副本，ETag 也就无从比较
+    const headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        ETag: etag,
+        "Cache-Control": "no-cache",
+    };
+    if (request.headers.get("if-none-match") === etag) {
+        return new Response(null, { status: 304, headers });
+    }
+    return new Response(body, { headers });
+}
+
+/**
+ * `groups/{id}/share`（2026-10-11 阶段④）：与 note share 同一套语义
+ * （POST 创建并轮换令牌 / PUT 更新保留令牌 / DELETE 撤销 / GET 查配置）。
+ *
+ * 这个分支**没有方法条件**：四种方法各走一段，其余方法落到 405。
+ */
+async function handleGroupShare(ctx: RouteCtx): Promise<Response> {
+    const { request, path, method, api } = ctx;
+    const id = Number(path.split("/")[1]);
+    const headers = { "Cache-Control": "no-store" };
+    if (!Number.isSafeInteger(id) || id <= 0) return errorResponse(ApiError.badRequest("无效的ID"), { headers });
+    if (method === "GET") return Response.json(await api.getGroupShareConfig(id), { headers });
+    if (method === "PUT") {
+        const limited = await writeGate(ctx);
+        if (limited) return limited;
+        const { days, password } = await readJsonBody<{ days?: unknown; password?: unknown }>(request);
+        if (days !== null && days !== 1 && days !== 7 && days !== 30) {
+            return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
+        }
+        const pw = password === undefined ? undefined
+            : (typeof password === "string" && password.length > 0 ? password : null);
+        const share = await api.updateGroupShare(id, days, pw);
+        if (!share) return errorResponse(ApiError.notFound("分享不存在"), { headers });
+        return Response.json(share, { headers });
+    }
+    if (method === "POST" || method === "DELETE") {
+        const limited = await writeGate(ctx);
+        if (limited) return limited;
+        if (method === "DELETE") return Response.json(await api.revokeGroupShare(id), { headers });
+        const { days, password } = await readJsonBody<{ days?: unknown; password?: unknown }>(request);
+        if (days !== null && days !== 1 && days !== 7 && days !== 30) {
+            return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
+        }
+        const pw = password === undefined ? null
+            : (typeof password === "string" && password.length > 0 ? password : null);
+        const share = await api.createGroupShare(id, days, pw);
+        if (!share) return errorResponse(ApiError.notFound("分组不存在"), { headers });
+        return Response.json(share, { headers });
+    }
+    return errorResponse(ApiError.methodNotAllowed(), { headers });
+}
+
+/** `GET groups`：分组列表 */
+async function handleGroupList(ctx: RouteCtx): Promise<Response> {
+    const groups = await ctx.api.getGroups();
+    return Response.json(groups);
+}
+
+/** `GET groups/{id}`：单查（不存在回 404，不回 200 + null） */
+async function handleGroupGet(ctx: RouteCtx): Promise<Response> {
+    const { path, api } = ctx;
+    const id = parseInt(path.split("/")[1]);
+    if (isNaN(id)) {
+        throw ApiError.badRequest("无效的ID");
+    }
+    const group = await api.getGroup(id);
+    // 与 GET /api/notes/{id} 同语义：不存在就 404，不回 200 + null
+    //（200 + null 会让调用方把「没有」当「有了一个空对象」）
+    if (!group) throw ApiError.notFound("分组不存在");
+    return Response.json(group);
+}
+
+/** `POST groups`：新建分组 */
+async function handleGroupCreate(ctx: RouteCtx): Promise<Response> {
+    const { request, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const data = await readJsonBody<GroupInput>(request);
+
+    // 验证分组数据
+    const validation = validateGroup(data);
+    if (!validation.valid) {
+        return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
+    }
+
+    const result = await api.createGroup(validation.sanitizedData as Group);
+    return Response.json(result);
+}
+
+/** `PUT groups/{id}`：改分组 */
+async function handleGroupUpdate(ctx: RouteCtx): Promise<Response> {
+    const { request, path, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const id = parseInt(path.split("/")[1]);
+    if (isNaN(id)) {
+        throw ApiError.badRequest("无效的ID");
+    }
+
+    const data = await readJsonBody<Partial<Group>>(request);
+    // PATCH 化校验：与 POST 同一套规则（trim + 截断 100），只校验传了的字段。
+    // 以前只查「非空串」，name 没有长度上限 —— 与 POST 不对称。
+    const validation = validateGroupPatch(data);
+    if (!validation.valid) {
+        return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
+    }
+
+    const result = await api.updateGroup(id, validation.sanitizedData as Partial<Group>);
+    return Response.json(result);
+}
+
+/** `DELETE groups/{id}`：软删除分组（结果含 recycleId，前端撤销时据此精确还原） */
+async function handleGroupDelete(ctx: RouteCtx): Promise<Response> {
+    const { path, api, ip } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const id = parseInt(path.split("/")[1]);
+    if (isNaN(id)) {
+        throw ApiError.badRequest("无效的ID");
+    }
+
+    const result = await api.deleteGroup(id, {
+        action: "group.delete",
+        actor: "",
+        ip,
+        detail: `分组 ${id}`,
+    });
+    return Response.json(result);
+}
+
+/** `GET notes/shares`：自己发出的笔记分享清单 */
+async function handleNoteShares(ctx: RouteCtx): Promise<Response> {
+    return Response.json(await ctx.api.listNoteShares());
+}
+
+/** `POST notes/reindex`：重建全文索引 */
+async function handleNotesReindex(ctx: RouteCtx): Promise<Response> {
+    const { api, env } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+    await api.migrate();
+    await api.migrateNotesFtsTable();
+    if (!api.notesFtsReady) throw ApiError.serviceUnavailable("当前数据库不支持全文索引，搜索已使用备用模式");
+    const notes = await api.listNotes();
+    // 每条只重建读取后未被其他请求改写的版本，不能用旧快照覆盖并发保存的新索引。
+    //
+    // ⚠️ 定位一律走 **rowid**（2026-10-28）：notes_fts 的 note_id 是 UNINDEXED 列，
+    // `WHERE note_id = ?` 在 fts5 上只能整表扫（1 万条 1.14ms/次 vs rowid 0.007ms，
+    // EQP 从 `INDEX 0:` 变 `INDEX 0:=`）。契约是「fts 行的 rowid 恒等于 notes.id」，
+    // 见 internals.ts NOTES_FTS_TABLE_SQL。孤儿清理那段改用 rowid 之后语义完全等价
+    // （迁移步骤 notes-fts-rowid 已经把老库按新契约重建过）。
+    const statements = [env.DB.prepare(
+        "DELETE FROM notes_fts WHERE user_id IS ? AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = notes_fts.rowid AND n.user_id IS notes_fts.user_id)"
+    ).bind(api.currentUserId)];
+    for (const note of notes) {
+        statements.push(env.DB.prepare(
+            "DELETE FROM notes_fts WHERE user_id IS ? AND rowid = ? AND EXISTS (SELECT 1 FROM notes WHERE id = ? AND user_id IS ? AND rev IS ?)"
+        ).bind(api.currentUserId, note.id, note.id, api.currentUserId, note.rev ?? null));
+        statements.push(env.DB.prepare(
+            "INSERT INTO notes_fts (rowid, note_id, user_id, title, body) SELECT id, id, user_id, ?, ? FROM notes WHERE id = ? AND user_id IS ? AND rev IS ?"
+        ).bind(segmentCJK(note.title ?? ""), segmentCJK((note.content ?? "").slice(0, FTS_CONTENT_LIMIT)), note.id, api.currentUserId, note.rev ?? null));
+    }
+    // D1 batch 保证同一条删除与插入原子化；控制单批大小，避免大型笔记库超限。
+    for (let i = 1; i < statements.length; i += 80) await env.DB.batch(statements.slice(i, i + 80));
+    await statements[0].run();
+    return Response.json({ success: true, count: notes.length });
+}
+
+/** `GET notes/stats`：数据页概览「双链 / 版本历史」两格的全站计数（只读，不走 writeGate） */
+async function handleNotesStats(ctx: RouteCtx): Promise<Response> {
+    return Response.json(await ctx.api.notesStats());
+}
+
+/**
+ * `GET notes/changes`：跨设备变更轮询（2026-10-11）——自 since 以来的变更计数
+ * + 文件夹/标签快照。只读、轻量（不回正文），客户端发现变更后自己走 reload()。
+ * no-store：轮询响应带游标，缓存了会让其它设备永远看不见变更。
+ *
+ * ?fp=（2026-10-28）：客户端上一轮拿到的快照指纹。与本轮相同 → 服务端只回
+ * `{unchanged:true, fingerprint}`，三个快照字段回空（省掉每轮几十 KB 的死数据）。
+ * 不带 fp 就是老行为：永远回全量快照。
+ */
+async function handleNotesChanges(ctx: RouteCtx): Promise<Response> {
+    const { url, api } = ctx;
+    const since = url.searchParams.get("since") || undefined;
+    const fp = url.searchParams.get("fp") || undefined;
+    return Response.json(await api.notesChanges(since || undefined, fp || undefined), {
+        headers: { "Cache-Control": "no-store" },
+    });
+}
+
+/**
+ * `POST notes/search`：服务端全文检索（2026-10-09）——有 FTS5 就走索引 + bm25 排序，
+ * 没有就退回 LIKE 全表扫；前端拿到的是同一份形状（id + 摘要 + 分数）。
+ * 只读，不走 writeGate；但它确实查库，所以还是过一次登录守卫。
+ * 请求体可能压根不是 JSON（老客户端 / 探测请求）：解析失败就当空查询，
+ * 别把 500 抛给用户 —— 搜索失败的结果是「列表照常显示」，不是「页面报错」。
+ */
+async function handleNotesSearch(ctx: RouteCtx): Promise<Response> {
+    const { request, api } = ctx;
+    let body: { query?: unknown; limit?: unknown };
+    try {
+        body = await readJsonBody<{ query?: unknown; limit?: unknown }>(request);
+    } catch {
+        body = {};
+    }
+    const query = typeof body?.query === "string" ? body.query : "";
+    const limit = typeof body?.limit === "number" ? body.limit : 50;
+    if (!query.trim()) return Response.json({ mode: "like", results: [] });
+    return Response.json(await api.searchNotes(query, limit), {
+        headers: { "Cache-Control": "no-store" },
+    });
+}
+
+/**
+ * `POST notes/import`：导入「记事本导出」JSON —— 只动记事本，按 uuid 合并（文件较新才覆盖）。
+ * 是写操作，走 writeGate 限速；失败由 api 层整批回滚。
+ */
+async function handleNotesImport(ctx: RouteCtx): Promise<Response> {
+    const { request, api, ip } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+    const body = await readJsonBody<{ kind?: unknown; notes?: unknown }>(request);
+    const incoming = body?.notes;
+    if (!body || !Array.isArray(incoming)) {
+        throw ApiError.badRequest("文件里没有笔记数据（这不是记事本导出的 JSON）");
+    }
+
+    const result = await api.importNotesData(body as never);
+
+    // 数据面审计（第 5 条）：整份记事本一次性写库，是这个模块里唯一「一个请求改掉
+    // 整站笔记」的入口 —— 与删站点同一个量级，必须有痕。
+    //
+    // detail 只写**条数**：审计表要长期保留（默认 7 天、周清最长多留 7 天），
+    // 它不是第二份数据副本 —— 标题 / 正文 / 附件 URL 一个字都不许进来。
+    // writeAudit 内部整段 try/catch，所以这里不包 try、也不因它失败中断主流程；
+    // await 只是为了在响应发出去之前把这一行落定（Workers 里响应后的 promise 会被掐掉）。
+    // actor 取当前账号名（拿不到就是空串，单账号部署下 currentUserIdentity 回 guest）。
+    const actor = (await currentUserIdentity(api).catch(() => null))?.username ?? "";
+    await api.writeAudit("data.import", actor, ip, JSON.stringify({ notes: incoming.length }));
+
+    return Response.json(result);
+}
+
+/**
+ * `notes/{id}/share`：单个笔记的分享配置。
+ * 与 groups/{id}/share 同一套语义；同样**没有方法条件**，其余方法落到 405。
+ */
+async function handleNoteShare(ctx: RouteCtx): Promise<Response> {
+    const { request, path, method, api } = ctx;
+    const id = Number(path.split("/")[1]);
+    const headers = { "Cache-Control": "no-store" };
+    if (!Number.isSafeInteger(id) || id <= 0) return errorResponse(ApiError.badRequest("无效的ID"), { headers });
+    if (method === "GET") return Response.json(await api.getNoteShare(id), { headers });
+    if (method === "PUT") {
+        // 更新有效期但保留 token（链接不变）—— inkstone 的「更新设置」同语义
+        const limited = await writeGate(ctx);
+        if (limited) return limited;
+        const { days, password } = await readJsonBody<{ days?: unknown; password?: unknown }>(request);
+        if (days !== null && days !== 1 && days !== 7 && days !== 30) {
+            return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
+        }
+        // password：string = 重设口令；null = 清除口令；不传 = 保持
+        const pw = password === undefined ? undefined
+            : (typeof password === "string" && password.length > 0 ? password : null);
+        const share = await api.updateNoteShare(id, days, pw);
+        if (!share) return errorResponse(ApiError.notFound("分享不存在"), { headers });
+        return Response.json(share, { headers });
+    }
+    if (method === "POST" || method === "DELETE") {
+        const limited = await writeGate(ctx);
+        if (limited) return limited;
+        if (method === "DELETE") return Response.json(await api.revokeNoteShare(id), { headers });
+        const { days, password } = await readJsonBody<{ days?: unknown; password?: unknown }>(request);
+        if (days !== null && days !== 1 && days !== 7 && days !== 30) {
+            return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
+        }
+        // password：非空 string = 设访问口令；null/空/不传 = 不设（公开）
+        const pw = password === undefined ? null
+            : (typeof password === "string" && password.length > 0 ? password : null);
+        const share = await api.createNoteShare(id, days, pw);
+        if (!share) return errorResponse(ApiError.notFound("笔记不存在"), { headers });
+        return Response.json(share, { headers });
+    }
+    return errorResponse(ApiError.methodNotAllowed(), { headers });
+}
+
+/**
+ * `GET notes`：笔记列表。
+ *
+ * ?fields=list：列表只要摘要，不回正文（笔记多了以后这一份能到 MB 级）。
+ * 不带这个参数就是原来的全量形状，老客户端不受影响。
+ * 前端**现在默认不开**：几十条笔记时列表带正文才 2 KB，开了反而让
+ * 每次点开笔记多一次往返。这是给「笔记涨到几百条」那天准备的阀门。
+ *
+ * 分页（2026-10-28）：两个参数都是**可选**，不带就是原来的全量列表 ——
+ * 导出 / 备份 / 重建索引都靠「不带参数 = 全都要」这条语义，别给默认值。
+ * 解析失败（非数字 / 负数 / 0）一律当没传：宁可多回几条，也不要静默回空列表。
+ */
+async function handleNotesList(ctx: RouteCtx): Promise<Response> {
+    const { url, api } = ctx;
+    const summary = url.searchParams.get("fields") === "list";
+    const limit = parsePositiveInt(url.searchParams.get("limit"));
+    const offset = parsePositiveInt(url.searchParams.get("offset"));
+    const notes = await api.listNotes({
+        summary,
+        ...(limit === null ? {} : { limit }),
+        ...(offset === null ? {} : { offset }),
+    });
+    return Response.json(notes);
+}
+
+/** `GET notes/count`：笔记条数 */
+async function handleNotesCount(ctx: RouteCtx): Promise<Response> {
+    return Response.json({ count: await ctx.api.countNotes() });
+}
+
+/** `GET notes/folders`：文件夹列表 */
+async function handleFolderList(ctx: RouteCtx): Promise<Response> {
+    return Response.json(await ctx.api.listFolders());
+}
+
+/**
+ * `POST notes/attachments`：上传附件本体。
+ *
+ * ⚠️ 上传用 **raw body**（不是 multipart、不是 base64）：
+ * base64 会把体积撑大 33%，而我们单文件上限就是 KV 单条的 25MB ——
+ * base64 之后必然超。前端用 `fetch(url, { method:"POST", body: file })`
+ * 直接把二进制送上来，服务端只读 Content-Type 定类型、**不解析** body 结构。
+ * 真正的类型判定靠**嗅探文件头**（sniffImageMime），不信客户端说的。
+ */
+async function handleAttachmentUpload(ctx: RouteCtx): Promise<Response> {
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+    return await handleUploadAttachment(ctx);
+}
+
+/** `GET notes/attachments/list`：附件元数据列表（不带 object_key，见 api 层） */
+async function handleAttachmentList(ctx: RouteCtx): Promise<Response> {
+    return Response.json(await ctx.api.listAttachments());
+}
+
+/**
+ * `GET notes/attachments/{id}`：取图。
+ *
+ * ⚠️ 会走鉴权（整条 /api 都在鉴权后面），所以前端 <img> 不能直接
+ * 用这个 URL —— 要么走 fetch + blob，要么由后端对公开笔记的图片走免鉴权通道。
+ * 现在的做法见 public.ts（笔记分享页的图片走 /api/public/... ）。
+ */
+async function handleAttachmentGet(ctx: RouteCtx): Promise<Response> {
+    const { path, api } = ctx;
+    const id = path.split("/")[2];
+    const headers = { "Cache-Control": "private, no-store" };
+    const found = await api.getAttachment(id);
+    if (!found) return errorResponse(ApiError.notFound("附件不存在"), { headers });
+    // ⚠️ object_key 在 listAttachments 里是**故意剥掉**的（暴露它等于泄漏存储布局），
+    // 但单条查询拿得到 —— 这里取不到就说明记录异常，直接判 404 而不是硬传 undefined。
+    if (!found.object_key) {
+        return errorResponse(new ApiError(500, API_ERROR_CODES.internal, "附件记录不完整"), { headers });
+    }
+    const bytes = await readAttachmentObject(ctx.env, found.storage, found.object_key);
+    if (!bytes) return errorResponse(ApiError.gone("附件数据已丢失"), { headers });
+    // ⚠️ Response 的 BodyInit 在 Worker 类型里不含 Uint8Array，
+    // 用它的 .buffer（零拷贝，不多复制一份 25MB）。
+    // 文本附件（txt/json）补 charset=utf-8：不补的话中文按浏览器默认编码
+    // 猜，UTF-8 的文件会显示成乱码（2026-10-18 加纯文本附件时一并修）。
+    const contentType = found.mime.startsWith("text/")
+        ? `${found.mime}; charset=utf-8`
+        : found.mime;
+    return new Response(bytes.buffer as ArrayBuffer, {
+        headers: {
+            "Content-Type": contentType,
+            "Content-Length": String(bytes.byteLength),
+            // private, no-store：附件是登录后才可见的，走任何中间缓存都会
+            // 把它发给别人。
+            //
+            // ⚠️ 2026-10-19 补上文件名（原来只有裸 `inline`）：用户点「另存为」
+            // 拿到的是 uuid，重命名功能等于白做。RFC 6266 的标准写法是
+            // `filename*=UTF-8''<百分号编码>`，再给一个纯 ASCII 兜底名
+            // 给不认识 filename* 的老客户端。两者都只出现文件名，
+            // 不含 object_key（存储布局照旧不外泄）。
+            "Content-Disposition": contentDisposition(found.filename),
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    });
+}
+
+/** `PATCH notes/attachments/{id}`：重命名 */
+async function handleAttachmentPatch(ctx: RouteCtx): Promise<Response> {
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+    return await handleRenameAttachment(ctx, ctx.path.split("/")[2]);
+}
+
+/** `PUT notes/attachments/{id}/content`：原地改写文本附件 */
+async function handleAttachmentPutContent(ctx: RouteCtx): Promise<Response> {
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+    return await handleUpdateAttachmentContent(ctx, ctx.path.split("/")[2]);
+}
+
+/** `DELETE notes/attachments/{id}`：删附件（先删 D1 记录再删对象） */
+async function handleAttachmentDelete(ctx: RouteCtx): Promise<Response> {
+    const { path, api, env } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+    const id = path.split("/")[2];
+    const ok = await api.deleteAttachment(id);
+    if (!ok.ok) throw ApiError.notFound(ok.error);
+    // 先删 D1 记录再删对象：反过来会出现「记录还在、对象没了」，
+    // 用户刷新后看到图裂了却删不掉。
+    await finishAttachmentDeletion(env, id, ok.storage, ok.objectKey);
+    return Response.json({ ok: true });
+}
+
+/**
+ * `POST notes/attachments/prune`：清理未引用附件（2026-10-08，设置 → 数据 → 维护，照 inkstone）。
+ * 先删 D1 记录再删对象，与单条 DELETE 同一约定（反了会泄漏或悬空）。
+ */
+async function handleAttachmentPrune(ctx: RouteCtx): Promise<Response> {
+    const { api, env } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+    const { removed } = await api.pruneAttachments();
+    for (const a of removed) {
+        await finishAttachmentDeletion(env, a.id, a.storage, a.object_key);
+    }
+    return Response.json(
+        { removed: removed.length, freedBytes: removed.reduce((s, a) => s + a.size, 0) }
+    );
+}
+
+/** `POST notes/folders`：新建文件夹 */
+async function handleFolderCreate(ctx: RouteCtx): Promise<Response> {
+    const { request, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const data = await readJsonBody<Partial<NoteFolder>>(request);
+    // 白名单：只有 name / 外观两列是文件夹的字段，其它（id / user_id / count）一律不收
+    const name = typeof data.name === "string" ? data.name.trim().slice(0, 80) : "";
+    if (!name) throw ApiError.badRequest("文件夹名不能为空");
+    if (data.parent_id !== undefined && data.parent_id !== null && (!Number.isInteger(data.parent_id) || data.parent_id <= 0)) {
+        throw ApiError.badRequest("父文件夹 ID 无效");
+    }
+    return Response.json(
+        await api.createFolder({
+            name,
+            parent_id: data.parent_id ?? null,
+            icon: typeof data.icon === "string" ? data.icon.slice(0, 32) : null,
+            color: typeof data.color === "string" ? data.color.slice(0, 32) : null,
+        })
+    );
+}
+
+/** `PUT notes/folders/{id}`：改文件夹（名字 / 排序 / 外观 / 父节点） */
+async function handleFolderUpdate(ctx: RouteCtx): Promise<Response> {
+    const { request, path, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const id = parseInt(path.split("/")[2]);
+    if (isNaN(id)) throw ApiError.badRequest("无效的ID");
+
+    const data = await readJsonBody<Partial<NoteFolder>>(request);
+    const patch: Partial<NoteFolder> = {};
+    if (typeof data.name === "string") patch.name = data.name.trim().slice(0, 80) || "";
+    if (data.order_num !== undefined) patch.order_num = Number(data.order_num) || 0;
+    // 文件夹外观：可空字符串 = 恢复默认样式；只收短串，防脏数据撑大行
+    if (data.icon !== undefined) patch.icon = typeof data.icon === "string" ? data.icon.slice(0, 32) : null;
+    if (data.color !== undefined) patch.color = typeof data.color === "string" ? data.color.slice(0, 32) : null;
+    if (data.parent_id !== undefined) {
+        if (data.parent_id !== null && (!Number.isInteger(data.parent_id) || data.parent_id <= 0)) {
+            throw ApiError.badRequest("父文件夹 ID 无效");
+        }
+        patch.parent_id = data.parent_id;
+    }
+    const folder = await api.updateFolder(id, patch);
+    if (!folder) throw ApiError.notFound("文件夹不存在");
+    return Response.json(folder);
+}
+
+/** `DELETE notes/folders/{id}`：删文件夹（里面的笔记回收到「未归类」） */
+async function handleFolderDelete(ctx: RouteCtx): Promise<Response> {
+    const { path, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const id = parseInt(path.split("/")[2]);
+    if (isNaN(id)) throw ApiError.badRequest("无效的ID");
+    // 回收到「未归类」，orphaned 给 UI 提示用
+    return Response.json(await api.deleteFolder(id));
+}
+
+/**
+ * `GET notes/tag-links`：全量标签关联，形如 { "12": [3, 5] } —— 列表页算每个标签的条数
+ * 要用到，逐条查会是 N+1，而这点数据一次拿到最省事。
+ */
+async function handleTagLinks(ctx: RouteCtx): Promise<Response> {
+    return Response.json(await ctx.api.listNoteTags());
+}
+
+/** `GET notes/tags`：标签列表 */
+async function handleTagList(ctx: RouteCtx): Promise<Response> {
+    return Response.json(await ctx.api.listTags());
+}
+
+/** `POST notes/tags`：新建标签 */
+async function handleTagCreate(ctx: RouteCtx): Promise<Response> {
+    const { request, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const data = await readJsonBody<Partial<NoteTag>>(request);
+    const name = typeof data.name === "string" ? data.name.trim().slice(0, 40) : "";
+    if (!name) throw ApiError.badRequest("标签名不能为空");
+    return Response.json(
+        await api.createTag({ name, color: typeof data.color === "string" ? data.color : null })
+    );
+}
+
+/** `PUT notes/tags/{id}`：改标签 */
+async function handleTagUpdate(ctx: RouteCtx): Promise<Response> {
+    const { request, path, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const id = parseInt(path.split("/")[2]);
+    if (isNaN(id)) throw ApiError.badRequest("无效的ID");
+
+    const data = await readJsonBody<Partial<NoteTag>>(request);
+    const patch: Partial<NoteTag> = {};
+    if (typeof data.name === "string") patch.name = data.name.trim().slice(0, 40) || "";
+    if (data.color !== undefined) patch.color = typeof data.color === "string" ? data.color : null;
+    const tag = await api.updateTag(id, patch);
+    if (!tag) throw ApiError.notFound("标签不存在");
+    return Response.json(tag);
+}
+
+/** `DELETE notes/tags/{id}`：删标签 */
+async function handleTagDelete(ctx: RouteCtx): Promise<Response> {
+    const { path, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const id = parseInt(path.split("/")[2]);
+    if (isNaN(id)) throw ApiError.badRequest("无效的ID");
+    return Response.json(await api.deleteTag(id));
+}
+
+/** `PUT notes/{id}/tags`：设置一条笔记的标签集合 */
+async function handleNoteTagAssign(ctx: RouteCtx): Promise<Response> {
+    const { request, path, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const id = parseInt(path.split("/")[1]);
+    if (isNaN(id)) throw ApiError.badRequest("无效的ID");
+
+    const body = await readJsonBody<{ tagIds?: unknown }>(request);
+    const tagIds = Array.isArray((body as { tagIds?: unknown })?.tagIds)
+        ? ((body as { tagIds?: unknown[] }).tagIds as unknown[]).map(Number).filter(n => Number.isInteger(n) && n > 0)
+        : [];
+    return Response.json(await api.setNoteTags(id, tagIds));
+}
+
+/** `GET notes/{id}/revisions`：版本历史列表 */
+async function handleNoteRevisions(ctx: RouteCtx): Promise<Response> {
+    const { path, api } = ctx;
+    const id = parseInt(path.split("/")[1]);
+    if (isNaN(id)) throw ApiError.badRequest("无效的ID");
+    return Response.json(await api.listNoteRevisions(id));
+}
+
+/** `GET notes/{id}/revisions/{rev}`：单查一个版本 */
+async function handleNoteRevisionGet(ctx: RouteCtx): Promise<Response> {
+    const { path, api } = ctx;
+    const [rawNoteId, rawRevId] = path.split("/");
+    const noteId = parseInt(rawNoteId);
+    const revisionId = parseInt(rawRevId);
+    if (isNaN(noteId) || isNaN(revisionId)) {
+        throw ApiError.badRequest("无效的ID");
+    }
+    const revision = await api.getNoteRevision(noteId, revisionId);
+    if (!revision) throw ApiError.notFound("该版本不存在");
+    return Response.json(revision);
+}
+
+/** `POST notes/{id}/revisions/{rev}`：把某个版本恢复成当前内容 */
+async function handleNoteRevisionRestore(ctx: RouteCtx): Promise<Response> {
+    const { path, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const [rawNoteId, rawRevId] = path.split("/");
+    const noteId = parseInt(rawNoteId);
+    const revisionId = parseInt(rawRevId);
+    if (isNaN(noteId) || isNaN(revisionId)) {
+        throw ApiError.badRequest("无效的ID");
+    }
+    const note = await api.restoreNoteRevision(noteId, revisionId);
+    if (!note) throw ApiError.notFound("该版本不存在");
+    return Response.json(note);
+}
+
+/** `GET notes/{id}`：单查笔记 */
+async function handleNoteGet(ctx: RouteCtx): Promise<Response> {
+    const { path, api } = ctx;
+    const id = parseInt(path.split("/")[1]);
+    if (isNaN(id)) {
+        throw ApiError.badRequest("无效的ID");
+    }
+    const note = await api.getNote(id);
+    if (!note) throw ApiError.notFound("笔记不存在");
+    return Response.json(note);
+}
+
+/** `POST notes`：新建笔记 */
+async function handleNoteCreate(ctx: RouteCtx): Promise<Response> {
+    const { request, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const data = await readJsonBody<Partial<Note>>(request);
+    // 绑定的站点必须是自己的（#477，见 assertOwnedSiteForNote）
+    if (typeof data.site_id === "number") await assertOwnedSiteForNote(api, data.site_id);
+    // 只留认识的字段：请求体是用户可控的，不能让它决定往哪几列写值
+    const draft: Partial<Note> = {
+        title: typeof data.title === "string" ? data.title : "",
+        content: typeof data.content === "string" ? data.content : "",
+        pinned: Boolean(data.pinned),
+        site_id: typeof data.site_id === "number" ? data.site_id : null,
+        // 只对**正整数**认文件夹，其余（字符串、0、负数、数组）一律落 NULL = 未归类。
+        // 不拿 `data.folder_id ?? null` 直传：0 会被当成「id 为 0 的文件夹」写进库里。
+        folder_id:
+            typeof data.folder_id === "number" && Number.isInteger(data.folder_id) && data.folder_id > 0
+                ? data.folder_id
+                : null,
+    };
+    return Response.json(await api.createNote(draft));
+}
+
+/** `PUT note-orders`：笔记批量排序 */
+async function handleNoteOrders(ctx: RouteCtx): Promise<Response> {
+    const { request, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    // ⚠️ 这个接口两种形状都认（顶层数组 / { orders }），所以不能用 readJsonBody
+    // （它会把数组形状挡掉，等于把原来能用的请求改成 400 —— 改错过一次）。
+    const body = await readJsonValue(request);
+    const orders = Array.isArray(body)
+        ? body
+        : (body as { orders?: unknown }).orders;
+    if (!Array.isArray(orders)) {
+        throw ApiError.badRequest("无效的排序数据");
+    }
+    // 与 group-orders / site-orders 同一道逐项校验：元素缺 id/order_num 时
+    // undefined 会直接进 bind，D1 报错变成 500 —— 应该是 400。
+    for (const item of orders) {
+        const row = item as { id?: unknown; order_num?: unknown } | null;
+        if (
+            !row ||
+            typeof row.id !== "number" ||
+            !Number.isSafeInteger(row.id) ||
+            row.order_num === undefined ||
+            typeof row.order_num !== "number"
+        ) {
+            throw ApiError.badRequest("排序数据格式无效，每个项目必须包含id和order_num");
+        }
+    }
+    return Response.json({
+        success: await api.updateNoteOrder(orders as { id: number; order_num: number }[]),
+    });
+}
+
+/** `PUT notes/{id}`：改笔记（含乐观并发与归档 / 文件夹字段的白名单） */
+async function handleNoteUpdate(ctx: RouteCtx): Promise<Response> {
+    const { request, path, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const id = parseInt(path.split("/")[1]);
+    if (isNaN(id)) {
+        throw ApiError.badRequest("无效的ID");
+    }
+    const data = await readJsonBody<Partial<Note>>(request);
+    const patch: Partial<Note> = {};
+    if (typeof data.title === "string") patch.title = data.title;
+    if (typeof data.content === "string") patch.content = data.content;
+    if (data.pinned !== undefined) patch.pinned = Boolean(data.pinned);
+    // 收藏（2026-10-09 与置顶分离）
+    if (data.starred !== undefined) patch.starred = Boolean(data.starred);
+    // 乐观并发：客户端带上「我改的是哪一版」。老客户端不传 → 不校验（照旧覆盖）
+    if (typeof data.rev === "number" && Number.isInteger(data.rev) && data.rev >= 0) {
+        patch.rev = data.rev;
+    }
+    // 显式传 null 才解除与站点的关联
+    if (data.site_id !== undefined) {
+        patch.site_id = typeof data.site_id === "number" ? data.site_id : null;
+        // 绑定的站点必须是自己的（#477，见 assertOwnedSiteForNote）
+        if (typeof patch.site_id === "number") await assertOwnedSiteForNote(api, patch.site_id);
+    }
+    // ⚠️ 阶段三的归档列。**漏了这一行就是「点了归档按钮，刷新又变回来」**：
+    // 路由层白名单是照抄字段的，notes.ts 里认 archived 这里没认，
+    // 请求不报错、HTTP 200，只是字段被静默丢掉（实测 archived: true → 回显 0）。
+    if (data.archived !== undefined) patch.archived = Boolean(data.archived);
+    // 阶段三收尾：归入 / 移出文件夹（显式传 null = 移到未归类，这和站点 site_id 一个语义）
+    if (data.folder_id !== undefined) {
+        patch.folder_id =
+            typeof data.folder_id === "number" &&
+            Number.isInteger(data.folder_id) &&
+            data.folder_id > 0
+                ? data.folder_id
+                : null;
+    }
+    try {
+        const note = await api.updateNote(id, patch);
+        if (!note) throw ApiError.notFound("笔记不存在");
+        return Response.json(note);
+    } catch (error) {
+        // 乐观并发冲突：不是错误，是「有人在别处改过」这句话。
+        // 带上当前内容，前端才能让用户现场决定「覆盖 / 看别人的版本」。
+        if (error instanceof NoteConflictError) {
+            // 走统一的 ApiError：code 是机器可读的，对方的版本放 details.note。
+            // 旧形状（顶层 note + error 是字符串）客户端也仍然认，所以这次替换
+            // 不需要前后端同时上线 —— 老客户端读到新形状照样能弹出冲突框。
+            return errorResponse(
+                ApiError.conflict(error.message, { note: error.note })
+            );
+        }
+        throw error;
+    }
+}
+
+/** `DELETE notes/{id}`：软删除笔记（审计并入删除事务） */
+async function handleNoteDelete(ctx: RouteCtx): Promise<Response> {
+    const { path, api, ip } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const id = parseInt(path.split("/")[1]);
+    if (isNaN(id)) {
+        throw ApiError.badRequest("无效的ID");
+    }
+    // 审计并入删除事务（api 层同一个 batch）：少一次串行往返，
+    // 且「删了」与「记了审计」同生同死
+    return Response.json(
+        await api.deleteNote(id, {
+            action: "note.delete",
+            actor: "",
+            ip,
+            detail: `笔记 ${id}`,
+        })
+    );
+}
+
+/**
+ * `GET sites/changes`：卡片侧增量同步（2026-10-13）——只回「自 since 以来删掉了哪些」。
+ * 增删改里的改与增客户端比对 bootstrap 就能发现，只有删除是物理删行、看不见。
+ * no-store：轮询带游标，缓存了会让其它设备永远看不见变更。
+ */
+async function handleSiteChanges(ctx: RouteCtx): Promise<Response> {
+    const { url, api } = ctx;
+    const since = url.searchParams.get("since") || undefined;
+    return Response.json(await api.siteChanges(since), {
+        headers: { "Cache-Control": "no-store" },
+    });
+}
+
+/** `GET sites`：站点列表（可按 ?groupId= 过滤） */
+async function handleSiteList(ctx: RouteCtx): Promise<Response> {
+    const { url, api } = ctx;
+    const groupId = url.searchParams.get("groupId");
+    // 非法值不能放过去：parseInt("abc") 是 NaN，NaN 进 bind 的行为未定义
+    if (groupId !== null && !Number.isSafeInteger(Number(groupId))) {
+        throw ApiError.badRequest("无效的分组ID");
+    }
+    const sites = await api.getSites(groupId ? parseInt(groupId) : undefined);
+    return Response.json(sites);
+}
+
+/** `GET sites/{id}`：单查站点 */
+async function handleSiteGet(ctx: RouteCtx): Promise<Response> {
+    const { path, api } = ctx;
+    const id = parseInt(path.split("/")[1]);
+    if (isNaN(id)) {
+        throw ApiError.badRequest("无效的ID");
+    }
+
+    const site = await api.getSite(id);
+    // 与 GET /api/notes/{id} 同语义：不存在就 404，不回 200 + null
+    if (!site) throw ApiError.notFound("站点不存在");
+    return Response.json(site);
+}
+
+/** `POST sites`：新建站点 */
+async function handleSiteCreate(ctx: RouteCtx): Promise<Response> {
+    const { request, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const data = await readJsonBody<SiteInput>(request);
+
+    // 验证站点数据
+    const validation = validateSite(data);
+    if (!validation.valid) {
+        return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
+    }
+
+    // 目标分组必须是自己的：批量排序路径修过同一个洞（updateSiteOrder 的
+    // filterOwnedGroupIds），POST 这条路不能漏 —— 否则卡片能建进别人的分组，
+    // 从自己视图里消失。
+    const owned = await api.filterOwnedGroupIds([validation.sanitizedData!.group_id]);
+    if (!owned.has(validation.sanitizedData!.group_id)) {
+        return errorResponse(ApiError.badRequest("目标分组不存在"));
+    }
+
+    const result = await api.createSite(validation.sanitizedData as Site);
+    return Response.json(result);
+}
+
+/** `PUT sites/{id}`：改站点 */
+async function handleSiteUpdate(ctx: RouteCtx): Promise<Response> {
+    const { request, path, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const id = parseInt(path.split("/")[1]);
+    if (isNaN(id)) {
+        throw ApiError.badRequest("无效的ID");
+    }
+
+    const data = await readJsonBody<Partial<Site>>(request);
+
+    // PATCH 化校验：与 POST 同一套规则（trim / 截断 / URL 规范化 / 图标清洗），
+    // 只校验传了的字段。以前只有「URL 能不能 new URL」几条 —— name 可以改成
+    // 空串、description/notes 没有上限、icon 不过 sanitizeIconUrl。
+    const validation = validateSitePatch(data);
+    if (!validation.valid) {
+        return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
+    }
+    const sanitized = validation.sanitizedData as Partial<Site>;
+
+    // 目标分组必须是自己的（同 POST；批量排序路径早已修过，这里是补单条编辑这条路）
+    if (sanitized.group_id !== undefined) {
+        const owned = await api.filterOwnedGroupIds([sanitized.group_id]);
+        if (!owned.has(sanitized.group_id)) {
+            return errorResponse(ApiError.badRequest("目标分组不存在"));
+        }
+    }
+
+    const result = await api.updateSite(id, sanitized);
+    return Response.json(result);
+}
+
+/** `DELETE sites/{id}`：软删除站点（结果含 recycleId，前端撤销时据此精确还原） */
+async function handleSiteDelete(ctx: RouteCtx): Promise<Response> {
+    const { path, api, ip } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const id = parseInt(path.split("/")[1]);
+    if (isNaN(id)) {
+        throw ApiError.badRequest("无效的ID");
+    }
+
+    // 审计并入删除事务（api 层同一个 batch）：少一次串行往返
+    const result = await api.deleteSite(id, {
+        action: "site.delete",
+        actor: "",
+        ip,
+        detail: `站点 ${id}`,
+    });
+    return Response.json(result);
+}
+
+/** `POST sites/batch-delete`：多选删除一次请求搬完（逐个 DELETE 在 20 张卡时要等十几秒） */
+async function handleSitesBatchDelete(ctx: RouteCtx): Promise<Response> {
+    const { request, api, ip } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const body = (await readJsonBody(request)) as { ids?: unknown };
+    const ids = Array.isArray(body.ids)
+        ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
+        : [];
+    if (ids.length === 0) {
+        return errorResponse(ApiError.badRequest("缺少要删除的 id"));
+    }
+    // 一次删太多会把 D1 单次请求顶满，也给误操作留个上限
+    if (ids.length > 500) {
+        return errorResponse(ApiError.badRequest("一次最多删除 500 个"));
+    }
+    // 审计并入删除事务（api 层同一个 batch）
+    const result = await api.deleteSites(ids, {
+        action: "site.batchDelete",
+        actor: "",
+        ip,
+        detail: `站点 ${ids.length} 个`,
+    });
+    return Response.json(result);
+}
+
+/** `PUT group-orders`：分组批量排序 */
+async function handleGroupOrders(ctx: RouteCtx): Promise<Response> {
+    const { request, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const data = await readJsonArray<{ id: number; order_num: number }>(request);
+
+    // 验证排序数据
+    if (!Array.isArray(data)) {
+        return errorResponse(ApiError.badRequest("排序数据必须是数组"));
+    }
+
+    for (const item of data) {
+        if (
+            !item.id ||
+            typeof item.id !== "number" ||
+            item.order_num === undefined ||
+            typeof item.order_num !== "number"
+        ) {
+            return errorResponse(ApiError.badRequest("排序数据格式无效，每个项目必须包含id和order_num"));
+        }
+    }
+
+    const result = await api.updateGroupOrder(data);
+    return Response.json({ success: result });
+}
+
+/** `PUT site-orders`：站点批量排序（支持一次提交「顺序 + 所属分组」，拖拽跨组移动） */
+async function handleSiteOrders(ctx: RouteCtx): Promise<Response> {
+    const { request, api } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    // 支持一次提交「顺序 + 所属分组」，拖拽跨组移动不必再逐个请求
+    const data = await readJsonArray<{
+        id: number;
+        order_num: number;
+        group_id?: number;
+    }>(request);
+
+    // 验证排序数据
+    if (!Array.isArray(data)) {
+        return errorResponse(ApiError.badRequest("排序数据必须是数组"));
+    }
+
+    for (const item of data) {
+        if (
+            !item.id ||
+            typeof item.id !== "number" ||
+            item.order_num === undefined ||
+            typeof item.order_num !== "number"
+        ) {
+            return errorResponse(ApiError.badRequest("排序数据格式无效，每个项目必须包含id和order_num"));
+        }
+
+        if (item.group_id !== undefined && typeof item.group_id !== "number") {
+            return errorResponse(ApiError.badRequest("分组ID必须是数字"));
+        }
+    }
+
+    // 结果里带着「成了哪几个、没成哪几个」：D1 没有跨语句事务，
+    // 一批里挂掉几条是真实存在的，前端要按实际结果更新（见 App 的 bulkMove）
+    const result = await api.updateSiteOrder(data);
+    return Response.json(result);
+}
+
+// ============================================================================
+// 路由表
+// ============================================================================
+
+/**
+ * 一条路由：命中判据 + 命中后调用的 handler。
+ *
+ * 判据写成 `(path, method) => …` 的**原始条件**，跟改造前那条 `if (...)` 的括号里
+ * 一模一样（连 `path === "…" && method === "…"` 的写法都照抄）。这是刻意的：
+ * 这次是搬运不是重写，条件长得一样，review 时才能一眼对上；而且仓库里有静态守卫
+ * （tests/noteSql.test.ts / tests/noteRoutes.test.ts）就是按这些字面量扫源码的。
+ */
+interface DataRoute {
+    test: (path: string, method: string) => boolean;
+    run: (ctx: RouteCtx) => Promise<Response>;
+}
+
+/** `groups/{id}/share` —— 没有方法条件：GET/PUT/POST/DELETE 各走一段，其余回 405 */
+const GROUP_SHARE_RE = /^groups\/\d+\/share$/;
+/** `notes/{id}/share` —— 同上 */
+const NOTE_SHARE_RE = /^notes\/\d+\/share$/;
+/** `notes/attachments/{id}` —— id 是 uuid（小写十六进制 + 连字符） */
+const ATTACHMENT_ID_RE = /^notes\/attachments\/[0-9a-z-]+$/;
+/** `notes/attachments/{id}/content` */
+const ATTACHMENT_CONTENT_RE = /^notes\/attachments\/[0-9a-z-]+\/content$/;
+
+/**
+ * 数据模块的路由表：**有序数组，首匹配胜出**。
+ *
+ * ⚠️ 为什么是「有序数组 + 首匹配胜出」而不是 `Record<path, handler>` 对象：
+ *    这张表里**位置就是语义**。同一个路径常被多个条目命中，先命中的决定行为，
+ *    而「具体路径必须排在泛化路径之前」这条规则没法编码进对象 —— 对象丢顺序，
+ *    而且 `groups/{id}` 这种带参数的条目根本放不进 key。下面五个坑都是真踩过的：
+ *
+ *    1. `sites/changes` 必须排在 `path.startsWith("sites/")` 之前 ——
+ *       反了会被当成 id=`parseInt("changes")`=NaN → 400「无效的ID」。
+ *    2. `notes/shares` 必须排在 `notes/{id}`（`path.startsWith("notes/") && GET`）之前 ——
+ *       反了会被 `parseInt("shares")`=NaN 吞掉。
+ *    3. `notes/attachments/list` 与 `notes/attachments/prune` 必须排在
+ *       `notes/attachments/{id}`（ATTACHMENT_ID_RE）之前 —— 那两个词都满足
+ *       `[0-9a-z-]+`，反了「列附件」会变成「取一个叫 list 的附件」→ 404。
+ *    4. `groups/{id}/share` 必须排在所有 `path.startsWith("groups/")` 之前（2026-10-15 P0）——
+ *       反了 `DELETE groups/{id}/share`（撤销分享）会落到「删分组」上：用户点一下
+ *       「撤销分享」，整个分组连同里面的卡片一起进回收站。
+ *       ⚠️ 这条特别阴：`parseInt("1/share")` 是 1 且不报 NaN，**不会报错**，只是静默走错分支。
+ *    5. `notes/folders` / `notes/tags` 那一整块必须排在 `path.startsWith("notes/")` 的
+ *       GET/PUT/DELETE 之前 —— 反了 `notes/folders` 会被当成 id=NaN → 400，
+ *       而本地新库根本不进这条链，只有老部署才看得出来。
+ *
+ *    加新条目时记住一句话：**具体的写在上，泛化的（startsWith / 正则）写在下**。
+ */
+const DATA_ROUTES: readonly DataRoute[] = [
+    // ---- 首屏 ----
+    { test: (path, method) => path === "bootstrap" && method === "GET", run: handleBootstrap },
+
+    // ---- 分组 ----
+    // ⚠️ 坑 4：分享必须排在下面三条 groups/ 之前（见上）
+    { test: (path) => GROUP_SHARE_RE.test(path), run: handleGroupShare },
+    { test: (path, method) => path === "groups" && method === "GET", run: handleGroupList },
+    { test: (path, method) => path.startsWith("groups/") && method === "GET", run: handleGroupGet },
+    { test: (path, method) => path === "groups" && method === "POST", run: handleGroupCreate },
+    { test: (path, method) => path.startsWith("groups/") && method === "PUT", run: handleGroupUpdate },
+    { test: (path, method) => path.startsWith("groups/") && method === "DELETE", run: handleGroupDelete },
+
+    // ---- 记事本 ----
+    // ⚠️ 坑 2：notes/shares 必须在 `path.startsWith("notes/")` 的 GET 之前
+    { test: (path, method) => path === "notes/shares" && method === "GET", run: handleNoteShares },
+    { test: (path, method) => path === "notes/reindex" && method === "POST", run: handleNotesReindex },
+    { test: (path, method) => path === "notes/stats" && method === "GET", run: handleNotesStats },
+    { test: (path, method) => path === "notes/changes" && method === "GET", run: handleNotesChanges },
+    { test: (path, method) => path === "notes/search" && method === "POST", run: handleNotesSearch },
+    { test: (path, method) => path === "notes/import" && method === "POST", run: handleNotesImport },
+    { test: (path) => NOTE_SHARE_RE.test(path), run: handleNoteShare },
+    { test: (path, method) => path === "notes" && method === "GET", run: handleNotesList },
+    { test: (path, method) => path === "notes/count" && method === "GET", run: handleNotesCount },
+    // ⚠️ 坑 5：folders / tags / attachments 这一整块都要排在泛化 notes/ 之前
+    { test: (path, method) => path === "notes/folders" && method === "GET", run: handleFolderList },
+
+    // ---- 图片附件（2026-07）----
+    // ⚠️ 坑 3：三条具体路径（本体 / list / prune）必须排在 `notes/attachments/{id}` 之前，
+    // 而它们又都在泛化的含前缀分支之前 —— 顺序照 inkstone 的做法（同一类坑）。
+    { test: (path, method) => path === "notes/attachments" && method === "POST", run: handleAttachmentUpload },
+    { test: (path, method) => path === "notes/attachments/list" && method === "GET", run: handleAttachmentList },
+    { test: (path, method) => ATTACHMENT_ID_RE.test(path) && method === "GET", run: handleAttachmentGet },
+    { test: (path, method) => ATTACHMENT_ID_RE.test(path) && method === "PATCH", run: handleAttachmentPatch },
+    { test: (path, method) => ATTACHMENT_CONTENT_RE.test(path) && method === "PUT", run: handleAttachmentPutContent },
+    { test: (path, method) => ATTACHMENT_ID_RE.test(path) && method === "DELETE", run: handleAttachmentDelete },
+    { test: (path, method) => path === "notes/attachments/prune" && method === "POST", run: handleAttachmentPrune },
+
+    { test: (path, method) => path === "notes/folders" && method === "POST", run: handleFolderCreate },
+    { test: (path, method) => path.startsWith("notes/folders/") && method === "PUT", run: handleFolderUpdate },
+    { test: (path, method) => path.startsWith("notes/folders/") && method === "DELETE", run: handleFolderDelete },
+    { test: (path, method) => path === "notes/tag-links" && method === "GET", run: handleTagLinks },
+    { test: (path, method) => path === "notes/tags" && method === "GET", run: handleTagList },
+    { test: (path, method) => path === "notes/tags" && method === "POST", run: handleTagCreate },
+    { test: (path, method) => path.startsWith("notes/tags/") && method === "PUT", run: handleTagUpdate },
+    { test: (path, method) => path.startsWith("notes/tags/") && method === "DELETE", run: handleTagDelete },
+    {
+        test: (path, method) => path.startsWith("notes/") && path.endsWith("/tags") && method === "PUT",
+        run: handleNoteTagAssign,
+    },
+    // ⚠️ 版本历史必须排在泛化 notes/ 的 GET（= notes/{id}）之前，
+    //    否则 "notes/5/revisions" 会被当成 id=parseInt("5/revisions") 走掉。
+    {
+        test: (path, method) => path.startsWith("notes/") && path.endsWith("/revisions") && method === "GET",
+        run: handleNoteRevisions,
+    },
+    {
+        test: (path, method) => path.startsWith("notes/") && path.endsWith("/revisions/") && method === "GET",
+        run: handleNoteRevisionGet,
+    },
+    {
+        test: (path, method) => path.startsWith("notes/") && path.endsWith("/revisions/") && method === "POST",
+        run: handleNoteRevisionRestore,
+    },
+    // 泛化分支留在最后
+    { test: (path, method) => path.startsWith("notes/") && method === "GET", run: handleNoteGet },
+    { test: (path, method) => path === "notes" && method === "POST", run: handleNoteCreate },
+    { test: (path, method) => path === "note-orders" && method === "PUT", run: handleNoteOrders },
+    { test: (path, method) => path.startsWith("notes/") && method === "PUT", run: handleNoteUpdate },
+    { test: (path, method) => path.startsWith("notes/") && method === "DELETE", run: handleNoteDelete },
+
+    // ---- 站点 ----
+    // ⚠️ 坑 1：sites/changes 必须排在 `path.startsWith("sites/")` 之前
+    { test: (path, method) => path === "sites/changes" && method === "GET", run: handleSiteChanges },
+    { test: (path, method) => path === "sites" && method === "GET", run: handleSiteList },
+    { test: (path, method) => path.startsWith("sites/") && method === "GET", run: handleSiteGet },
+    { test: (path, method) => path === "sites" && method === "POST", run: handleSiteCreate },
+    { test: (path, method) => path.startsWith("sites/") && method === "PUT", run: handleSiteUpdate },
+    { test: (path, method) => path.startsWith("sites/") && method === "DELETE", run: handleSiteDelete },
+    // 批量删除：POST 撞不上上面任何一条（它们的方法各不相同），位置照原样保留
+    { test: (path, method) => path === "sites/batch-delete" && method === "POST", run: handleSitesBatchDelete },
+
+    // ---- 批量排序 ----
+    { test: (path, method) => path === "group-orders" && method === "PUT", run: handleGroupOrders },
+    { test: (path, method) => path === "site-orders" && method === "PUT", run: handleSiteOrders },
+];
+
+/**
  * 对外入口：写请求（带 Idempotency-Key 的）先过一遍幂等闸门，再进真正的分发。
  *
- * 为什么不逐个分支包：这些分支是一条 `if / else if` 链，每个分支的收尾 `}` 同时
- * 是下一个分支的开头 `else if`，包一层箭头函数就得在链中间动刀，极易改坏。
- * 放在这里统一包一层，一个字都不用动链本身。
+ * 为什么不逐个分支包：分发现在虽然是表驱动的，但 handler 里仍然有多处提前 return，
+ * 包一层箭头函数等于要在每个 handler 中间动刀。放在这里统一包一层，一个 handler 都不用动。
  *
  * endpoint 取「方法 + 路径首段」（sites/123 归成 sites）：幂等记录的作用域只需要
  * 区分开不同端点，具体 id 不进作用域 —— 那条记录是靠 op_id 认的，不是靠路径。
@@ -370,867 +1550,15 @@ export async function handleDataRoutes(ctx: RouteCtx): Promise<Response | null> 
     return await withIdempotency(ctx.api, endpoint, key, () => dispatchDataRoutes(ctx));
 }
 
+/**
+ * 首匹配胜出地走一遍 DATA_ROUTES；一条都没命中就返回 null（交给下一个模块）。
+ *
+ * ⚠️ 这里**不许**出现 `if (path === ...)`：路径判定只写在表里。原因见表的注释。
+ */
 async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
-    const {
-        request,
-        url,
-        path,
-        method,
-        api,
-        ip,
-        trustXFF,
-        trustXRealIp,
-    } = ctx;
-
-    /**
-     * 写操作限速闸门：分组 / 站点的增删改与批量操作都要先过这一道。
-     * 放行返回 null，撞上限速返回已经填好 Retry-After 的 429，调用处直接 return 出去。
-     * GET 一律不过闸 —— 读不消耗 D1 写入配额，也不该因为「翻了几页」就把人锁住。
-     */
-    const writeGate = (): Promise<Response | null> =>
-        enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF, trustXRealIp));
-
-    // 路由匹配
-    if (path === "bootstrap" && method === "GET") {
-        // 一次请求返回分组 + 站点 + 配置，供前端首屏与刷新使用。
-        // 带上弱 ETag：浏览器下次会在 If-None-Match 里回传，
-        // 数据没变就只回一个 304 空包，省掉整份 JSON 的下载与解析
-        // （站点多的时候这一份能到几百 KB）。
-        const data = await api.getBootstrap();
-
-        // ?full=1：顺带把「我是谁」与「恢复密钥配没配」一起回给前端。
-        //
-        // 这两问原本是 bootstrap 之后**并发**发出的两个请求（auth/me 与
-        // auth/recovery-status，见 src/hooks/useAccountSession）。并发归并发，
-        // 在这条链路上每个请求还是要各付一次 1~3 秒的固定往返，能省就省。
-        //
-        // 不带 full 的旧客户端拿到的还是原来那个形状 —— 所以前后端不需要同时上线：
-        // 老前端照常发那两个请求，新前端省掉它们。
-        // 两处身份取值共用 account.ts 的 currentUserIdentity，避免形状漂移。
-        const full = url.searchParams.get("full") === "1";
-        const payload: Record<string, unknown> = full
-            ? {
-                  ...(data as unknown as Record<string, unknown>),
-                  me: (await currentUserIdentity(api).catch(() => null)) ?? undefined,
-                  recovery: {
-                      configured: await api.hasRecoveryKey().catch(() => false),
-                  },
-              }
-            : (data as unknown as Record<string, unknown>);
-
-        const body = JSON.stringify(payload);
-        const etag = weakEtag(body);
-        // no-cache（每次都要问一趟服务器）而不是 no-store（不许存），
-        // 否则浏览器手头没有副本，ETag 也就无从比较
-        const headers = {
-            "Content-Type": "application/json; charset=utf-8",
-            ETag: etag,
-            "Cache-Control": "no-cache",
-        };
-        if (request.headers.get("if-none-match") === etag) {
-            return new Response(null, { status: 304, headers });
-        }
-        return new Response(body, { headers });
-    } else if (/^groups\/\d+\/share$/.test(path)) {
-        // 分组分享（2026-10-11 阶段④）：与 note share 同一套语义
-        //（POST 创建并轮换令牌 / PUT 更新保留令牌 / DELETE 撤销 / GET 查配置）。
-        //
-        // ⚠️ 必须排在 `path.startsWith("groups/")` 那三条（GET/PUT/DELETE）之前。
-        // 2026-10-15 修：之前它排在后面，被前缀分支整条吞掉 —— 表现是
-        //   DELETE /api/groups/{id}/share（撤销分享）落到了「删分组」上，
-        //   用户点一下「撤销分享」，整个分组连同里面的卡片一起进了回收站；
-        //   GET 查分享配置返回的是分组对象（没有 token/expires），前端以为没分享过；
-        //   PUT 更新有效期则变成了改分组。
-        // 前缀分支的 id 取 `parseInt(path.split("/")[1])`，"1/share" 会被 parseInt
-        // 读成 1 且不报 NaN，所以这类冲突**不会报错**，只是静默走错分支 ——
-        // 新增 groups/ 子资源时，一律把更具体的分支放在前缀分支之前。
-        const id = Number(path.split("/")[1]);
-        const headers = { "Cache-Control": "no-store" };
-        if (!Number.isSafeInteger(id) || id <= 0) return errorResponse(ApiError.badRequest("无效的ID"), { headers });
-        if (method === "GET") return Response.json(await api.getGroupShareConfig(id), { headers });
-        if (method === "PUT") {
-            const limited = await writeGate();
-            if (limited) return limited;
-            const { days, password } = await readJsonBody<{ days?: unknown; password?: unknown }>(request);
-            if (days !== null && days !== 1 && days !== 7 && days !== 30) {
-                return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
-            }
-            const pw = password === undefined ? undefined
-                : (typeof password === "string" && password.length > 0 ? password : null);
-            const share = await api.updateGroupShare(id, days, pw);
-            if (!share) return errorResponse(ApiError.notFound("分享不存在"), { headers });
-            return Response.json(share, { headers });
-        }
-        if (method === "POST" || method === "DELETE") {
-            const limited = await writeGate();
-            if (limited) return limited;
-            if (method === "DELETE") return Response.json(await api.revokeGroupShare(id), { headers });
-            const { days, password } = await readJsonBody<{ days?: unknown; password?: unknown }>(request);
-            if (days !== null && days !== 1 && days !== 7 && days !== 30) {
-                return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
-            }
-            const pw = password === undefined ? null
-                : (typeof password === "string" && password.length > 0 ? password : null);
-            const share = await api.createGroupShare(id, days, pw);
-            if (!share) return errorResponse(ApiError.notFound("分组不存在"), { headers });
-            return Response.json(share, { headers });
-        }
-        return errorResponse(ApiError.methodNotAllowed(), { headers });
-    } else if (path === "groups" && method === "GET") {
-        const groups = await api.getGroups();
-        return Response.json(groups);
-    } else if (path.startsWith("groups/") && method === "GET") {
-        const id = parseInt(path.split("/")[1]);
-        if (isNaN(id)) {
-            throw ApiError.badRequest("无效的ID");
-        }
-        const group = await api.getGroup(id);
-        // 与 GET /api/notes/{id} 同语义：不存在就 404，不回 200 + null
-        //（200 + null 会让调用方把「没有」当「有了一个空对象」）
-        if (!group) throw ApiError.notFound("分组不存在");
-        return Response.json(group);
-    } else if (path === "groups" && method === "POST") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const data = await readJsonBody<GroupInput>(request);
-
-        // 验证分组数据
-        const validation = validateGroup(data);
-        if (!validation.valid) {
-            return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
-        }
-
-        const result = await api.createGroup(validation.sanitizedData as Group);
-        return Response.json(result);
-    } else if (path.startsWith("groups/") && method === "PUT") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const id = parseInt(path.split("/")[1]);
-        if (isNaN(id)) {
-            throw ApiError.badRequest("无效的ID");
-        }
-
-        const data = await readJsonBody<Partial<Group>>(request);
-        // PATCH 化校验：与 POST 同一套规则（trim + 截断 100），只校验传了的字段。
-        // 以前只查「非空串」，name 没有长度上限 —— 与 POST 不对称。
-        const validation = validateGroupPatch(data);
-        if (!validation.valid) {
-            return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
-        }
-
-        const result = await api.updateGroup(id, validation.sanitizedData as Partial<Group>);
-        return Response.json(result);
-    } else if (path.startsWith("groups/") && method === "DELETE") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const id = parseInt(path.split("/")[1]);
-        if (isNaN(id)) {
-            throw ApiError.badRequest("无效的ID");
-        }
-
-        const result = await api.deleteGroup(id, {
-            action: "group.delete",
-            actor: "",
-            ip,
-            detail: `分组 ${id}`,
-        });
-        // 软删除：结果含 recycleId，前端撤销时据此精确还原（审计已并入删除事务）
-        return Response.json(result);
-
-    // ---- 记事本 ----
-    // 与分组/站点同一套：写操作走 writeGate 限速，账号隔离在 api 层用 scopeSql 做。
-    } else if (path === "notes/shares" && method === "GET") {
-        // ⚠️ 必须排在 /^notes\/\d+\/share$/ 之前，也在 notes/folders 那一堆之前：
-        // 「notes/shares」不匹配数字正则，但绝不能被后面的前缀分支抢走。
-        return Response.json(await api.listNoteShares());
-    } else if (path === "notes/reindex" && method === "POST") {
-        const limited = await writeGate();
-        if (limited) return limited;
-        await api.migrate();
-        await api.migrateNotesFtsTable();
-        if (!api.notesFtsReady) throw ApiError.serviceUnavailable("当前数据库不支持全文索引，搜索已使用备用模式");
-        const notes = await api.listNotes();
-        // 每条只重建读取后未被其他请求改写的版本，不能用旧快照覆盖并发保存的新索引。
-        //
-        // ⚠️ 定位一律走 **rowid**（2026-10-28）：notes_fts 的 note_id 是 UNINDEXED 列，
-        // `WHERE note_id = ?` 在 fts5 上只能整表扫（1 万条 1.14ms/次 vs rowid 0.007ms，
-        // EQP 从 `INDEX 0:` 变 `INDEX 0:=`）。契约是「fts 行的 rowid 恒等于 notes.id」，
-        // 见 internals.ts NOTES_FTS_TABLE_SQL。孤儿清理那段改用 rowid 之后语义完全等价
-        // （迁移步骤 notes-fts-rowid 已经把老库按新契约重建过）。
-        const statements = [ctx.env.DB.prepare(
-            "DELETE FROM notes_fts WHERE user_id IS ? AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = notes_fts.rowid AND n.user_id IS notes_fts.user_id)"
-        ).bind(api.currentUserId)];
-        for (const note of notes) {
-            statements.push(ctx.env.DB.prepare(
-                "DELETE FROM notes_fts WHERE user_id IS ? AND rowid = ? AND EXISTS (SELECT 1 FROM notes WHERE id = ? AND user_id IS ? AND rev IS ?)"
-            ).bind(api.currentUserId, note.id, note.id, api.currentUserId, note.rev ?? null));
-            statements.push(ctx.env.DB.prepare(
-                "INSERT INTO notes_fts (rowid, note_id, user_id, title, body) SELECT id, id, user_id, ?, ? FROM notes WHERE id = ? AND user_id IS ? AND rev IS ?"
-            ).bind(segmentCJK(note.title ?? ""), segmentCJK((note.content ?? "").slice(0, FTS_CONTENT_LIMIT)), note.id, api.currentUserId, note.rev ?? null));
-        }
-        // D1 batch 保证同一条删除与插入原子化；控制单批大小，避免大型笔记库超限。
-        for (let i = 1; i < statements.length; i += 80) await ctx.env.DB.batch(statements.slice(i, i + 80));
-        await statements[0].run();
-        return Response.json({ success: true, count: notes.length });
-    } else if (path === "notes/stats" && method === "GET") {
-        // 数据页概览「双链 / 版本历史」两格的全站计数（只读，不走 writeGate）
-        return Response.json(await api.notesStats());
-    } else if (path === "notes/changes" && method === "GET") {
-        // 跨设备变更轮询（2026-10-11）：自 since 以来的变更计数 + 文件夹/标签快照。
-        // 只读、轻量（不回正文），客户端发现变更后自己走 reload()。
-        // no-store：轮询响应带游标，缓存了会让其它设备永远看不见变更。
-        //
-        // ?fp=（2026-10-28）：客户端上一轮拿到的快照指纹。与本轮相同 → 服务端只回
-        // `{unchanged:true, fingerprint}`，三个快照字段回空（省掉每轮几十 KB 的死数据）。
-        // 不带 fp 就是老行为：永远回全量快照。
-        const since = ctx.url.searchParams.get("since") || undefined;
-        const fp = ctx.url.searchParams.get("fp") || undefined;
-        return Response.json(await api.notesChanges(since || undefined, fp || undefined), {
-            headers: { "Cache-Control": "no-store" },
-        });
-    } else if (path === "notes/search" && method === "POST") {
-        // 服务端全文检索（2026-10-09）：有 FTS5 就走索引 + bm25 排序，
-        // 没有就退回 LIKE 全表扫 —— 前端拿到的是同一份形状（id + 摘要 + 分数）。
-        // 只读，不走 writeGate；但它确实查库，所以还是过一次登录守卫。
-        // 请求体可能压根不是 JSON（老客户端 / 探测请求）：解析失败就当空查询，
-        // 别把 500 抛给用户 —— 搜索失败的结果是「列表照常显示」，不是「页面报错」
-        let body: { query?: unknown; limit?: unknown };
-        try {
-            body = await readJsonBody<{ query?: unknown; limit?: unknown }>(request);
-        } catch {
-            body = {};
-        }
-        const query = typeof body?.query === "string" ? body.query : "";
-        const limit = typeof body?.limit === "number" ? body.limit : 50;
-        if (!query.trim()) return Response.json({ mode: "like", results: [] });
-        return Response.json(await api.searchNotes(query, limit), {
-            headers: { "Cache-Control": "no-store" },
-        });
-    } else if (path === "notes/import" && method === "POST") {
-        // 导入「记事本导出」JSON：只动记事本，按 uuid 合并（文件较新才覆盖）。
-        // 是写操作，走 writeGate 限速；失败由 api 层整批回滚。
-        const limited = await writeGate();
-        if (limited) return limited;
-        const body = await readJsonBody<{ kind?: unknown; notes?: unknown }>(request);
-        const incoming = body?.notes;
-        if (!body || !Array.isArray(incoming)) {
-            throw ApiError.badRequest("文件里没有笔记数据（这不是记事本导出的 JSON）");
-        }
-
-        const result = await api.importNotesData(body as never);
-
-        // 数据面审计（第 5 条）：整份记事本一次性写库，是这个模块里唯一「一个请求改掉
-        // 整站笔记」的入口 —— 与删站点同一个量级，必须有痕。
-        //
-        // detail 只写**条数**：审计表要长期保留（默认 7 天、周清最长多留 7 天），
-        // 它不是第二份数据副本 —— 标题 / 正文 / 附件 URL 一个字都不许进来。
-        // writeAudit 内部整段 try/catch，所以这里不包 try、也不因它失败中断主流程；
-        // await 只是为了在响应发出去之前把这一行落定（Workers 里响应后的 promise 会被掐掉）。
-        // actor 取当前账号名（拿不到就是空串，单账号部署下 currentUserIdentity 回 guest）。
-        const actor = (await currentUserIdentity(api).catch(() => null))?.username ?? "";
-        await api.writeAudit("data.import", actor, ip, JSON.stringify({ notes: incoming.length }));
-
-        return Response.json(result);
-    } else if (/^notes\/\d+\/share$/.test(path)) {
-        const id = Number(path.split("/")[1]);
-        const headers = { "Cache-Control": "no-store" };
-        if (!Number.isSafeInteger(id) || id <= 0) return errorResponse(ApiError.badRequest("无效的ID"), { headers });
-        if (method === "GET") return Response.json(await api.getNoteShare(id), { headers });
-        if (method === "PUT") {
-            // 更新有效期但保留 token（链接不变）—— inkstone 的「更新设置」同语义
-            const limited = await writeGate();
-            if (limited) return limited;
-            const { days, password } = await readJsonBody<{ days?: unknown; password?: unknown }>(request);
-            if (days !== null && days !== 1 && days !== 7 && days !== 30) {
-                return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
-            }
-            // password：string = 重设口令；null = 清除口令；不传 = 保持
-            const pw = password === undefined ? undefined
-                : (typeof password === "string" && password.length > 0 ? password : null);
-            const share = await api.updateNoteShare(id, days, pw);
-            if (!share) return errorResponse(ApiError.notFound("分享不存在"), { headers });
-            return Response.json(share, { headers });
-        }
-        if (method === "POST" || method === "DELETE") {
-            const limited = await writeGate();
-            if (limited) return limited;
-            if (method === "DELETE") return Response.json(await api.revokeNoteShare(id), { headers });
-            const { days, password } = await readJsonBody<{ days?: unknown; password?: unknown }>(request);
-            if (days !== null && days !== 1 && days !== 7 && days !== 30) {
-                return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
-            }
-            // password：非空 string = 设访问口令；null/空/不传 = 不设（公开）
-            const pw = password === undefined ? null
-                : (typeof password === "string" && password.length > 0 ? password : null);
-            const share = await api.createNoteShare(id, days, pw);
-            if (!share) return errorResponse(ApiError.notFound("笔记不存在"), { headers });
-            return Response.json(share, { headers });
-        }
-        return errorResponse(ApiError.methodNotAllowed(), { headers });
-    } else if (path === "notes" && method === "GET") {
-        // ?fields=list：列表只要摘要，不回正文（笔记多了以后这一份能到 MB 级）。
-        // 不带这个参数就是原来的全量形状，老客户端不受影响。
-        // 前端**现在默认不开**：几十条笔记时列表带正文才 2 KB，开了反而让
-        // 每次点开笔记多一次往返。这是给「笔记涨到几百条」那天准备的阀门。
-        const summary = url.searchParams.get("fields") === "list";
-        // 分页（2026-10-28）：两个参数都是**可选**，不带就是原来的全量列表 ——
-        // 导出 / 备份 / 重建索引都靠「不带参数 = 全都要」这条语义，别给默认值。
-        // 解析失败（非数字 / 负数 / 0）一律当没传：宁可多回几条，也不要静默回空列表。
-        const limit = parsePositiveInt(url.searchParams.get("limit"));
-        const offset = parsePositiveInt(url.searchParams.get("offset"));
-        const notes = await api.listNotes({
-            summary,
-            ...(limit === null ? {} : { limit }),
-            ...(offset === null ? {} : { offset }),
-        });
-        return Response.json(notes);
-    } else if (path === "notes/count" && method === "GET") {
-        return Response.json({ count: await api.countNotes() });
-
-    // ---- 阶段三收尾：笔记文件夹 / 标签 ----
-    // ⚠️ 这一整块必须排在下面那些 `path.startsWith("notes/")` 分支**之前**：
-    // 「notes/folders」/「notes/tags」也满足 startsWith("notes/")，而那几个分支是
-    // `parseInt(path.split("/")[1])` —— 解析 "folders" 得到 NaN，直接返回 400「无效的ID」。
-    // 顺序反了的表现就是：接口一直 400，本地新库却正常（那边根本不进这条链）。
-    } else if (path === "notes/folders" && method === "GET") {
-        return Response.json(await api.listFolders());
-    // ---- 图片附件（2026-07）----
-    //
-    // ⚠️ 三条路由必须排在下面那些 `path.startsWith("notes/")` 分支**之前**，
-    // 顺序照 inkstone 的做法（data.ts:183 那段注释讲的是同一类坑）：
-    // 「notes/attachments」也满足 startsWith("notes/")，被抢走就会走错分支。
-    //
-    // ⚠️ 上传用 **raw body**（不是 multipart、不是 base64）：
-    // base64 会把体积撑大 33%，而我们单文件上限就是 KV 单条的 25MB ——
-    // base64 之后必然超。前端用 `fetch(url, { method:"POST", body: file })`
-    // 直接把二进制送上来，服务端只读 Content-Type 定类型、**不解析** body 结构。
-    // 真正的类型判定靠**嗅探文件头**（sniffImageMime），不信客户端说的。
-    } else if (path === "notes/attachments" && method === "POST") {
-        const limited = await writeGate();
-        if (limited) return limited;
-        return await handleUploadAttachment(ctx);
-    } else if (path === "notes/attachments/list" && method === "GET") {
-        return Response.json(await api.listAttachments());
-    } else if (/^notes\/attachments\/[0-9a-z-]+$/.test(path) && method === "GET") {
-        // 取图。⚠️ 会走鉴权（整条 /api 都在鉴权后面），所以前端 <img> 不能直接
-        // 用这个 URL —— 要么走 fetch + blob，要么由后端对公开笔记的图片走免鉴权通道。
-        // 现在的做法见 public.ts（笔记分享页的图片走 /api/public/... ）。
-        const id = path.split("/")[2];
-        const headers = { "Cache-Control": "private, no-store" };
-        const found = await api.getAttachment(id);
-        if (!found) return errorResponse(ApiError.notFound("附件不存在"), { headers });
-        // ⚠️ object_key 在 listAttachments 里是**故意剥掉**的（暴露它等于泄漏存储布局），
-        // 但单条查询拿得到 —— 这里取不到就说明记录异常，直接判 404 而不是硬传 undefined。
-        if (!found.object_key) {
-            return errorResponse(new ApiError(500, API_ERROR_CODES.internal, "附件记录不完整"), { headers });
-        }
-        const bytes = await readAttachmentObject(ctx.env, found.storage, found.object_key);
-        if (!bytes) return errorResponse(ApiError.gone("附件数据已丢失"), { headers });
-        // ⚠️ Response 的 BodyInit 在 Worker 类型里不含 Uint8Array，
-        // 用它的 .buffer（零拷贝，不多复制一份 25MB）。
-        // 文本附件（txt/json）补 charset=utf-8：不补的话中文按浏览器默认编码
-        // 猜，UTF-8 的文件会显示成乱码（2026-10-18 加纯文本附件时一并修）。
-        const contentType = found.mime.startsWith("text/")
-            ? `${found.mime}; charset=utf-8`
-            : found.mime;
-        return new Response(bytes.buffer as ArrayBuffer, {
-            headers: {
-                "Content-Type": contentType,
-                "Content-Length": String(bytes.byteLength),
-                // private, no-store：附件是登录后才可见的，走任何中间缓存都会
-                // 把它发给别人。
-                //
-                // ⚠️ 2026-10-19 补上文件名（原来只有裸 `inline`）：用户点「另存为」
-                // 拿到的是 uuid，重命名功能等于白做。RFC 6266 的标准写法是
-                // `filename*=UTF-8''<百分号编码>`，再给一个纯 ASCII 兜底名
-                // 给不认识 filename* 的老客户端。两者都只出现文件名，
-                // 不含 object_key（存储布局照旧不外泄）。
-                "Content-Disposition": contentDisposition(found.filename),
-                "Cache-Control": "private, no-store",
-                "X-Content-Type-Options": "nosniff",
-            },
-        });
-    } else if (/^notes\/attachments\/[0-9a-z-]+$/.test(path) && method === "PATCH") {
-        const limited = await writeGate();
-        if (limited) return limited;
-        return await handleRenameAttachment(ctx, path.split("/")[2]);
-    } else if (/^notes\/attachments\/[0-9a-z-]+\/content$/.test(path) && method === "PUT") {
-        const limited = await writeGate();
-        if (limited) return limited;
-        return await handleUpdateAttachmentContent(ctx, path.split("/")[2]);
-    } else if (/^notes\/attachments\/[0-9a-z-]+$/.test(path) && method === "DELETE") {
-        const limited = await writeGate();
-        if (limited) return limited;
-        const id = path.split("/")[2];
-        const ok = await api.deleteAttachment(id);
-        if (!ok.ok) throw ApiError.notFound(ok.error);
-        // 先删 D1 记录再删对象：反过来会出现「记录还在、对象没了」，
-        // 用户刷新后看到图裂了却删不掉。
-        await finishAttachmentDeletion(ctx.env, id, ok.storage, ok.objectKey);
-        return Response.json({ ok: true });
-    } else if (path === "notes/attachments/prune" && method === "POST") {
-        // 清理未引用附件（2026-10-08，设置 → 数据 → 维护，照 inkstone）：
-        // 先删 D1 记录再删对象，与单条 DELETE 同一约定（反了会泄漏或悬空）。
-        const limited = await writeGate();
-        if (limited) return limited;
-        const { removed } = await api.pruneAttachments();
-        for (const a of removed) {
-            await finishAttachmentDeletion(ctx.env, a.id, a.storage, a.object_key);
-        }
-        return Response.json(
-            { removed: removed.length, freedBytes: removed.reduce((s, a) => s + a.size, 0) }
-        );
-    } else if (path === "notes/folders" && method === "POST") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const data = await readJsonBody<Partial<NoteFolder>>(request);
-        // 白名单：只有 name / 外观两列是文件夹的字段，其它（id / user_id / count）一律不收
-        const name = typeof data.name === "string" ? data.name.trim().slice(0, 80) : "";
-        if (!name) throw ApiError.badRequest("文件夹名不能为空");
-        if (data.parent_id !== undefined && data.parent_id !== null && (!Number.isInteger(data.parent_id) || data.parent_id <= 0)) {
-            throw ApiError.badRequest("父文件夹 ID 无效");
-        }
-        return Response.json(
-            await api.createFolder({
-                name,
-                parent_id: data.parent_id ?? null,
-                icon: typeof data.icon === "string" ? data.icon.slice(0, 32) : null,
-                color: typeof data.color === "string" ? data.color.slice(0, 32) : null,
-            })
-        );
-    } else if (path.startsWith("notes/folders/") && method === "PUT") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const id = parseInt(path.split("/")[2]);
-        if (isNaN(id)) throw ApiError.badRequest("无效的ID");
-
-        const data = await readJsonBody<Partial<NoteFolder>>(request);
-        const patch: Partial<NoteFolder> = {};
-        if (typeof data.name === "string") patch.name = data.name.trim().slice(0, 80) || "";
-        if (data.order_num !== undefined) patch.order_num = Number(data.order_num) || 0;
-        // 文件夹外观：可空字符串 = 恢复默认样式；只收短串，防脏数据撑大行
-        if (data.icon !== undefined) patch.icon = typeof data.icon === "string" ? data.icon.slice(0, 32) : null;
-        if (data.color !== undefined) patch.color = typeof data.color === "string" ? data.color.slice(0, 32) : null;
-        if (data.parent_id !== undefined) {
-            if (data.parent_id !== null && (!Number.isInteger(data.parent_id) || data.parent_id <= 0)) {
-                throw ApiError.badRequest("父文件夹 ID 无效");
-            }
-            patch.parent_id = data.parent_id;
-        }
-        const folder = await api.updateFolder(id, patch);
-        if (!folder) throw ApiError.notFound("文件夹不存在");
-        return Response.json(folder);
-    } else if (path.startsWith("notes/folders/") && method === "DELETE") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const id = parseInt(path.split("/")[2]);
-        if (isNaN(id)) throw ApiError.badRequest("无效的ID");
-        // 回收到「未归类」，orphaned 给 UI 提示用
-        return Response.json(await api.deleteFolder(id));
-    } else if (path === "notes/tag-links" && method === "GET") {
-        // 全量标签关联，形如 { "12": [3, 5] }：列表页算每个标签的条数要用到，
-        // 逐条查会是 N+1，而这点数据一次拿到最省事。
-        return Response.json(await api.listNoteTags());
-    } else if (path === "notes/tags" && method === "GET") {
-        return Response.json(await api.listTags());
-    } else if (path === "notes/tags" && method === "POST") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const data = await readJsonBody<Partial<NoteTag>>(request);
-        const name = typeof data.name === "string" ? data.name.trim().slice(0, 40) : "";
-        if (!name) throw ApiError.badRequest("标签名不能为空");
-        return Response.json(
-            await api.createTag({ name, color: typeof data.color === "string" ? data.color : null })
-        );
-    } else if (path.startsWith("notes/tags/") && method === "PUT") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const id = parseInt(path.split("/")[2]);
-        if (isNaN(id)) throw ApiError.badRequest("无效的ID");
-
-        const data = await readJsonBody<Partial<NoteTag>>(request);
-        const patch: Partial<NoteTag> = {};
-        if (typeof data.name === "string") patch.name = data.name.trim().slice(0, 40) || "";
-        if (data.color !== undefined) patch.color = typeof data.color === "string" ? data.color : null;
-        const tag = await api.updateTag(id, patch);
-        if (!tag) throw ApiError.notFound("标签不存在");
-        return Response.json(tag);
-    } else if (path.startsWith("notes/tags/") && method === "DELETE") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const id = parseInt(path.split("/")[2]);
-        if (isNaN(id)) throw ApiError.badRequest("无效的ID");
-        return Response.json(await api.deleteTag(id));
-    } else if (path.startsWith("notes/") && path.endsWith("/tags") && method === "PUT") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const id = parseInt(path.split("/")[1]);
-        if (isNaN(id)) throw ApiError.badRequest("无效的ID");
-
-        const body = await readJsonBody<{ tagIds?: unknown }>(request);
-        const tagIds = Array.isArray((body as { tagIds?: unknown })?.tagIds)
-            ? ((body as { tagIds?: unknown[] }).tagIds as unknown[]).map(Number).filter(n => Number.isInteger(n) && n > 0)
-            : [];
-        return Response.json(await api.setNoteTags(id, tagIds));
-    } else if (path.startsWith("notes/") && path.endsWith("/revisions") && method === "GET") {
-        // 版本历史列表。⚠️ 必须排在下面那个 `notes/{id}` 的 GET 分支**之前** ——
-        //   否则 "notes/5/revisions" 会被当成 id=parseInt("5/revisions") 走掉。
-        const id = parseInt(path.split("/")[1]);
-        if (isNaN(id)) throw ApiError.badRequest("无效的ID");
-        return Response.json(await api.listNoteRevisions(id));
-    } else if (path.startsWith("notes/") && path.endsWith("/revisions/") && method === "GET") {
-        const [rawNoteId, rawRevId] = path.split("/");
-        const noteId = parseInt(rawNoteId);
-        const revisionId = parseInt(rawRevId);
-        if (isNaN(noteId) || isNaN(revisionId)) {
-            throw ApiError.badRequest("无效的ID");
-        }
-        const revision = await api.getNoteRevision(noteId, revisionId);
-        if (!revision) throw ApiError.notFound("该版本不存在");
-        return Response.json(revision);
-    } else if (path.startsWith("notes/") && path.endsWith("/revisions/") && method === "POST") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const [rawNoteId, rawRevId] = path.split("/");
-        const noteId = parseInt(rawNoteId);
-        const revisionId = parseInt(rawRevId);
-        if (isNaN(noteId) || isNaN(revisionId)) {
-            throw ApiError.badRequest("无效的ID");
-        }
-        const note = await api.restoreNoteRevision(noteId, revisionId);
-        if (!note) throw ApiError.notFound("该版本不存在");
-        return Response.json(note);
-    } else if (path.startsWith("notes/") && method === "GET") {
-        const id = parseInt(path.split("/")[1]);
-        if (isNaN(id)) {
-            throw ApiError.badRequest("无效的ID");
-        }
-        const note = await api.getNote(id);
-        if (!note) throw ApiError.notFound("笔记不存在");
-        return Response.json(note);
-    } else if (path === "notes" && method === "POST") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const data = await readJsonBody<Partial<Note>>(request);
-        // 绑定的站点必须是自己的（#477，见 assertOwnedSiteForNote）
-        if (typeof data.site_id === "number") await assertOwnedSiteForNote(api, data.site_id);
-        // 只留认识的字段：请求体是用户可控的，不能让它决定往哪几列写值
-        const draft: Partial<Note> = {
-            title: typeof data.title === "string" ? data.title : "",
-            content: typeof data.content === "string" ? data.content : "",
-            pinned: Boolean(data.pinned),
-            site_id: typeof data.site_id === "number" ? data.site_id : null,
-            // 只对**正整数**认文件夹，其余（字符串、0、负数、数组）一律落 NULL = 未归类。
-            // 不拿 `data.folder_id ?? null` 直传：0 会被当成「id 为 0 的文件夹」写进库里。
-            folder_id:
-                typeof data.folder_id === "number" && Number.isInteger(data.folder_id) && data.folder_id > 0
-                    ? data.folder_id
-                    : null,
-        };
-        return Response.json(await api.createNote(draft));
-    } else if (path === "note-orders" && method === "PUT") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        // ⚠️ 这个接口两种形状都认（顶层数组 / { orders }），所以不能用 readJsonBody
-        // （它会把数组形状挡掉，等于把原来能用的请求改成 400 —— 改错过一次）。
-        const body = await readJsonValue(request);
-        const orders = Array.isArray(body)
-            ? body
-            : (body as { orders?: unknown }).orders;
-        if (!Array.isArray(orders)) {
-            throw ApiError.badRequest("无效的排序数据");
-        }
-        // 与 group-orders / site-orders 同一道逐项校验：元素缺 id/order_num 时
-        // undefined 会直接进 bind，D1 报错变成 500 —— 应该是 400。
-        for (const item of orders) {
-            const row = item as { id?: unknown; order_num?: unknown } | null;
-            if (
-                !row ||
-                typeof row.id !== "number" ||
-                !Number.isSafeInteger(row.id) ||
-                row.order_num === undefined ||
-                typeof row.order_num !== "number"
-            ) {
-                throw ApiError.badRequest("排序数据格式无效，每个项目必须包含id和order_num");
-            }
-        }
-        return Response.json({
-            success: await api.updateNoteOrder(orders as { id: number; order_num: number }[]),
-        });
-    } else if (path.startsWith("notes/") && method === "PUT") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const id = parseInt(path.split("/")[1]);
-        if (isNaN(id)) {
-            throw ApiError.badRequest("无效的ID");
-        }
-        const data = await readJsonBody<Partial<Note>>(request);
-        const patch: Partial<Note> = {};
-        if (typeof data.title === "string") patch.title = data.title;
-        if (typeof data.content === "string") patch.content = data.content;
-        if (data.pinned !== undefined) patch.pinned = Boolean(data.pinned);
-        // 收藏（2026-10-09 与置顶分离）
-        if (data.starred !== undefined) patch.starred = Boolean(data.starred);
-        // 乐观并发：客户端带上「我改的是哪一版」。老客户端不传 → 不校验（照旧覆盖）
-        if (typeof data.rev === "number" && Number.isInteger(data.rev) && data.rev >= 0) {
-            patch.rev = data.rev;
-        }
-        // 显式传 null 才解除与站点的关联
-        if (data.site_id !== undefined) {
-            patch.site_id = typeof data.site_id === "number" ? data.site_id : null;
-            // 绑定的站点必须是自己的（#477，见 assertOwnedSiteForNote）
-            if (typeof patch.site_id === "number") await assertOwnedSiteForNote(api, patch.site_id);
-        }
-        // ⚠️ 阶段三的归档列。**漏了这一行就是「点了归档按钮，刷新又变回来」**：
-        // 路由层白名单是照抄字段的，notes.ts 里认 archived 这里没认，
-        // 请求不报错、HTTP 200，只是字段被静默丢掉（实测 archived: true → 回显 0）。
-        if (data.archived !== undefined) patch.archived = Boolean(data.archived);
-        // 阶段三收尾：归入 / 移出文件夹（显式传 null = 移到未归类，这和站点 site_id 一个语义）
-        if (data.folder_id !== undefined) {
-            patch.folder_id =
-                typeof data.folder_id === "number" &&
-                Number.isInteger(data.folder_id) &&
-                data.folder_id > 0
-                    ? data.folder_id
-                    : null;
-        }
-        try {
-            const note = await api.updateNote(id, patch);
-            if (!note) throw ApiError.notFound("笔记不存在");
-            return Response.json(note);
-        } catch (error) {
-            // 乐观并发冲突：不是错误，是「有人在别处改过」这句话。
-            // 带上当前内容，前端才能让用户现场决定「覆盖 / 看别人的版本」。
-            if (error instanceof NoteConflictError) {
-                // 走统一的 ApiError：code 是机器可读的，对方的版本放 details.note。
-                // 旧形状（顶层 note + error 是字符串）客户端也仍然认，所以这次替换
-                // 不需要前后端同时上线 —— 老客户端读到新形状照样能弹出冲突框。
-                return errorResponse(
-                    ApiError.conflict(error.message, { note: error.note })
-                );
-            }
-            throw error;
-        }
-    } else if (path.startsWith("notes/") && method === "DELETE") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const id = parseInt(path.split("/")[1]);
-        if (isNaN(id)) {
-            throw ApiError.badRequest("无效的ID");
-        }
-        // 审计并入删除事务（api 层同一个 batch）：少一次串行往返，
-        // 且「删了」与「记了审计」同生同死
-        return Response.json(
-            await api.deleteNote(id, {
-                action: "note.delete",
-                actor: "",
-                ip,
-                detail: `笔记 ${id}`,
-            })
-        );
+    for (const route of DATA_ROUTES) {
+        if (!route.test(ctx.path, ctx.method)) continue;
+        return await route.run(ctx);
     }
-    // 站点相关API
-    // ⚠️ sites/changes 必须排在 `path.startsWith("sites/")` 那一条**之前**：
-    // 否则会被当成 id=parseInt("changes")（NaN）→ 直接 400「无效的ID」。
-    // 与 notes/shares 排在 notes/{id} 之前是同一类坑。
-    if (path === "sites/changes" && method === "GET") {
-        // 卡片侧增量同步（2026-10-13）：只回「自 since 以来删掉了哪些」。
-        // 增删改里的改与增客户端比对 bootstrap 就能发现，只有删除是物理删行、看不见。
-        // no-store：轮询带游标，缓存了会让其它设备永远看不见变更。
-        const since = url.searchParams.get("since") || undefined;
-        return Response.json(await api.siteChanges(since), {
-            headers: { "Cache-Control": "no-store" },
-        });
-    } else if (path === "sites" && method === "GET") {
-        const groupId = url.searchParams.get("groupId");
-        // 非法值不能放过去：parseInt("abc") 是 NaN，NaN 进 bind 的行为未定义
-        if (groupId !== null && !Number.isSafeInteger(Number(groupId))) {
-            throw ApiError.badRequest("无效的分组ID");
-        }
-        const sites = await api.getSites(groupId ? parseInt(groupId) : undefined);
-        return Response.json(sites);
-    } else if (path.startsWith("sites/") && method === "GET") {
-        const id = parseInt(path.split("/")[1]);
-        if (isNaN(id)) {
-            throw ApiError.badRequest("无效的ID");
-        }
-
-        const site = await api.getSite(id);
-        // 与 GET /api/notes/{id} 同语义：不存在就 404，不回 200 + null
-        if (!site) throw ApiError.notFound("站点不存在");
-        return Response.json(site);
-    } else if (path === "sites" && method === "POST") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const data = await readJsonBody<SiteInput>(request);
-
-        // 验证站点数据
-        const validation = validateSite(data);
-        if (!validation.valid) {
-            return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
-        }
-
-        // 目标分组必须是自己的：批量排序路径修过同一个洞（updateSiteOrder 的
-        // filterOwnedGroupIds），POST 这条路不能漏 —— 否则卡片能建进别人的分组，
-        // 从自己视图里消失。
-        const owned = await api.filterOwnedGroupIds([validation.sanitizedData!.group_id]);
-        if (!owned.has(validation.sanitizedData!.group_id)) {
-            return errorResponse(ApiError.badRequest("目标分组不存在"));
-        }
-
-        const result = await api.createSite(validation.sanitizedData as Site);
-        return Response.json(result);
-    } else if (path.startsWith("sites/") && method === "PUT") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const id = parseInt(path.split("/")[1]);
-        if (isNaN(id)) {
-            throw ApiError.badRequest("无效的ID");
-        }
-
-        const data = await readJsonBody<Partial<Site>>(request);
-
-        // PATCH 化校验：与 POST 同一套规则（trim / 截断 / URL 规范化 / 图标清洗），
-        // 只校验传了的字段。以前只有「URL 能不能 new URL」几条 —— name 可以改成
-        // 空串、description/notes 没有上限、icon 不过 sanitizeIconUrl。
-        const validation = validateSitePatch(data);
-        if (!validation.valid) {
-            return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
-        }
-        const sanitized = validation.sanitizedData as Partial<Site>;
-
-        // 目标分组必须是自己的（同 POST；批量排序路径早已修过，这里是补单条编辑这条路）
-        if (sanitized.group_id !== undefined) {
-            const owned = await api.filterOwnedGroupIds([sanitized.group_id]);
-            if (!owned.has(sanitized.group_id)) {
-                return errorResponse(ApiError.badRequest("目标分组不存在"));
-            }
-        }
-
-        const result = await api.updateSite(id, sanitized);
-        return Response.json(result);
-    } else if (path.startsWith("sites/") && method === "DELETE") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const id = parseInt(path.split("/")[1]);
-        if (isNaN(id)) {
-            throw ApiError.badRequest("无效的ID");
-        }
-
-        // 审计并入删除事务（api 层同一个 batch）：少一次串行往返
-        const result = await api.deleteSite(id, {
-            action: "site.delete",
-            actor: "",
-            ip,
-            detail: `站点 ${id}`,
-        });
-        // 软删除：结果含 recycleId，前端撤销时据此精确还原
-        return Response.json(result);
-    }
-    // 批量删除站点：多选删除一次请求搬完（逐个 DELETE 在 20 张卡时要等十几秒）
-    else if (path === "sites/batch-delete" && method === "POST") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const body = (await readJsonBody(request)) as { ids?: unknown };
-        const ids = Array.isArray(body.ids)
-            ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
-            : [];
-        if (ids.length === 0) {
-            return errorResponse(ApiError.badRequest("缺少要删除的 id"));
-        }
-        // 一次删太多会把 D1 单次请求顶满，也给误操作留个上限
-        if (ids.length > 500) {
-            return errorResponse(ApiError.badRequest("一次最多删除 500 个"));
-        }
-        // 审计并入删除事务（api 层同一个 batch）
-        const result = await api.deleteSites(ids, {
-            action: "site.batchDelete",
-            actor: "",
-            ip,
-            detail: `站点 ${ids.length} 个`,
-        });
-        return Response.json(result);
-    }
-    // 批量更新排序
-    else if (path === "group-orders" && method === "PUT") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        const data = await readJsonArray<{ id: number; order_num: number }>(request);
-
-        // 验证排序数据
-        if (!Array.isArray(data)) {
-            return errorResponse(ApiError.badRequest("排序数据必须是数组"));
-        }
-
-        for (const item of data) {
-            if (
-                !item.id ||
-                typeof item.id !== "number" ||
-                item.order_num === undefined ||
-                typeof item.order_num !== "number"
-            ) {
-                return errorResponse(ApiError.badRequest("排序数据格式无效，每个项目必须包含id和order_num"));
-            }
-        }
-
-        const result = await api.updateGroupOrder(data);
-        return Response.json({ success: result });
-    } else if (path === "site-orders" && method === "PUT") {
-        const limited = await writeGate();
-        if (limited) return limited;
-
-        // 支持一次提交「顺序 + 所属分组」，拖拽跨组移动不必再逐个请求
-        const data = await readJsonArray<{
-            id: number;
-            order_num: number;
-            group_id?: number;
-        }>(request);
-
-        // 验证排序数据
-        if (!Array.isArray(data)) {
-            return errorResponse(ApiError.badRequest("排序数据必须是数组"));
-        }
-
-        for (const item of data) {
-            if (
-                !item.id ||
-                typeof item.id !== "number" ||
-                item.order_num === undefined ||
-                typeof item.order_num !== "number"
-            ) {
-                return errorResponse(ApiError.badRequest("排序数据格式无效，每个项目必须包含id和order_num"));
-            }
-
-            if (item.group_id !== undefined && typeof item.group_id !== "number") {
-                return errorResponse(ApiError.badRequest("分组ID必须是数字"));
-            }
-        }
-
-        // 结果里带着「成了哪几个、没成哪几个」：D1 没有跨语句事务，
-        // 一批里挂掉几条是真实存在的，前端要按实际结果更新（见 App 的 bulkMove）
-        const result = await api.updateSiteOrder(data);
-        return Response.json(result);
-    }
-
     return null;
 }

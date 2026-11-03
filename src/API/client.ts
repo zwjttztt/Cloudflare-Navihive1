@@ -20,6 +20,9 @@
 import { DEFAULT_TOKEN_TTL } from "./http";
 import { IDEMPOTENCY_HEADER, RETRY_AFTER_HEADER } from "./httpConstants";
 import { REQUEST_ID_HEADER } from "../../shared/requestId";
+// ⚠️ 只 import timeoutTierOf（不带全量清单的那半）。别把 resolveRouteTier 引进来 ——
+// 它引用 API_ROUTES（63 条路径），一引就进首屏包，而首屏只剩 ~1.4 KB 余量。
+import { timeoutTierOf } from "../../shared/apiRoutes";
 import { NoteConflictError } from "../utils/noteConflict";
 import { API_ERROR_CODES, ApiError, parseApiError } from "./apiError";
 import {
@@ -75,10 +78,11 @@ export interface NavigationClient extends
  * 240 秒的依据：25MB / 240s ≈ 107KB/s，覆盖到 2G/边缘信号的上行；
  * 又不至于「无限等」—— 卡死的连接最终还能自己断开，不会永久占着上传队列。
  *
- * ⚠️ 只给**传文件本体**的那个端点，不要塞进下面的 slow 正则：
- * `notes/attachments/list`（列元数据）、`notes/attachments/<id>`（删除）、
+ * ⚠️ 只给**传文件本体**的那个端点：`notes/attachments/list`（列元数据）、
+ * `notes/attachments/<id>`（删除 / 改名）、`notes/attachments/<id>/content`（改写）
  * 都只是几百字节的 JSON 往返，给它们 4 分钟等一个卡死的请求毫无意义 ——
- * 真卡住了应该 30 秒就让用户重试。这正是「别简单地把 attachment 塞进正则」的理由。
+ * 真卡住了应该 30 秒就让用户重试。这正是「别简单地把 attachment 塞进同一档」的理由，
+ * 也是 shared/apiRoutes.ts 里 `a` 档**只做精确匹配**的原因。
  */
 export const ATTACHMENT_UPLOAD_TIMEOUT_MS = 240_000;
 
@@ -86,24 +90,24 @@ export const ATTACHMENT_UPLOAD_TIMEOUT_MS = 240_000;
  * 这个端点的请求该等多久（0 = 不设超时）。抽成纯函数是为了能单测 ——
  * 超时值本身藏在 AbortSignal 里，跑真请求是验不出来的。
  *
- * 判定分两类，理由各不相同：
+ * 判定**不再看端点名**（2026-11）：以前这里是
+ * `/upload|download|backup|import|export|restore|icon/i.test(endpoint) ? 0 : 30s`，
+ * 于是改一个端点名就等于静默改掉超时语义。现成的误伤：
+ * `recycle/restore`（回收站恢复，一次普通 DB 操作）名字里有 restore，
+ * 被划进了「不设超时」—— 它卡死时前端就**永远等下去**。
  *
- * 1. **搬整份数据的慢端点**（不设超时）：走 `upload|download|backup|import|export|
- *    restore|icon` 这一组词。它们的共同点是「耗时由数据量决定，客户端无法预估」——
- *    整库备份上传、ZIP 导出下载、图标代理取远端图，谁都不知道要几秒。
- * 2. **大请求体的单文件上传**（给一个与体量匹配的定值，见
- *    ATTACHMENT_UPLOAD_TIMEOUT_MS）：只有 `POST notes/attachments` 这一个端点。
+ * 现在档位是数据：见 shared/apiRoutes.ts 的 timeoutTierOf（路径 → 档位）。
+ * 那里也写清了每一档为什么存在，以及为什么全量清单不能进首屏包；
+ * 毫秒值仍留在这里，因为测试从这里 import。
  *
- * 调用方显式传 timeoutMs 永远优先（它自己知道这一次要多久）。
+ * 调用方显式传 timeoutMs 永远优先（它自己知道这一次要多久，显式 0 = 不限）。
  */
 export function timeoutForEndpoint(endpoint: string, explicit?: number): number {
     if (typeof explicit === "number") return explicit;
-    // 附件本体上传：POST notes/attachments?filename=…（query 直接跟在路径后面）
-    if (/^notes\/attachments(\?|$)/.test(endpoint)) return ATTACHMENT_UPLOAD_TIMEOUT_MS;
-    // 上传 / 下载 / 备份恢复这类端点天然慢，不吃默认超时
-    return /upload|download|backup|import|export|restore|icon/i.test(endpoint)
-        ? 0
-        : REQUEST_TIMEOUT_MS;
+    const tier = timeoutTierOf(endpoint);
+    if (tier === "attachment-upload") return ATTACHMENT_UPLOAD_TIMEOUT_MS;
+    if (tier === "none") return 0;
+    return REQUEST_TIMEOUT_MS;
 }
 
 /**

@@ -73,7 +73,7 @@ flowchart LR
 | `src/utils/` | 纯函数与渲染节点 | 含 `MermaidNode.tsx`、`MathNode.tsx`、`errorReporter.ts`、`lazyPrefetch.ts` |
 | `src/context/` | 4 个 Context + 2 个外部 store | `AppConfigContext`、`NotifyContext`、`AiContext`、`UIPrefsContext` |
 | `init_table.sql` | 历史建表脚本 | 只含 `groups` / `sites` / `configs` 三张表，**当前权威来源是 `src/API/methods/internals.ts`** |
-| `docs/` | 文档与历次审计报告 | 本文件与 `api.md` 是入口 |
+| `docs/` | 文档与历次审计报告（一次性快照在 `docs/archive/`，只读） | **先看 `docs/README.md` 的索引**；技术入口是本文件与 `api.md` |
 
 ---
 

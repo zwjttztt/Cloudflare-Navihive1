@@ -275,29 +275,41 @@ test("四个写分支都过限速闸（静态检查：漏了不会报错，只�
     // 它闭包引用了真实的 enforceWriteGuard（限速状态是模块级的），桩不掉。
     // 而漏掉限速闸的表现恰恰是「功能全都正常、只是限速没了」——
     // 那种缺陷只能靠数代码来钉。
+    //
+    // ⚠️ 2026-11 调整了「从哪里读」：分发改成有序路由表之后，分支体搬进了模块级
+    // handler（`handleNoteUpdate` 这些），条件留在表里、闸门调用留在 handler 里，
+    // 两者不再相邻 —— 原来那句「分支条件往后 200 字内必须有 writeGate()」在这个
+    // 结构下必然落空。所以改成两步，钉的还是同一件事：
+    //   ① 表里确实有这条 path+method 的判据（条件没被删/没被改）
+    //   ② 那条判据指向的 handler 里确实调了 writeGate（闸门没被绕过）
     const source = readFileSync(
         join(findProjectDir(), "worker", "routes", "data.ts"),
         "utf-8"
     );
-    const notesBlock = source.slice(
-        source.indexOf("// ---- 记事本 ----"),
-        source.indexOf("} else if (path === \"groups\"", source.indexOf("// ---- 记事本 ----")) > 0
-            ? source.indexOf("} else if (path === \"groups\"", source.indexOf("// ---- 记事本 ----"))
-            : source.length
-    );
-    const writeBranches = [
-        'path === "notes" && method === "POST"',
-        'path === "note-orders" && method === "PUT"',
-        'path.startsWith("notes/") && method === "PUT"',
-        'path.startsWith("notes/") && method === "DELETE"',
+    /** [表里的判据, 它指向的 handler] */
+    const writeBranches: Array<[string, string]> = [
+        ['path === "notes" && method === "POST"', "handleNoteCreate"],
+        ['path === "note-orders" && method === "PUT"', "handleNoteOrders"],
+        ['path.startsWith("notes/") && method === "PUT"', "handleNoteUpdate"],
+        ['path.startsWith("notes/") && method === "DELETE"', "handleNoteDelete"],
     ];
-    for (const branch of writeBranches) {
-        const at = notesBlock.indexOf(branch);
+    for (const [branch, handler] of writeBranches) {
+        const at = source.indexOf(branch);
         assert.ok(at >= 0, `没找到写分支：${branch}`);
-        // 从这个分支往后 200 字内必须有 writeGate
+        // 表里那条判据必须真的指向这个 handler（不然「handler 里有闸门」就白证了）
+        const runAt = source.indexOf(`run: ${handler}`, at);
         assert.ok(
-            notesBlock.slice(at, at + 200).includes("writeGate()"),
-            `写分支 ${branch} 后面没有 writeGate() —— 限速被绕过了`
+            runAt > at && runAt - at < 300,
+            `写分支 ${branch} 没有指向 ${handler} —— 路由表的顺序/归属被改动了？`
+        );
+        const fnAt = source.indexOf(`async function ${handler}(`);
+        assert.ok(fnAt >= 0, `没找到 handler：${handler}`);
+        // handler 体到模块级函数的下一个 "\n}" 为止（这些 handler 都是顶层 async function）
+        const end = source.indexOf("\n}", fnAt);
+        const body = source.slice(fnAt, end < 0 ? source.length : end);
+        assert.ok(
+            body.includes("writeGate("),
+            `${handler} 里没有 writeGate( —— 写分支 ${branch} 的限速被绕过了`
         );
     }
 });
