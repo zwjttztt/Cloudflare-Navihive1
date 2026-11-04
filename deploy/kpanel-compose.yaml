@@ -14,6 +14,20 @@
 
 services:
   navihive:
+    # ⚠️ 这里**故意**是可变的 `:latest`（2026-11-04，R18 供应链审查的例外登记项）。
+    #    为什么不钉 digest：这份文件是「粘贴一次就部署完」的模板，钉了 digest 就等于把
+    #    新装的机器永久冻在写下这一行的那一刻 —— 几个月后再照这份文件部署，装到的是
+    #    一个旧版本（旧版本里可能有已经修掉的漏洞），与「钉 digest = 更安全」正好相反。
+    #    为什么可变也还能接受：这个镜像只由本仓 .github/workflows/docker-publish.yml 产出，
+    #    那条流水线要先拿到一场 conclusion=success 且分支为 main 的 CI 结论才肯构建，
+    #    而且同一个 commit 还额外打了 `:<sha>` tag（要钉住某一版就用它，比 digest 可读）。
+    #    威胁模型上，能动 ghcr 包的人本来就能改这份文件，钉 digest 挡不住他。
+    #    如果某台机器确实要「装一次就定死」：把下面这行换成
+    #      image: ghcr.io/zwjttztt/navihive@sha256:<digest>
+    #    2026-11-04 解析到的 latest digest 是
+    #      sha256:407753b8925cba6cde05b755611538f7d374e8cbf060a76a8d4aec2ce4667c6a
+    #    （ghcr 匿名 token 拉 manifest list 后按 sha256(响应体) 自校验；它每天都在变，
+    #      所以只当示例，别把它当「最新版本」，要固定就现解析一次。）
     image: ghcr.io/zwjttztt/navihive:latest
     container_name: navihive
     restart: unless-stopped

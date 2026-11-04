@@ -12,6 +12,12 @@
 // 焦点可见性也是判据（用 CDP 发真 Tab 键触发 :focus-visible，见第 4 节）。
 //   - 滚动帧耗时 / 堆内存：CI 机器性能差异太大，钉死阈值只会偶发假红。
 //
+// ⚠️ 「无名」的判据不是本文件里的几行字符串，而是 `auditEnv.mjs` 的
+//    `A11Y_NAME_CORE`（`NHNAME`）：`aria-labelledby` 递归解析 → `aria-label` →
+//    原生（文本内容 / label / alt）→ `title`，并且**不在可访问树上**的元素
+//    （`aria-hidden="true"` 等）不参与统计。这样一份实现同时给页面和单测用，
+//    判据不会像以前那样「审计一份、测试另一份」慢慢漂开。
+//
 // 覆盖面（2026-11-01 起四段）：首页 → 记事本 → 设置中心 → **记事本·附件抽屉**。
 // 加第三段的理由：中心是另一个 Modal 外壳 + 左栏导航（`Box component="button"`，
 // 行高随视口在 36/44 之间切），前面的「弹窗」一节只看命令面板（Ctrl+K），
@@ -26,7 +32,16 @@
 //
 // 用法：npm run audit:a11y（需要先 npm run build；CHROME_PATH 可指定浏览器）
 
-import { CONTRAST_CORE, DIST, ROOT, openBrowser, setAttachmentMode, startSiteServer, waitRendered } from "./auditEnv.mjs";
+import {
+    A11Y_NAME_CORE,
+    CONTRAST_CORE,
+    DIST,
+    ROOT,
+    openBrowser,
+    setAttachmentMode,
+    startSiteServer,
+    waitRendered,
+} from "./auditEnv.mjs";
 import fs from "node:fs";
 
 if (!fs.existsSync(DIST)) {
@@ -103,14 +118,24 @@ if (pageErrors.length) {
  *    调用方必须 fail-closed，不许把「没找到根」当成「扫了 0 处问题」。
  *    注意 normal 分支**不返回** missing 字段 —— 首页 / 记事本两段的
  *    JSON 输出要跟参数化之前完全一致，多一个 false 也算变了。
+ *
+ * ⚠️ 2026-11-04（R16）：可访问名的判据整体换成 `auditEnv.mjs` 的 `A11Y_NAME_CORE`
+ *    （`NHNAME`）。旧的 `nameOf` 不认 `aria-labelledby`、把 `title` 排在文本内容
+ *    之前、还把合法的 `alt=""` 装饰图判成违规 —— 三个方向都错。现在：
+ *      · 无名按钮：`NHNAME.isUnnamed`（labelledby 递归 / 内容优先 / title 兜底）
+ *      · 无 alt 图：`NHNAME.imgFails`（`!hasAttribute('alt')` 才算缺，
+ *        `alt=""` 只在「这张图实际可交互」时仍算无名）
+ *      · 无标签输入：**保持原有更严的口径**（placeholder 不算合格标签，
+ *        输入第一个字符就消失了），只补上 `aria-labelledby` 这个真实名字来源、
+ *        并让 `aria-hidden` 子树整体不参与统计
+ *    输出字段与顺序**一字未改**（下游把它当 JSON 契约对比）。
  */
-const scanA11y = rootSelector => `(() => {
+const scanA11y = rootSelector => `(() => {${A11Y_NAME_CORE}
   const root = ${rootSelector ? `document.querySelector(${JSON.stringify(rootSelector)}) || null` : "document"};
   if (!root) return { missing: true };
   const q = s => [...root.querySelectorAll(s)];
-  const nameOf = el => (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim();
-  const noNameBtns = q('button').filter(b => !nameOf(b)).length;
-  const noAltImgs  = q('img').filter(i => !i.getAttribute('alt')).length;
+  const noNameBtns = q('button').filter(b => NHNAME.isUnnamed(b)).length;
+  const noAltImgs  = q('img').filter(i => NHNAME.imgFails(i)).length;
   const inputsNoLabel = q('input, select, textarea').filter(i => {
       if (i.type === 'hidden') return false;
       // ⚠️ 隐藏的输入不算：记事本有 <input type="file" style="display:none">，
@@ -118,8 +143,13 @@ const scanA11y = rootSelector => `(() => {
       // 给它加 aria-label 是形式主义；判据本意是「**可见**的输入要有可访问名」。
       // （2026-10-24 扩大到记事本时暴露的判据缺陷 —— 首页没有隐藏 file input，
       //   所以这条一直没被触发过。）
+      // 2026-11-04 起这一条由 NHNAME.isExcluded 统一判：aria-hidden / display:none /
+      // hidden 属性覆盖的子树整体跳过（装饰区里的输入不该记成「无标签」）。
+      if (NHNAME.isExcluded(i)) return false;
       const cs = getComputedStyle(i);
       if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+      // aria-labelledby 是**真实的**名字来源，旧判据漏了它（用委托标签的表单一律假红）
+      if (NHNAME.nameFromLabelledBy(i)) return false;
       if (i.getAttribute('aria-label')) return false;
       // 这里刻意用 **document** 而不是 root：<label for> 允许挂在根外面，
       // 限根扫描不该因为「标签在抽屉外」就把它判成无标签。
@@ -375,15 +405,17 @@ focusVis.forEach(f => console.log("  ", f.visible ? "ok  " : "MISS", JSON.string
 //   ③ 焦点归位：Esc 关掉后焦点回到打开前的那个元素（不是掉回 body）。
 
 /** 弹窗状态 + 弹窗内部按同一套尺寸/命名判据量一遍 */
-const SCAN_DIALOG = `(() => {
+const SCAN_DIALOG = `(() => {${A11Y_NAME_CORE}
   const dlg = document.querySelector('[role="dialog"]');
   if (!dlg) return { open: false };
-  const nameOf = el => (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim();
-  const byId = id => (id && document.getElementById(id) && document.getElementById(id).textContent || '').trim();
-  const labelled = ((dlg.getAttribute('aria-label') || '').trim()
-      || byId(dlg.getAttribute('aria-labelledby'))).slice(0, 40);
+  // 可访问名走同一份判据（R16）：旧的 byId 只解一层 labelledby、不递归、
+  // 也不排除 aria-hidden 的引用目标。这里保留「弹窗必须有作者提供的名字」这一条：
+  // content:false → 不许拿正文文字当名字（role="dialog" 按 ARIA 规范必须显式命名，
+  // 否则「弹窗没有可访问名」这条判据会被正文自动满足而静默失效）。
+  // title 仍然认 —— 它本身就是合法的名字来源（规范里排在内容之后，是最后兜底）。
+  const labelled = (NHNAME.accessibleName(dlg, { content: false }) || '').trim().slice(0, 40);
   const btns = [...dlg.querySelectorAll('button')];
-  const noNameBtns = btns.filter(b => !nameOf(b)).length;
+  const noNameBtns = btns.filter(b => NHNAME.isUnnamed(b)).length;
   // 弹窗里 24px 以下的控件：判据与首页一致（WCAG 2.5.8）。隐藏元素不算。
   const tiny = [...dlg.querySelectorAll('button, a[href], [role="button"], [role="option"]')].filter(el => {
       const r = el.getBoundingClientRect();
@@ -1392,14 +1424,16 @@ async function runMobileAudit(vp) {
             {
                 const deadline = Date.now() + 20_000;
                 while (Date.now() < deadline) {
-                    sheetDlg = await evaluate(`(() => {
+                    sheetDlg = await evaluate(`(() => {${A11Y_NAME_CORE}
                         const dlg = document.querySelector('[role="dialog"]');
                         if (!dlg) return null;
                         const paper = dlg.querySelector('.MuiDialog-paper') || dlg;
                         const r = paper.getBoundingClientRect();
-                        const byId = id => (id && document.getElementById(id) && document.getElementById(id).textContent || '').trim();
+                        // 可访问名与上面「弹窗」一节同一把尺子（R16）：
+                        // 旧的 byId 只解一层 labelledby、不递归、不排除 aria-hidden 目标。
+                        // 这里只用于**打印/给面命名**，不参与判据，所以允许 title 兜底。
                         return {
-                            name: ((dlg.getAttribute('aria-label') || '').trim() || byId(dlg.getAttribute('aria-labelledby'))).slice(0, 30),
+                            name: (NHNAME.accessibleName(dlg, { content: false }) || '').trim().slice(0, 30),
                             w: +r.width.toFixed(2),
                             h: +r.height.toFixed(2),
                             bottom: +r.bottom.toFixed(2),
@@ -1604,7 +1638,7 @@ if (dimRing.length > 0) {
 
 // 弹窗（命令面板）：可访问名 / aria-modal / 内部控件 / 焦点陷阱 / 焦点归位
 if (!dialog.ariaModal) failures.push("弹窗：缺 aria-modal=\"true\"");
-if (!dialog.labelled) failures.push("弹窗：没有可访问名（aria-label / aria-labelledby 都空）");
+if (!dialog.labelled) failures.push("弹窗：没有可访问名（aria-labelledby 递归解析 / aria-label / title 都空，正文文字不算）");
 if (dialog.noNameBtns > 0) failures.push(`弹窗：无名按钮 ${dialog.noNameBtns} 个`);
 if (dialog.tiny > 0) failures.push(`弹窗：触控目标小于 24px 的 ${dialog.tiny} 个`);
 if (escaped.length > 0) {

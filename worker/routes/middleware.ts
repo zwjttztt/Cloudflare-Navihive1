@@ -4,8 +4,12 @@
 // 谁也说不清「某个分支到底有没有过鉴权」——现在它是一个有名字的函数，
 // 调用点只有 index.ts 里那一处，且必须过了它才会走到受保护路由。
 //
-// 返回 null = 放行；返回 Response = 就地拦截（401 / 403）。
+// 返回 null = 放行；返回 Response = 就地拦截（401 / 403 / 503）。
 // 放行时把当前令牌的 jti / exp 写回 session，退出登录与注销账号要用它拉黑。
+//
+// ⚠️ 503 只有一种来源：账号态是**未知**（DB 读不出来，见 getAccountSessionState 的
+// "unavailable"）。它不是「令牌无效」，所以不能回 401 —— 401 会让客户端清掉登录标记
+// 并退回登录页，一次 DB 抖动就把所有人踢下线。详见 enforceAuth 里那段注释。
 
 // ⚠️ 这里的 401 一律走 errorResponse（`{error:{code,message}}`），**不许**回纯文本。
 //
@@ -40,6 +44,10 @@ export interface TokenSession {
  *      今天也不会查账号态（下面的分支只在 uid 是数字时才走），所以不会漏判。
  *
  * ⚠️ 这里刻意不把 `unknown` 当 active 用：宁可多打一次库，也不拿一个「不适用」的结论放行。
+ *
+ * ⚠️ 两条路都可能给出 `unavailable`（未知态）：probe 那条不会（三读合一失败时
+ * verifyToken 走降级路径、压根不留结论），退回路径会 —— `getAccountSessionState`
+ * 在「DB 读不出来」时就返回它。判定处按 503 处理，见 enforceAuth。
  */
 async function resolveAccountState(
     ctx: RouteCtx,
@@ -147,6 +155,21 @@ export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise
         // （拿不到才退回 getAccountSessionState，见该函数的注释）。判定分支一行没改。
         if (path !== "logout") {
             const state = await resolveAccountState(ctx, uid, session.jti);
+            if (state === "unavailable") {
+                // 未知态（库读不出来，答不上「在 / 不在 / 停用」）→ 503，不是 401。
+                //
+                // 为什么不是 401：401 是「这张令牌有问题」，客户端见到就会清掉登录标记
+                // 并退回登录页（src/API/client.ts 的 notifyUnauthorized，见 255 行）。
+                // D1 抖一下就把所有人踢下线，抖动恢复后还得重新登录 —— 代价远大于
+                // 多等几秒。503 + Retry-After 表达的是「这台库现在答不上来，过会儿再来」。
+                //
+                // 方向仍然是 fail-closed：放行是绝对不行的（那正是 2026-11-04 R07 修的 bug
+                // ——「查不出账号态就当成 active」）。挡在受保护路由之外，但不判令牌死刑。
+                return errorResponse(
+                    ApiError.serviceUnavailable("数据库暂时不可用，无法确认账号状态，请稍后重试"),
+                    { headers: securityHeaders({ "Retry-After": "5" }) }
+                );
+            }
             if (state === "missing") {
                 // 用 401：客户端见到 401 会清掉登录标记并退回登录页
                 return errorResponse(ApiError.unauthenticated("账号已不存在，请重新登录"));

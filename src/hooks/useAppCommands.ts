@@ -13,6 +13,8 @@ import type { CommandItem } from "../components/CommandPalette";
 import type { GroupWithSites } from "../types";
 // 只取类型：编译期擦掉，不会把 UIPrefsContext（含 Provider 与 localStorage 读写）拖进包里
 import type { Density, ViewMode } from "../context/uiPrefsStore";
+// 同样只取类型：中心的面板 id 是一份**闭集**，命令表里写错一个 id 现在编译期就红
+import type { NavCenterPanelId } from "../components/navigationCenter/model";
 import { safeOpenSite } from "../utils/safeOpen";
 
 /** 命令面板需要的那几个动作。App 逐个传进来，这里不反向依赖 App */
@@ -35,8 +37,11 @@ export interface AppCommandActions {
      * 打开「设置」中心的某一屏。
      * 2026-10-29：统计与备份都从独立弹窗收进中心，命令面板也跟着改走中心 ——
      * 否则两条命令会打开两个已经没有挂载点的弹窗。
+     *
+     * 参数是**面板 id**（不是自由字符串）：这条命令是「目标直达」的唯一来源，
+     * 传进来的 id 会被一路带到弹窗，窄屏据此跳过目录直接进那一屏（R09）。
      */
-    openNavCenter: (panel: string) => void;
+    openNavCenter: (panel: NavCenterPanelId) => void;
     setBookmarkOpen: (open: boolean) => void;
     runLinkCheck: () => Promise<void> | void;
     toggleCollapseAll: () => void;

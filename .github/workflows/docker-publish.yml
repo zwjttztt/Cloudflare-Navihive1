@@ -62,13 +62,32 @@ on:
     types: [completed]
     branches: [main]
 
-# contents: read 用于 checkout；packages: write 用于推 ghcr.io；
+# ============================================================================
+# 最小权限（2026-11-04，审查项 R18）：**顶层只给 read**，写权限下沉到真正用它的 job。
+#
+# 改动前顶层是 `contents: write` —— gate / notify 这两个只要读的 job 也各自握着一把
+# 「能往 main 推提交」的钥匙。它们是这份文件里最不需要写的两个 job（gate 只 checkout +
+# `gh run view`，notify 只发一个 webhook），却因为「顶层一次性给全」而拿到了最宽的权限：
+# 任何被投毒的第三方 action 只要跑到这两个 job 里，就能改仓库。
+# 改动后的口径（逐 job 核过，只有 merge 真的写仓库）：
+#   gate   → 继承顶层：contents: read + actions: read（checkout + 查 CI 结论）
+#   build  → job 级：contents: read + packages: write（checkout + 推 ghcr 的 digest）
+#   merge  → job 级：contents: write + packages: write（合成 manifest + 推 v* git tag）
+#   notify → 继承顶层：只发 webhook，一个 scope 都不需要
+#
+# ⚠️ job 级 `permissions:` 是**整体覆盖**顶层而不是合并 —— 所以声明了它的 job 必须
+#    自己把 contents: read 写全，漏了会在 `actions/checkout` 那步 403。
+# ⚠️ buildx 的 `cache-to: type=gha` 走 ACTIONS_RUNTIME_TOKEN，不占 actions: write；
+#    packages 的写权限则是推 ghcr 必需的（login 用的就是这个 GITHUB_TOKEN）。
+# ============================================================================
+# 顶层只剩读：contents: read 给 checkout，actions: read 给下面那句 `gh run view`。
 # ⚠️ actions: read 不能省 —— workflow_dispatch 那条路要靠 `gh run view` 去查 ci_run_id
 # 的结论，没有这个 scope 查不到（deploy.yml 里同样的门禁也带着它）。
 permissions:
-  contents: write
+  contents: read
   actions: read
-  packages: write
+  # packages 的写权限已下沉到 build / merge 两个 job（写在顶层等于给所有 job，
+  # 包括只发 webhook 的 notify）。
 
 # 镜像发布串行：两次 CI 结论紧邻完成时，两场发布会并行推 :latest，谁后跑完谁生效，
 # 线上到底停在哪一份不可预测 —— 与「不看 CI 结论」是同一类错误（上线结果不可预测）。
@@ -148,6 +167,13 @@ jobs:
   # 每个平台各自原生构建，只按 digest 推送（不打 tag —— 单平台的 tag 会被另一个覆盖）
   build:
     needs: gate
+
+    # 写权限只到「推 ghcr」为止（R18）。⚠️ job 级 permissions 整体覆盖顶层，
+    # 所以 contents: read 必须自己写一遍 —— 漏了的话下面每个 actions/checkout 都会 403。
+    # 这里**不需要** actions: read（那是 gate 查 CI 结论用的），也不碰仓库内容。
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -198,6 +224,13 @@ jobs:
   # 合并成一个 multi-arch manifest，打 latest / 版本号(:${version}) / sha 三个 tag
   merge:
     needs: [gate, build]
+
+    # 这是整份文件里**唯一**真的要写仓库的 job：合成 multi-arch manifest（packages: write）
+    # 之后还要打并推送 v${version} git tag（contents: write）。
+    # 改动前这把钥匙挂在顶层，gate / notify 也一起拿着（R18 收窄）。
+    permissions:
+      contents: write
+      packages: write
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

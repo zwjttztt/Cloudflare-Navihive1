@@ -541,6 +541,21 @@ export const GROUP_RESTORE_COLUMNS = [
 export const migrationState: {
     promise: Promise<void> | null;
     /**
+     * 「这套库结构是否已经确认迁移过一遍」—— 迁移的**结论**，模块级。
+     *
+     * ⚠️ 为什么必须是模块级（2026-11-04，审查报告 R07）：迁移每个 isolate 只跑一次
+     * （promise 缓存），而 NavigationAPI 是**每个请求 new 一个**。结论原先存在实例
+     * 字段 `dbReady` 上，于是冷启动后的**第二个请求起恒为 false** ——
+     * accounts.ts 里「还没就绪才 fail-open」那条豁免在稳态下**永远成立**，
+     * 等于任何一次账号状态查询异常都被当成「首次建表」放行，
+     * 「停用 / 清除的账号靠旧令牌继续过审」那道闸门从来没关上过。
+     * 与 ftsReady 同级放，才是「这套库探测过一次，之后所有请求都照这个结论来」。
+     *
+     * 写入点只有两个：migrateIfNeeded 的快路径与 runMigrations 的收尾
+     * （都同时写实例标记，见 navigationApi.ts 的 dbReady）。
+     */
+    ready: boolean;
+    /**
      * 全文检索（FTS5 虚拟表 notes_fts）是否可用。
      *
      * ⚠️ 为什么是**模块级**而不是实例级：迁移只在每个 isolate 的**第一个**请求里
@@ -552,18 +567,56 @@ export const migrationState: {
      * 与 promise 同级放，才是「这套库结构探测过一次，大家都照这个结果来」。
      */
     ftsReady: boolean;
-} = { promise: null, ftsReady: false };
+} = { promise: null, ready: false, ftsReady: false };
+
+/**
+ * 「这次查询失败是不是因为结构还没建好」——缺表 / 缺列 / 缺函数这类**可自愈**错误的判据。
+ *
+ * 为什么需要它（2026-11-04，R07）：`getAccountSessionState` 的异常分支原来只按
+ * 「迁移跑没跑过」二选一，把「超时 / 连接抖动 / SQL 写错」也当成了「首次建表」。
+ * 现在那道豁免只认缺表类错误 —— 别的错误重跑迁移也没用，重试只会白打两次库。
+ *
+ * 覆盖的文案（按引擎）：
+ *   · SQLite / D1 / node:sqlite：`no such table: users`、`no such column: status`、
+ *     `no such function: json_extract`、`no such index: idx_x`
+ *   · Postgres 系（自托管换库时的形状）：`relation "users" does not exist`
+ * 只做大小写无关的子串匹配，不解析错误码：D1 把这些都包在 `D1_ERROR: …: SQLITE_ERROR`
+ * 里，没有稳定的 code 可认。
+ */
+const MISSING_SCHEMA_PATTERNS: readonly RegExp[] = [
+    /no such table/i,
+    /no such column/i,
+    /no such function/i,
+    /no such index/i,
+    /does not exist/i,
+];
+
+/** 错误消息取原文（非 Error 的抛出物也兜住） */
+export function errorMessageOf(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * 是否是「结构还没建好」类错误。只用于**是否值得补跑一次迁移**的判定，
+ * 不做安全判定 —— 判错了方向也只是多打两次库（结论仍由重试结果决定）。
+ */
+export function isMissingSchemaError(error: unknown): boolean {
+    const message = errorMessageOf(error);
+    return MISSING_SCHEMA_PATTERNS.some(pattern => pattern.test(message));
+}
 
 /**
  * 仅供测试：清掉迁移缓存。
  * 生产环境每个 isolate 只应迁移一次（缓存是有意为之），但测试里每个用例都要换一套
  * 全新的内存数据库，不重置的话第二个用例起就永远跑不到建表 / 迁移逻辑。
  *
- * ⚠️ ftsReady **也要一起清**：它是模块级的，否则上一个用例探到「可用」会把
- * 结果带给下一个用「没有 FTS5 的假库」的用例，断言变成看运气。
+ * ⚠️ ftsReady / ready **也要一起清**：它们是模块级的，否则上一个用例探到「可用」
+ * 会把结果带给下一个用例，断言变成看运气（ready 更甚：它决定鉴权的 fail-open /
+ * fail-closed 取向，漏清等于让「未就绪」的用例拿到「已就绪」）。
  */
 export function resetMigrationCacheForTests(): void {
     migrationState.promise = null;
+    migrationState.ready = false;
     migrationState.ftsReady = false;
 }
 

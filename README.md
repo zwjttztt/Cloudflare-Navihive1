@@ -149,15 +149,21 @@ docker compose up -d --build
 | `JWT_SECRET_OLD` | 轮换 `JWT_SECRET` 期间的旧值（只验签，过渡后删除） | 不启用 |
 
 - 密文自带 keyId（`enc$1$...` = 新钥，`enc$...` = 旧钥），新旧同时可读，换钥无需停机迁移；
-- ⚠️ **备份默认不加密**：不设「备份密码」时，服务端把**原始 zip 直接上传到你的网盘**
-  （`worker/notesBackup.ts:393` 是 `password ? await encryptBackup(zip, password) : zip`），
-  里面含全部笔记、附件，以及站点账号密码。只有设了备份密码才会先加密再上传，
-  且它与 `AUTH_SECRET` 解耦 —— 轮换服务端密钥不影响已有备份。**建议务必设置备份密码。**
+- ⚠️ **备份不会静默上传明文**：WebDAV 笔记备份在「无可用密钥」时直接失败，绝不回退到原样上传
+  （`worker/notesBackup.ts:374-387` 解析密钥候选，空候选即抛错；`:425/:429` 的成功路径一律先加密）。
+  密钥候选来自两类：**自动口令**（由 `worker/webdav/autoKey.ts:63-85` 从 `AUTH_SECRET`，否则 `DATA_ENCRYPTION_KEY`，
+  结合固定上下文与**账号 ID** 派生）或你显式填的**备份密码**。前者与服务器密钥绑定，后者独立。
+- ⚠️ **自动加密档的恢复依赖原始根密钥与账号 ID**：自动口令由「实际参与派生的根密钥 + 当前账号 ID」决定。
+  若轮换时只换了 `DATA_ENCRYPTION_KEY` 而 `AUTH_SECRET` 没变，自动口令不变；但若换了 `AUTH_SECRET`，
+  或迁移/重建后账号 ID 变化，**旧自动加密档会读不出来**——除非你保留了当初那份根密钥。
+  因此轮换/迁移前，请先创建一份使用**独立备份密码**的新备份并验证能恢复；保留旧根密钥直到旧自动档不再需要。
+  设了独立密码的新备份与 `AUTH_SECRET` 解耦，但**不会自动重加密旧档**，旧自动档仍依赖旧派生材料。
+- 本地 JSON/ZIP 导出与 WebDAV 服务器备份是不同路径，是否加密按对应实现单独说明，不要以本段外推。
 - `NAVIHIVE_TRUST_XFF`：本地 `wrangler dev` 时默认不信任 X-Forwarded-For（防伪造绕过限速），仅当确认反代会覆盖 XFF 时设 `1`。
 
 > 发现问题（漏洞 / 密钥泄漏 / 可疑行为）怎么报、密钥按什么顺序换：见 [`SECURITY.md`](SECURITY.md)。
-> 其中「`NAVIHIVE_TRUST_XFF` 与 `NAVIHIVE_TRUST_X_REAL_IP` 必须成对设置」和「换 `AUTH_SECRET` 之前先导备份」
-> 这两条一旦搞反，代价是限速全线失效或库里的加密字段全部读不出来。
+> 其中「`NAVIHIVE_TRUST_XFF` 与 `NAVIHIVE_TRUST_X_REAL_IP` 必须成对设置」和「换 `AUTH_SECRET` 之前先导备份、
+> 并确认旧自动加密备份仍可由原始根密钥恢复」这三条一旦搞反，代价是限速全线失效或库里的加密字段/旧备份读不出来。
 
 ### 自托管（Docker / Node）专用变量
 

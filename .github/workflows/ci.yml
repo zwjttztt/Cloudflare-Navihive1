@@ -37,6 +37,23 @@
 # 本地等价命令：npm run ci（本地仍是单进程串行，步骤顺序与这里的分组不完全相同）
 name: CI
 
+# 最小权限（2026-11-04，审查项 R18「workflow 最小权限」）。
+#
+# 这份流水线只读源码：不建 release、不打 git tag、不推镜像、不评论 PR
+# （写仓库的两件事分别在 docker-publish.yml 的 merge job 和 deploy.yml 里）。
+#
+# ⚠️ 为什么必须显式写：不写 `permissions:` 时用的是**仓库设置**里的 GITHUB_TOKEN
+#    默认权限 —— 那是仓库级配置，躺在 Settings 里，代码里看不见、评审看不见，
+#    而且历史上默认就是 read-write。于是「某个第三方 action 被投毒」这一类事故里，
+#    它能拿着 GITHUB_TOKEN 往 main 推提交。写成显式 read，这件事才在代码里可审计。
+#
+# ⚠️ 只留 contents: read 够不够：够。下面用到的 actions/upload-artifact 走的是
+#    ACTIONS_RUNTIME_TOKEN（Actions 运行时令牌，与 GITHUB_TOKEN 是两套东西），
+#    不占 actions: write；`$GITHUB_STEP_SUMMARY` 是 runner 本地文件。
+#    五个 job 全部只读，所以不给任何 job 单独提权。
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -371,13 +388,18 @@ jobs:
       - name: 对比度审计
         run: npm run audit:contrast
 
-      # 首屏体感审计：移动端 Slow-4G + CPU 4× 下量真实 FCP / LCP。
+      # 首屏体感审计：移动端 Slow-4G + CPU 4× 下量真实 FCP / LCP / CLS。
       # 体积守卫（check:budget）看的是字节，拦不住「关键渲染路径上多了阻塞块」——
-      # 那种情况体积几乎不变、体感差一档。2026-10-21 首次落地实测 FCP 5.1s / LCP 6.0s，
-      # 预算按实测 +35~40% 留余量（见 script/perf-audit.mjs 的注释）。
-      # 2026-10-25 起改「多轮采样取中位数」（默认 3 轮，PERF_ROUNDS 可配），
-      # 专门压 CI 机器负载抖动带来的假红；等首屏压到 600KB 之后要把预算一起收紧。
-      - name: 首屏体感审计（多轮中位数）
+      # 那种情况体积几乎不变、体感差一档。
+      # 2026-11-04（审查项 R14）起**冷热分离**：`--mode=cold` 每轮导航前清 HTTP 缓存 +
+      # SW/Cache Storage（量首访），`--mode=warm` 首轮作预热不计入中位数（量回访）；
+      # 默认 `both` 两组各一份预算，冷热差一个数量级（实测 FCP 1932 vs 188），
+      # 混在一起取中位数得到的数字两头都不成立。
+      # CLS 也从「只记录」改成门禁项（取所有轮次最大值），预算与标定记录见
+      # script/perf-audit.mjs 的 BUDGET_MS 注释（含机器口径 / 余量 / 为什么）。
+      # 2026-10-25 起「多轮采样取中位数」（默认 3 轮，PERF_ROUNDS 可配），
+      # 专门压 CI 机器负载抖动带来的假红。
+      - name: 首屏体感审计（冷热分离 + 多轮中位数）
         run: npm run audit:perf
 
       # 视觉回归：3 视口 × 5 场景的布局指纹比对（几何 / 样式 / 元素数 / 主题态）。
@@ -387,11 +409,39 @@ jobs:
       # 现在的用途是**让它天天跑、把差异暴露在日志里**，等基线改在统一容器里重录
       # （或把容差与采样收稳）之后再摘掉 continue-on-error 变真门禁。
       - name: 视觉回归（观察期，暂不卡门）
+        # id 供下面两步读 steps.visual.outcome：continue-on-error 让这一步「不报错」，
+        # 光看步骤颜色/日志滚屏根本分不出它是过了还是差了一处 —— 而它的结论只写在
+        # 自己打出来的控制台里，滚过去就没了。
+        id: visual
         run: npm run audit:visual
         # 摘帽计划：观察期截止 2026-12-31。届时若基线已在统一容器（或 CI 同机）重录、
         # 容差与采样已收稳、且连续若干次运行无意外差异，则移除 continue-on-error 升级为真门禁；
         # 若仍未达标，需在主理人处记录决策（延期或永久保留观察期）后再动本步。
         continue-on-error: true
+
+      # 把视觉回归的结论顶到 Job Summary 上（一行），并给出证据取法。
+      # 理由：这一步是 continue-on-error 的观察期步骤，失败时整条流水线依然绿，
+      # 唯一的信号就是这一步的 outcome —— 不显式写出来，等于没人会注意到它红了。
+      - name: 视觉回归结论摘要
+        if: always()
+        env:
+          VISUAL_OUTCOME: ${{ steps.visual.outcome }}
+        run: |
+          echo "视觉回归：${VISUAL_OUTCOME} —— 证据见 artifact visual-regression（gh run download <run-id> -n visual-regression -D artifacts-visual）" >> "$GITHUB_STEP_SUMMARY"
+          echo "视觉回归 outcome=${VISUAL_OUTCOME}（证据 artifact：visual-regression）"
+
+      # 视觉回归的证据（artifacts/visual-regression/<时间戳>/ 下的 summary.json 与
+      # 每个用例的指纹 + diff 明细）。**if: always()** 是重点：失败与成功都要留 ——
+      # 失败的时候才最需要它，而 `if: failure()` 在 continue-on-error 的步骤上不会触发。
+      - name: 视觉回归证据（成功失败都留）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-regression
+          path: artifacts/visual-regression/
+          # 一个都没跑起来（比如缺构建产物）时别让上传步骤把 job 拖红
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: 失败时留一份截图/日志
         if: failure()

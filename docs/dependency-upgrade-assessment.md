@@ -164,3 +164,210 @@ CI 里的 `npm ci --legacy-peer-deps` 去掉了 `--legacy-peer-deps`：它是为
 `npm audit --omit=dev` 现在仍是 0 漏洞 —— **这一轮不是安全驱动**，纯属技术债。
 收益最大的是 vite 8（构建 5.96s → 2.58s）与 MUI 9（官方称包体 -3%、sx 性能 +30%）；
 风险最大的是 TypeScript 7（静默风险，已排除）与 MUI 9（实际是 159 处类型错误，已过）。
+
+---
+
+# 附录：依赖公告例外登记 + 供应链固定（审查项 R18，2026-11-04）
+
+这一节和上面几节性质相反：上面记的是「升完了」，这里记的是**没升的部分、以及为什么**。
+两块内容：
+
+1. **依赖公告**：dev 链上有 2 条真公告，在「只允许 patch/minor 且必须 lint + tsc 全绿」的
+   约束下消不掉，逐条登记责任人 + 到期日；
+2. **供应链**：基础镜像与上游服务镜像按 digest 固定，固定不了的两处登记例外。
+
+⚠️ 下面两张表**不是文档，是配置**：`tests/dependencyExceptions.test.ts` 与
+`tests/supplyChainPinning.test.ts` 会解析它们。缺责任人、缺到期日、到期日已过、
+公告 ID 形状不对、基线声明过期 —— 任何一条都会让单测变红。改表的时候当成改代码。
+
+## 1. 本轮 audit 的真实输出（2026-11-04T11:21:20Z）
+
+```bash
+$ npm audit --json             # 全量（含 devDependencies）
+  metadata.vulnerabilities = { info: 0, low: 0, moderate: 15, high: 0, critical: 0, total: 15 }
+  退出码 1                        # npm 只要 total > 0 就非 0，与严重度无关
+
+$ npm audit --omit=dev --json   # 只算生产依赖
+  vulnerabilities = {}           # 空
+  退出码 0
+  metadata.dependencies = { prod: 244, dev: 320, optional: 87, peer: 1, total: 564 }
+```
+
+**15 个节点 ≠ 15 个漏洞。** npm 的 `vulnerabilities` 列的是「受影响的包节点」，
+真公告只有两条，另外 13 个是被它们牵连的父包（这些条目的 `via` 里挂的是父包名，
+不是公告）：
+
+| 真正带公告的包 | 当前版本 | 公告 | 严重度 | 修好的版本 | 谁把它拉进来的 |
+| --- | --- | --- | --- | --- | --- |
+| `glob` | `13.0.6` | GHSA-3g3m-2fjr-6pw4（AbortSignal 取消绕过 → 超时后仍可遍历文件系统） | moderate | `>=14.0.2`（**major**） | `c8@12 → test-exclude@8` |
+| `minimatch` | `10.2.6` | GHSA-g3hv-75wg-m249（globparts 放大 → DoS） | moderate | `>=11.0.1`（**major**） | `c8 → test-exclude`、`eslint`、`@eslint/config-array`、`@typescript-eslint/typescript-estree` |
+
+13 个牵连节点：`@eslint-community/eslint-utils`、`@eslint/config-array`、`@eslint/js`、
+`@typescript-eslint/eslint-plugin`、`@typescript-eslint/parser`、`@typescript-eslint/type-utils`、
+`@typescript-eslint/typescript-estree`、`@typescript-eslint/utils`、`c8`、`eslint`、
+`eslint-plugin-react-refresh`、`test-exclude`、`typescript-eslint`。
+
+两条公告在上游都**没有 CVSS 向量**（`npm audit --json` 里 `cvss.score = 0`、
+`vectorString = null`，CWE 分别是 CWE-400 / CWE-405）。也就是说这个 moderate 是 npm 的
+默认档，不是算出来的分数 —— 别拿它当精确风险值，它只能当「该看一眼」的信号。
+
+## 2. 逐项判定：没有一个 patch/minor 能消掉（2026-11-04 逐条查 registry）
+
+判定门槛（本轮硬约束）：只接受 patch/minor，且必须 `eslint` 0 error + 六组 `tsc` 全 0。
+按这个门槛逐条查过，**结论是一个包都没升** —— 因为升了也不减一个公告：
+
+| 候选 | 现值 → 最新 | 它自己声明的依赖（`npm view`） | 能消掉公告吗 | 结论 |
+| --- | --- | --- | --- | --- |
+| `eslint` | `10.12.0` → `10.14.0`（minor） | `minimatch: ^10.2.6` | 否 | 不动（升了还是 10.x 的 minimatch） |
+| `typescript-eslint` | `8.71.1` → `8.72.1`（minor） | `typescript-estree` → `minimatch: ^10.2.2` | 否 | 不动 |
+| `@eslint/js` | `10.0.1` = latest | — | 否 | 不动 |
+| `c8` | `12.0.0` = latest | `test-exclude: ^8.0.0` | 否 | 不动（上游没新版） |
+| `test-exclude` | `8.0.0` = latest | `glob: ^13.0.6`、`minimatch: ^10.2.2` | 否 | 不动（上游没新版） |
+| `eslint-plugin-react-refresh` | `0.5.7` = latest | peer `eslint` | 否 | 不动（它只是被 eslint 牵连） |
+| `minimatch` | `10.2.6` → `11.0.4` | — | 能，但那是 **major** | 走例外登记 |
+| `glob` | `13.0.6` → `14.0.3` | `minimatch: ^11.0.2` | 能，但要 major + 连带 minimatch major | 走例外登记 |
+
+关键事实（这三条决定了「等上游」是唯一现实选项）：
+
+- `minimatch` 的 10.x 线**终点就是 10.2.6**，没有同 major 的修复版可等；修复只在 11.x。
+- `eslint@10.14.0`（当前 latest）与 `@eslint/config-array@latest` 都还写着 `^10.x` ——
+  上游自己没有跟进，本仓升 eslint 的 minor 版不可能把 minimatch 升上去。
+- `c8@12` / `test-exclude@8` 都已是各自 latest，`glob ^13` 的声明就在最新版里。
+
+`npm audit fix` 能「修」，但看它给的是什么方子（`fixAvailable` 字段逐条抄下来）：
+`@eslint/js` → **降**到 9.39.5、`typescript-eslint` → **降**到 8.36.0、`c8` → **降**到 9.1.0
+（`eslint-plugin-react-refresh` 直接写着 `fixAvailable: false`，没有修法）。
+三个都是 **major 降级**，等于把「eslint 10 + TypeScript 6」这套组合拆掉（见本文档档 1 / 档 2）。
+所以它被明确禁止，不是「懒得修」。
+
+另外两条硬约束也走不通：
+
+- `overrides` 里硬推 `minimatch: ^11` / `glob: ^14` 是**跨 major 强推**，eslint 内部对
+  minimatch 的用法（`ignore` 解析、`globparts`）在 11.x 有行为变化，必须跑全量用例 +
+  覆盖率链路验收；本轮不允许动。
+- 修 `glob` 不能只升 glob：`glob@14` 自己依赖 `minimatch@^11`，等于同时 major 两个。
+
+## 3. 生产依赖基线
+
+生产依赖基线：0 个漏洞（`npm audit --omit=dev`，生产依赖 244 个），核对日期：2026-11-04。
+复查周期：180 天内必须重跑一次并更新这条记录的日期（逾期单测直接红）。
+
+为什么这条能当门禁而不只是记录：`--omit=dev` 的那 244 个包才是会进产物的
+（vite 打包进 `dist/`、esbuild 打进去 `dist-server/entry.mjs`、`undici` 被 COPY 进镜像）。
+devDependencies 全是构建/测试工具，不进产物也不进镜像 —— 上面两条公告就属于这一类。
+
+⚠️ 顺带记一笔 CI 口径的问题（**只记录，本轮不改**）：`.github/workflows/ci.yml` 的生产
+门禁是 `npm audit --audit-level=high --omit=dev`。「生产 0 漏洞」现在是事实，所以这道门禁
+是绿的；但它的口径只卡 high/critical —— **生产链上真出现 moderate 时它不会红**。
+这条 gate 该不该收紧到 moderate 是另一个决策（收紧要先确认 244 个生产依赖长期为 0 可维护），
+不在 R18 范围内，这里只留证据。
+
+## 4. 依赖公告例外登记
+
+| 包名 | 当前版本 | 公告 ID | 为什么修不了 | 责任人 | 到期日 | 复查命令 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `glob` | `13.0.6` | `GHSA-3g3m-2fjr-6pw4` | 修复版 14.0.2 是 major；唯一引入方 `c8@12 → test-exclude@8` 都已是 latest，没有可升的 patch/minor。可达性：test-exclude 只用它展开 `script/coverage.mjs` 里写死的 `--exclude` 模式（字面量），不接收外部输入 | 主理人 | 2027-02-28 | `npm audit --json` 后看 `vulnerabilities.glob` |
+| `minimatch` | `10.2.6` | `GHSA-g3hv-75wg-m249` | 修复版 11.0.1 是 major，且 10.x 线终点即 10.2.6；三个上游（eslint 10.14.0 / @eslint/config-array latest / typescript-estree 8.72.1）都仍声明 `^10.x`，没跟进。可达性：模式串来自 `eslint.config.js` 与本仓 tsconfig 的 include（字面量），不是请求输入 | 主理人 | 2027-02-28 | `npm audit --json` 后看 `vulnerabilities.minimatch` |
+
+复查（到期日前必做一次，做完全量重跑 `npm run ci`）：
+
+```bash
+npm audit --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+  const a=JSON.parse(s); for (const k of ["glob","minimatch"]) console.log(k, a.vulnerabilities[k]?.severity ?? "已消失"); });'
+npm view eslint@latest dependencies.minimatch      # 上游是否终于改用 ^11
+npm view @typescript-eslint/typescript-estree@latest dependencies.minimatch
+npm view test-exclude@latest dependencies           # 是否换掉 glob ^13
+```
+
+三条都还指向旧 major → 这条例外继续续期（改到期日，写清续期理由）；
+任一转向 `^11` / `^13→^14` → 立刻按 patch/minor 升上去，然后把这一行从表里删掉。
+**删行是最好的结果**，守卫会强制表里每一行都有责任人和未过期的到期日，所以不可能留着忘掉。
+
+## 5. 供应链固定：已经钉住 digest 的三处
+
+| 位置 | 固定后的写法 | 备注 |
+| --- | --- | --- |
+| `Dockerfile` builder 阶段（第 40 行） | `FROM node:22-slim@sha256:4b150b48…c7279da AS builder` | 多架构 manifest list 的 digest（amd64 / arm64 共用同一个 index），保留 tag 便于人读 |
+| `Dockerfile` runtime 阶段（第 62 行） | 同上（同一个 digest） | 不用 `FROM builder` 派生：会把构建链路带进最终镜像 |
+| `docker-compose.yml` 的 upgrader | `image: docker:27.5-cli@sha256:851f91d2…15e3065c` | upgrader 是唯一挂 docker.sock 的特权容器，它跑的内容必须定死 |
+
+### digest 是怎么来的（不是抄的）
+
+先说**没走通的那条路**：任务要求用 Docker Hub registry API 匿名 token 解析。本机出网
+策略挡掉了 Docker Hub 整个域，实测：
+
+```bash
+$ curl -sS -o /dev/null -w "http=%{http_code}\n" https://auth.docker.io/token
+curl: (7) CONNECT tunnel failed, response 502      # http=000
+$ curl … https://registry-1.docker.io/v2/          # http=000
+$ curl … https://hub.docker.com/v2/repositories/library/node/tags/22-slim   # http=000
+```
+
+所以改用**四个独立来源交叉验证**，四个结果完全一致：
+
+1. **本仓 ghcr 镜像里 buildx 的 provenance**（最硬的一条）：`ghcr.io/zwjttztt/navihive:latest`
+   是 2026-11-03 由 CI 在本仓 Dockerfile 上构建的，它的 attestation manifest 里明写
+   `docker-image://docker.io/library/node:22-slim@sha256:4b150b48…c7279da` ——
+   这是 **buildkit 从 Docker Hub 解析出来**再写进来源证明的，等于 Hub 自己的答案。
+2. `public.ecr.aws/docker/library/node:22-slim`（AWS ECR Public 对 Docker 官方镜像 `library/*` 的镜像）
+3. `docker.m.daocloud.io/library/node:22-slim`（Docker Hub 拉取代理）
+4. `docker.1ms.run/library/node:22-slim`（同上）
+
+2/3/4 都做了内容自校验：`sha256(响应体) === 响应头 Docker-Content-Digest`，且与 1 相等。
+`docker:27.5-cli` 用 2/3/4 三个来源验证（同样自校验通过，三者一致）。
+
+**是不是当前内容（而不是陈年缓存）**：
+
+- `node:22-slim` 的 amd64 image config：`created = 2026-10-28T01:43:58Z`、
+  `NODE_VERSION = 22.23.4`；而本仓 2026-11-03 那次 CI 构建出来的镜像里
+  `NODE_VERSION` 也是 22.23.4 —— 两者对得上，说明解析到的就是当时 Hub 上的内容。
+- `docker:27.5-cli` 的 image config：`DOCKER_VERSION = 27.5.1`、`created = 2025-02-12`，
+  与 compose 里那句「27.x 线的终点是 27.5.1、2025-02 之后未再更新」吻合。
+
+换 digest 的姿势（下次升级基础镜像时用自己机器跑，别照抄上面的值）：
+
+```bash
+docker buildx imagetools inspect node:22-slim          # 人读：看 Digest 行
+# 或直接看本地 pull 下来的 RepoDigests：
+docker pull node:22-slim && docker inspect --format='{{index .RepoDigests 0}}' node:22-slim
+```
+
+改完必须同步 `.nvmrc` / `ci.yml` 的 22 这一档，再跑 `npm run ci`。
+
+## 6. 供应链固定例外登记
+
+| 位置 | 目标 | 为什么不固定 digest | 责任人 | 到期日 |
+| --- | --- | --- | --- | --- |
+| `docker-compose.yml`（navihive 服务） | `navihive:latest` | 本地 `build: .` 的产物：每次构建内容都不同，digest 写死下一次重建就失效。它的安全边界在 Dockerfile 的 `FROM`（已钉），不在这行 | 主理人 | 2027-02-28 |
+| `deploy/kpanel-compose.yaml` | `ghcr.io/zwjttztt/navihive:latest` | 粘贴式部署模板 + 滚动发布通道：钉 digest 等于把「几个月后照这份文件新装」的机器冻在写模板那天（装到旧版本，与「更安全」相反）。补偿控制：镜像只能由 CI 结论为 success 后的 `docker-publish.yml` 产出，同一 commit 另有 `:<sha>` tag 可用于「钉住某一版」 | 主理人 | 2027-02-28 |
+
+要「装一次就定死」的正确做法不是 digest，而是 `:<sha>` tag —— 可读、唯一、且能反查到
+commit 与那次 CI。digest 在这里只多一层不可读性，挡不住真正的威胁（能改 ghcr 包的人
+本来就能改这份 compose 文件）。
+
+复查：到期前确认这两条理由是否还成立 —— 一旦镜像是从外部 registry 拉的
+（比如换成官方镜像仓库），第一行的理由就消失，必须改成 digest 固定。
+
+## 7. 这两块留给单测的守卫
+
+| 守卫 | 钉住什么 | 红了意味着 |
+| --- | --- | --- |
+| `tests/dependencyExceptions.test.ts` | 例外表每行的责任人 / 到期日（可解析、未过期、不超过 12 个月）、公告 ID 形如 `GHSA-xxxx-xxxx-xxxx`、生产基线声明等于 0 且核对日期不超过 180 天 | 有人加了一条没人负责或无限期的例外；文档里的基线声明过期了 |
+| `tests/supplyChainPinning.test.ts` | Dockerfile 每条 `FROM` 必须带 `@sha256:`（否则要在带 owner + until 的允许清单里）、两份 compose 的每个 `image:` 同理、6 个 workflow 顶层必须是只读 `permissions` 且每个 job 都有生效权限、禁止 `permissions: write-all` | 有人新加了一条浮动 tag 的 FROM / image，或新写了一个没声明权限的 workflow |
+
+两块都不联网：基线声明与例外表是「文档里的声明」，单测只检查声明本身是否**有日期、
+有责任人、没过期** —— 真正的边界（audit 结果、registry 解析）靠 CI 与人工复查，
+不靠单测偷偷打网络（那会让它随机红）。
+
+## 8. 本轮没验证到的点（说清楚，别当已验）
+
+1. **CI 真跑**：`npm run ci` 会在 CI 上真验证；本轮只在本地跑六组 `tsc` + 定向 `eslint`
+   + 两个新守卫的私有打包运行。workflow 权限改动要等下一次 CI 跑完才算被 GitHub 接受
+   （权限写错的表现是某一步 403，不会在 yaml 解析阶段暴露）。
+2. **`docker build` 真拉 digest**：本机被出网策略挡在 Docker Hub 之外，没在这台机器上
+   真拉过 `node:22-slim@sha256:4b150b48…`。下次 `docker-publish` 构建成功 = 这条被验证。
+3. **可达性没有动态测**：两条公告的「不可达」判定依据是**模式串来源是仓库内字面量**
+   这一静态事实（读了 `eslint.config.js` 的 `ignores`、`script/coverage.mjs` 的 `--exclude`、
+   tsconfig 的 `include` 的用法），没有插桩实跑。
+   如果哪天有代码把用户输入直接喂给 minimatch 做匹配，这条判定立即失效。
+

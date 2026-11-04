@@ -23,12 +23,42 @@ export interface UpgradeStatusPayload {
     phase?: string;
     error?: string;
     image?: string;
+    startedAt?: number;
+    finishedAt?: number;
 }
+
+/** 回滚类终态：只作「显式否决」用，UI 据此给专门文案，不新增 kind 分支 */
+export type UpgradeRollbackPhase = "rolled_back" | "rollback_failed";
 
 export type UpgradeWaitResult =
     | { kind: "upgraded" }
-    | { kind: "failed"; message: string }
+    // rollback 是可选判别字段：只有读到回滚终态时才带；普通 failed 的形状保持原样
+    | { kind: "failed"; message: string; rollback?: UpgradeRollbackPhase }
     | { kind: "timeout" };
+
+/**
+ * 两个「升级已经结束但没成功」的终态，读到就立刻否决，绝不再看版本号。
+ *
+ * R05 的漏洞正是：容器重建后新静态清单已经可读（版本号先变），健康门禁随后才判定
+ * 不健康并回滚。若先判版本号，UI 会先宣布「升级完成」，稍后才被回滚打脸。
+ * 现在只要这一跳读到终态，即使同一跳版本号也变了，也一律判失败。
+ */
+const ROLLBACK_VETO: Record<UpgradeRollbackPhase, string> = {
+    rolled_back: "升级失败，已自动回滚到上一版本（新容器健康检查未通过）。请查看服务器 upgrader 日志后再试。",
+    rollback_failed: "回滚也失败，请上服务器检查：升级失败且自动回滚未成功，需要人工介入。",
+};
+
+export interface RollbackVeto {
+    phase: UpgradeRollbackPhase;
+    message: string;
+}
+
+/** phase → 否决（终态 + 人读文案）；非回滚相位一律返回 null，既有判定一个字节不变 */
+export function rollbackVeto(phase: string | undefined): RollbackVeto | null {
+    if (phase === "rolled_back") return { phase, message: ROLLBACK_VETO.rolled_back };
+    if (phase === "rollback_failed") return { phase, message: ROLLBACK_VETO.rollback_failed };
+    return null;
+}
 
 export interface UpgradeWaitOptions {
     /** 本机这一版的构建号；空串表示拿不到（开发模式），此时判定不了 */
@@ -48,8 +78,12 @@ const DEFAULT_INTERVAL_MS = 2500;
 /**
  * 等服务端换成新版本。三个出口，绝不死循环：
  *  - `upgraded`：清单里的构建号变了（调用方随后清缓存重载）
- *  - `failed`  ：服务端报 failed，带上它给的原因
+ *  - `failed`  ：服务端报 failed，或读到 rolled_back / rollback_failed 的显式否决，带上原因
  *  - `timeout` ：等超时了，如实告诉用户「没等到」，而不是假装成功
+ *
+ * ⚠️ 相位判定必须排在版本号之前：新静态清单可能在回滚发生前就短暂可读，
+ *    先判版本号就会「版本已变 → 误报升级成功」（R05）。否决只做显式终态，
+ *    不要求「必须有 done 相位才算成功」—— 那样会破坏既有 restart/接口全炸的用例。
  */
 export async function waitForUpgrade(options: UpgradeWaitOptions): Promise<UpgradeWaitResult> {
     const { localVersion } = options;
@@ -63,7 +97,8 @@ export async function waitForUpgrade(options: UpgradeWaitOptions): Promise<Upgra
     while (now() <= deadline) {
         await sleep(intervalMs);
 
-        // ① 服务端自己报的失败。容器重启中会连不上/变成 502，一律当「还不知道」
+        // ① 先读服务端自己报的 phase 并判「显式否决」，**再**看版本号 —— 顺序是 R05 的关键。
+        //    容器重启中会连不上/变成 502，一律当「还不知道」。
         let status: UpgradeStatusPayload | null = null;
         try {
             const res = await doFetch("/api/system/upgrade", {
@@ -76,6 +111,15 @@ export async function waitForUpgrade(options: UpgradeWaitOptions): Promise<Upgra
         }
         if (status?.phase === "failed") {
             return { kind: "failed", message: (status.error || "").trim() || "服务端未给出原因" };
+        }
+        // rolled_back / rollback_failed 一读到就返回失败：即使这一跳版本号已经变了
+        // 也不能判 upgraded。仍归到 kind:"failed"（不新增 kind，UpgradeWaitResult 最小改动），
+        // 可选的 rollback 字段供 UI 给专门文案与 data-update-rolled-back 锚点。
+        const veto = rollbackVeto(status?.phase);
+        if (veto) {
+            const detail = (status?.error || "").trim();
+            const message = detail ? `${veto.message}（服务端：${detail}）` : veto.message;
+            return { kind: "failed", message, rollback: veto.phase };
         }
 
         // ② 版本号。带时间戳当 query，避开反向代理/CDN 对 .json 的缓存

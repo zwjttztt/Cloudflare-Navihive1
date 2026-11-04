@@ -12,6 +12,146 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-04 · 安全 + 修复 + 工程：独立审查 18 项按四阶段收口（30.0.0）
+
+`deliverables/software-company/navihive-fresh-review-2026-11-03.md` 的 **R01–R18 全部落地**，
+严格按报告第四节的阶段顺序推进（每阶段改完并验证通过才进下一阶段）。
+这是 **major**：有五处**对外行为**变了（账号未知态从 401 改 503、覆盖率门禁与体积门禁改为 fail-closed、
+导入统计新增 `partial`/`conflicts`、探针改为逐条声明期望状态、导入提交改成交错自足单元），
+旧版本混着跑会看到不同的错误语义。
+
+### 阶段 1 · 数据与升级正确性（R02 / R03 / R04 / R05）
+
+**R02 乐观锁冲突时的业务副作用**。`updateNote` 原来把「解绑同站其它笔记」「自动标签」和主 UPDATE
+放进同一个 `db.batch`：主 UPDATE 因 `rev` 不符命中 0 行时，**副作用照样执行** —— 别人刚改的那篇会被
+解绑、旧正文的标签会落库。`db.batch` 是真事务，但「零行 UPDATE」是成功的 SQL，不会回滚。
+改法是把副作用排到主 UPDATE **之前**并加 `EXISTS(… AND rev = ?)` 守卫，靠守卫而不是靠回滚。
+不传 `rev` 的老客户端行为不变。
+
+**R03 导入的恢复单元**。原实现「所有正文 → 所有关联 → 末尾补 FTS」，中途失败后重新导入，
+因 `updated_at` 已被写成「现在」而被判 `skipped` —— **那条笔记再也导不进来**。
+现在按逻辑笔记交错成自足单元（解绑 → 正文 → 标签关联 → FTS），切分点只在单元边界，FTS 与正文同批；
+统计改为按实际提交累加，失败时带 `partial: true`。
+
+**R04 导入的并发 ID 与覆盖窗口**。事务外 `MAX(id)+1` 预分配显式主键，并发下会撞主键；
+folder/tag/note 的「源 id → 本地 id」映射现在改走稳定键子查询（`uuid` / `name` / `(parent_id, name)`），
+主键交给 AUTOINCREMENT；已有笔记的 UPDATE 加 `AND rev = ?` CAS，命中 0 行计入 `conflicts`
+（**保留对方那次编辑**，不覆盖）。
+
+**R05 升级状态协议**。原来「容器重建成功但不健康、回滚后 API 仍报 done」，前端可能提前宣布升级成功。
+新增 `rolled_back` / `rollback_failed` 两个终态：回滚命令检查返回码 + 回滚后**二次探活**（20×3s），
+sock 模式用 helper 退出码 40/41 反解相位；前端 `upgradeWait` 改成**显式否决** —— 一读到回滚终态立即失败，
+即使版本号已经变了也不报 upgraded。
+
+### 阶段 2 · 可信门禁（R11 / R12 / R13 / R15 / R16 / R17）
+
+- **R11 契约测试原本是自己比自己**：`PASSTHROUGH_CASES` 把同一个 `mockResult` 既当响应又当期望，
+  `shapeOf(a) === shapeOf(b)` 恒成立，什么都没验证（`ai/status` 的真实响应多一个 `success: true` 就一直没被发现）。
+  删掉 4 条恒等断言，新增 `tests/apiContractReal.test.ts` 用真 SQLite + 真 handler 断言真实字段。
+  过程中还证实了一处类型谎言：`pinned / starred / archived` 实际返回 **0/1 整数**，类型却声明为 `boolean`。
+- **R12 边界探针没有判据**：原来只有 `>= 500` 才算坏，401/404 全算「好」，于是「鉴权整个失效、
+  所有接口都能匿名访问」也会全绿。现在登录后必须拿到会话（拿不到就退出码 2 中止），61 条 case 逐条声明
+  `expect: number[]`，失败时保留 800 字符响应体。另加两条**故意不带会话**的 case 期望 401。
+- **R13 覆盖率门禁会静默通过**：没装 c8 时 `exit(gateFailed ? 1 : 0)`、读不到 summary 时 `{failed: false}`。
+  判定抽成 `script/coverageGate.mjs` 纯函数，缺 c8 / summary 缺失 / JSON 坏 / `lines.total === 0` 一律非零；
+  新增显式 `--layer1-only`（手误写成 `--layer1_only` 直接拒绝，不会被默默忽略）。
+- **R15 体积门禁在不该通过的时候通过**：`firstScreen()` 读不到 HTML 就 `return null`（后面全跳过）、
+  资产读不到就 `continue`（少算），于是 dist 缺失或引用断裂照样报绿。新增 strict 模式
+  （`npm_lifecycle_event === "check:budget"` 或 `NAVIHIVE_BUDGET_STRICT=1`），9 处 `t.skip` 逐个转成
+  「strict 下 fail / 非 strict 下打印原因再 skip」。
+- **R16 可访问名判据不合规范**：`aria-labelledby` 完全不认、`title` 优先级高于文本内容、
+  `alt=""`（合法的装饰图）被判违规。改成规范实现：labelledby 递归解析（环检测、跳过 aria-hidden 与 display:none）、
+  原生名字来源、`hasAttribute('alt')` 区分「没写」与「写了空」、`aria-hidden` 子树整体排除。
+  **不引 axe-core、不加批量白名单**。
+- **R17 视觉回归失败后无迹可查**：5 条退出路径全是直接 `done(N)`。现在把每个用例的 actual / 基线 / diff
+  落到 `artifacts/visual-regression/<时间戳>/`，**每一个 `done(1)` 之前都 flush**（含 catch 中断分支，能写多少写多少），
+  CI 侧加 `if: always()` 的步骤摘要与产物上传。`continue-on-error` 与基线**一个字没动**。
+
+### 阶段 3 · 安全与体验（R06 / R07 / R09 / R14）
+
+**R06 DNS 检查与连接分离**（自托管 SSRF 闭环）。原来「出站前解析一遍过黑名单」与「fetch 自己再解析一次」
+是两个不同的解析结果，DNS rebinding 可以在这个窗口里换回内网 IP。现在自托管启动时装
+`undici.Agent({ connect: { lookup } })`，**连接用的就是校验过的那份 IP**，Host 与 SNI 保持原样；
+resolve 到的地址里只要有一个命中黑名单就拒绝整次连接（不做「过滤掉内网连剩下的」）。
+`worker/safeFetch.ts` 只加了一个 `setFetchImpl` 注入点，不注入时（Cloudflare / 单测）行为完全不变。
+undici 不能进 esbuild ESM 单文件（`Dynamic require of "node:assert"`），所以它成为**唯一**的运行期外部依赖：
+精确锁 `8.12.3`、构建 external、镜像运行阶段只 COPY 这一个包目录（8.x 自身零依赖），
+缺失时降级为「仅出站前复核」并在启动日志告警，**服务照常起**。
+WebDAV 授权内网是**故意保留的例外**（`webdav.allowPrivateNetwork`），已写进 `SECURITY.md`。
+
+**R07 账号未知态不再靠 `dbReady` fail-open**。`dbReady` 原是**实例字段**，而每个请求 new 一个实例，
+且 `enforceAuth` 排在 `api.migrate()` 之前 —— 于是「迁移未跑完 → 放行」这条豁免在**稳态下永远成立**：
+任何一次读失败（并发冲突、D1 抖动、语法错）都被当成「首次建表」放行，「停用/清除的账号靠旧令牌继续过审」
+这道闸门其实从来没关上过。改法：就绪状态统一到模块级 `migrationState.ready`（两条迁移路径都置位）；
+首建豁免**只认**「尚未就绪 + 明确缺表/缺列」，补跑迁移后重试一次；其余一律 `unavailable`。
+`unavailable` 在鉴权中间件回 **503 + `Retry-After: 5`** 而不是 401 —— 401 会让客户端清掉登录态，
+一次库抖动就把所有人踢下线；方向仍然是 fail-closed（挡在受保护路由之前）。
+逃生口 `NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR=1` 保留，但必须留一条可检索的日志。
+
+**R09 窄屏命令直达被重置**。设置面板原先每次 `open` 变化都把 `mobileStep` 重置成 `"list"`，
+于是窄屏下带目标面板的命令仍落在目录页，要再点一次。现在「有没有目标」是**显式**表达
+（`NavCenterPanelId | null`，`null` = 没有目标），不再靠「panel 不等于默认值」推断；
+只在**本次打开**的首帧按意图定步进，用户在面板里点「返回」不会再被 effect 弹回去。
+焦点接力：进面板聚焦标题（`tabIndex={-1}`）、返回聚焦目录里对应条目；≥600px 完全不跳焦点。
+顺带修掉「关掉导航中心后 `navCenterPanel` 残留」的隐患（改成关闭时清空）。
+
+**R14 性能首访证据不足**。原来同一个浏览器连跑 3 轮、缓存首轮就预热，取出来的中位数
+「既不是首访也不是回访」；CLS 只记录不设门禁；`--json` 模式下失败被整段跳过（等于静默成功）；
+本地审计服务器不做 gzip，与线上压缩传输不可比。现在冷/热分离（冷轮每轮清缓存 + 清 Service Worker 与
+Cache Storage，热轮首轮当预热剔除）、CLS 取**全轮最大值**并入预算、`--json` 保留失败退出语义
+（另给显式 `--report-only`）、审计服务器按 `Accept-Encoding` 协商 gzip、`pageErrors` 去重。
+本机实测（单跑）：冷启动 FCP ~1944ms / LCP ~3400ms / CLS 0.031；回访 FCP ~184ms / LCP ~964ms。
+gzip 口径的 A/B：同一份 dist 只切开关，冷启动 FCP 4828ms → 1960ms（−59%），说明旧口径确实偏悲观。
+
+### 阶段 4 · 维护治理（R18 · 供应链 · 监控事件）
+
+- **R18 依赖公告**：`npm audit` 报 15 个 moderate 节点，但**真公告只有 2 条**
+  （`glob` 的 GHSA-3g3m-2fjr-6pw4、`minimatch` 的 GHSA-g3hv-75wg-m249），另外 13 个节点挂的是父包名；
+  两条都没有 CVSS 向量，`moderate` 是 npm 默认档。逐条查过 registry：`minimatch` 的 10.x 线终点就是
+  10.2.6，`eslint@latest` 与 `@eslint/config-array@latest` 仍写 `^10.x`，`c8@12`/`test-exclude@8` 已是 latest ——
+  **没有一个允许范围内的升级能消掉公告**，`npm audit fix` 的方子是 major 降级（把 eslint 10 拆回 9），
+  会破坏现行组合。所以走**有期限例外**：责任人 + 2027-02-28 到期 + 复查命令，登记在
+  `docs/dependency-upgrade-assessment.md` 附录；生产依赖仍然是 **0**。守卫测试会拦「过期/糊弄责任人/漏登记」。
+- **供应链固定**：基础镜像 `node:22-slim` 与 upgrader 的 `docker:27.5-cli` 已按 **digest** 钉死
+  （本机连不上 Docker Hub，digest 用四个独立来源交叉验证：本仓 ghcr 镜像里 buildkit 的 provenance 记录、
+  AWS ECR Public、两个官方镜像镜像站）。`docker-publish.yml` 的全局 `contents: write` 收窄到
+  真正打 tag 的 merge job；6 个 workflow 全部改成「顶层只读 + job 级按需提权」。
+  仍有两处浮动 tag 走例外登记（本地 `build: .` 产物的 digest 无法固定；粘贴式部署模板钉 digest 会把
+  几个月后新装的机器冻在写模板那天）。
+- **静默失败的结构化事件**：`shared/failureEvents.ts` 定义事件名常量，覆盖四条**出问题时没人会发现**的路径 ——
+  `notes.import.partial`（导入只完成一部分）、`notes.import.conflicts`（并发冲突保留了对方编辑）、
+  `migration.failed`（带失败的步骤 id）、`upgrade.rollback.failed`（`rolled_back` / `rollback_failed` 两个相位）。
+  message 恒定、数字只进字段，所以同一事件可按 message 分组；**正常路径零事件**有专门的反向护栏用例
+  （否则告警会被噪音淹掉）。`deploy/selfhost.md` 新增第十六节：哪个事件该叫醒人、收到先做什么、
+  「本次没有选定任何日志平台、没有启用任何线上告警」的显式声明、以及可复制的 grep/jq。
+
+### 验证（本轮实测，全部串行、堆上限 3 GB）
+
+| 门禁 | 结果 |
+|---|---|
+| `typecheck`（六组 tsconfig） | 0 报错 |
+| `lint` | 0 error；27 条存量 warning 未增；`react-hooks/exhaustive-deps` 预算 0/0 |
+| `npm test` | **3992 条：3991 通过 / 0 失败 / 1 跳过**（跳过的是「本机不允许建软链」） |
+| `build` + `check:budget`（strict） | 通过；**37/37、0 跳过**（改造前这里会静默 skip） |
+| `check:brand` / `check:strict-idx` / `smoke` | 全部通过 |
+| `audit:a11y` | 0 项不合格（新判据下重跑） |
+| `audit:contrast` | 五个面 × 亮暗两态，各 0 处不合格 |
+| `audit:perf` | 冷/热两组与 CLS 门禁全部达标 |
+| `audit:visual` | 仍且仅 **10 个**已知漂移、diff 明细 **107 行**，与 10-24 记录逐行一致（观察期到 2026-12-31，**没有**跑 `--update`） |
+| `probe:edge`（R12 改造后） | 61/61 全部符合显式期望 |
+| `check:coverage` | 第 1 层 100%（427/427）、第 2 层 88.6%（96296/108653），均在地板之上 |
+
+### 这一轮**没有**验证到的（别当成已验）
+
+- **R06 的隔离网络动态 DNS 验收没做**：需要能把同一域名在「校验」与「连接」之间切换答案的环境。
+  本地只做到「真 DNS 下 A 记录指向回环的域名被连接层拒掉」这一静态案例。
+- **`docker build` 没真拉过钉住的 digest**（本机出网被代理挡住 Hub）；下次 `docker-publish` 构建成功即为验证。
+- **CI 真跑**：workflow 权限写错的表现是某一步 403，YAML 解析阶段看不出来；首次流水线要盯一眼。
+- **真 Cloudflare D1 的缺表文案没实测**：单测用的是 node:sqlite 的真异常 + 手工注入的 D1 风格文案。
+  若线上文案不在 `no such table/column/function/index` / `does not exist` 里，首建豁免会退化成 503 闪一次（方向安全）。
+- **R14 的 CI 真机数字没量**（本地 16 线程 vs CI 2 vCPU）；回访预算的 +300ms 下限是按「慢一倍」估的。
+- 视觉基线的 10 处漂移仍在观察期，按纪律**不动基线**。
+
 ## 2026-11-03 · 重构 + 工程：路由表取代两条巨型 if 链，文档树归档重排（29.0.0）
 
 独立审计 C 波剩余三项：**D2**（API 路由表）、**D6**（拆 `data.ts` 与 `App.tsx`）、**D7**（文档整理）。

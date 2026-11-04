@@ -11,6 +11,12 @@
 # ⚠️ 只读：脚本只发 GET，不登录、不写库。tests/visualRegressionGuard.test.ts 盯着这条。
 name: 视觉回归（手动）
 
+# 最小权限（2026-11-04，R18）：只 checkout 源码 + 上传基线 artifact（走
+# ACTIONS_RUNTIME_TOKEN，不占 GITHUB_TOKEN 的 actions: write），不写仓库任何东西。
+# 显式声明而不是靠仓库默认值 —— 默认值躺在 Settings 里，评审时看不见。
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:

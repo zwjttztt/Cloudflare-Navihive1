@@ -10,10 +10,17 @@
 // 接口 148 个方法，client 缺 0 个。所以现在**没有缺口** ——
 // 这个用例的价值是让「缺口」以后再也不能悄悄出现。
 //
-// 两条断言分开钉，因为它们的失败含义不同：
-//   1. 方法集合：新增接口时忘了在 mock 里实现 → 变红（本地开发直接会崩，属早期发现）
-//   2. 形状一致：两边返回的**结构**不同 → 变红（测试全绿、线上崩的那条路）
-import { test, afterEach } from "node:test";
+// ⚠️ 这里只剩「方法集合」这一条断言（新增接口时忘了在 mock 里实现 → 变红）。
+// 以前还有一条「透传型接口 mock 与 client 返回结构一致」，2026-11 复查时删掉了：
+// 它把 `mock.aiStatus()` 的返回值同时当成「假 fetch 返回的响应」和「期望值」，
+// 而 `client.request()` 在 `response.ok` 时直接 `return response.json()` ——
+// 桩 `json()` 返回的就是**同一个对象引用**，于是断言退化成
+// `assert(shapeOf(x) === shapeOf(x))`，恒等，什么都没验。
+// 已知的真实漂移（真实 GET /api/ai/status 比 mock 多一个 `success: true`）
+// 就在它底下一直绿着。
+// 「返回结构对不对」现在由 **tests/apiContractReal.test.ts** 在真 SQLite + 真
+// `NavigationAPI` 上钉（不碰 fetch 桩，期望值写成独立事实）。
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -34,40 +41,6 @@ function findProjectDir(): string {
         }
     }
     throw new Error("找不到项目根目录");
-}
-
-// ---------------------------------------------------------------------------
-// 纯函数：结构指纹（不含具体值）
-// ---------------------------------------------------------------------------
-
-/**
- * 把任意值压成「结构形状」：对象取键集合、数组只看首个元素、基本类型只看 typeof。
- * 比较两个实现时比的是这个 —— 值不同没关系（mock 造的数据和线上不一样是正常的），
- * 结构不同才是问题（前端少一层 / 多一层 / 数组变对象都会被抓到）。
- *
- * 约定：
- *   - `undefined` 的键直接丢掉：它和「键不存在」在 JSON 序列化后不可区分，
- *     算成差异只会制造噪音。
- *   - null 单独记成 `"null"`，不与 `{}` 混为一谈。
- *   - 深度封顶，防止自我引用的对象把递归带死。
- */
-export function shapeOf(value: unknown, depth = 0): unknown {
-    if (value === null) return "null";
-    if (value === undefined) return "undefined";
-    if (Array.isArray(value)) {
-        return value.length === 0 ? "[]" : [shapeOf(value[0], depth + 1)];
-    }
-    if (typeof value === "object") {
-        if (depth >= 4) return "…";
-        const out: Record<string, unknown> = {};
-        for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-            const v = (value as Record<string, unknown>)[key];
-            if (v === undefined) continue;
-            out[key] = shapeOf(v, depth + 1);
-        }
-        return out;
-    }
-    return typeof value;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,96 +106,30 @@ test("前端调用的每个 api 方法，mock 与 client 都实现了（缺一�
         missingInMock,
         [],
         "mock 缺方法：本地开发（默认走 mock）会直接报 undefined is not a function。\n" +
-            "  补上之后记得让两边行为一致 —— 下一条用例就是管这个的。"
+            "  补上之后记得让两边行为一致 —— 返回**结构**是不是也对，见 tests/apiContractReal.test.ts。"
     );
 });
 
 // ---------------------------------------------------------------------------
-// 形状一致：透传型接口
+// 透传型接口的「形状一致」去哪了（2026-11 复查 R11）
 // ---------------------------------------------------------------------------
-
-/**
- * 只挑「client 原样返回服务端 JSON」的接口。
- *
- * 不能对所有方法都这么比 —— 有些接口两边协议本来就不同：
- * `getConfig` 服务端回 `{ key, value }`，client 解包成 `value`，而 mock 直接给值。
- * 那是 client 的解包设计，不是 mock 的错。这类接口要比就得单独写死期望值，不在通用断言里。
- */
-const PASSTHROUGH_CASES = ["bootstrap", "getGroups", "getConfigs", "aiStatus"] as const;
-
-let restoreFetch: (() => void) | null = null;
-
-function installFetch(payload: () => unknown) {
-    const original = globalThis.fetch;
-    globalThis.fetch = (async () => ({
-        ok: true,
-        status: 200,
-        json: async () => payload(),
-    })) as unknown as typeof fetch;
-    return () => {
-        globalThis.fetch = original;
-    };
-}
-
-afterEach(() => {
-    restoreFetch?.();
-    restoreFetch = null;
-});
-
-test("透传型接口：mock 与 client 返回的结构一致", async () => {
-    const mock = new MockNavigationClient();
-    const client = new NavigationClient("/api");
-
-    const diffs: string[] = [];
-    for (const name of PASSTHROUGH_CASES) {
-        const mockFn = mock[name] as () => Promise<unknown>;
-        const clientFn = client[name] as () => Promise<unknown>;
-        if (typeof mockFn !== "function" || typeof clientFn !== "function") {
-            diffs.push(`${name}: 两边不是都有这个方法`);
-            continue;
-        }
-
-        const mockResult = await mockFn.call(mock);
-        // 把 mock 的返回值当作「服务端会返回的东西」喂给 client：
-        // client 只做透传，于是它解出来的结构就该和 mock 的结构一样。
-        restoreFetch = installFetch(() => mockResult);
-        const clientResult = await clientFn.call(client);
-        restoreFetch();
-        restoreFetch = null;
-
-        const a = JSON.stringify(shapeOf(mockResult));
-        const b = JSON.stringify(shapeOf(clientResult));
-        if (a !== b) {
-            diffs.push(`${name}:\n    mock   = ${a}\n    client = ${b}`);
-        }
-    }
-
-    assert.deepEqual(
-        diffs,
-        [],
-        "两边的返回结构不一致 —— 用例全走 mock 所以现在是绿的，线上就会不一样。\n" +
-            "  要么改 mock 对齐 client，要么改 client 对齐 mock；别在测试里绕过去。"
-    );
-});
-
-test("形状指纹：null、空数组与缺失键要能区分（守卫本身的自检）", () => {
-    // 这条是给上面那条用例的：形状比较很容易写得过松或者过紧，
-    // 断言它本身能认出关键差异，才知道它靠不靠谱。
-    assert.notDeepEqual(shapeOf(null), shapeOf({}), "null 不该和空对象同形");
-    assert.notDeepEqual(shapeOf([]), shapeOf(["x"]), "空数组与单元素数组不该同形");
-    assert.notDeepEqual(shapeOf({}), shapeOf([]), "对象与数组不该同形");
-    assert.deepEqual(shapeOf({ a: undefined }), shapeOf({}), "undefined 的键应被丢掉");
-    // 值不同不算差异，但**类型不同算** —— 前端拿到 number 而不是 string 是真问题，
-    // 这种差异正是这条守卫该抓出来的，别把它抹平。
-    assert.deepEqual(shapeOf({ a: 1 }), shapeOf({ a: 2 }), "同类型不同值不该算差异");
-    assert.deepEqual(shapeOf([{ a: 1 }]), shapeOf([{ a: 2 }]), "数组同理只看首元素结构");
-    assert.notDeepEqual(
-        shapeOf({ a: 1 }),
-        shapeOf({ a: "1" }),
-        "类型不同必须算差异（前端拿到 number 而不是 string 会直接崩）"
-    );
-    assert.deepEqual(shapeOf({ a: 1, b: 2 }), shapeOf({ b: 2, a: 1 }), "键的顺序不该算差异");
-});
+// 这里原本有一条 `test("透传型接口：mock 与 client 返回的结构一致")`，配一个
+// `shapeOf()` 指纹函数和一条它自己的自检。整段删了，因为它是个恒等断言：
+//
+//   const mockResult = await mock.aiStatus();               // ① mock 的返回值
+//   restoreFetch = installFetch(() => mockResult);          // ② 拿①当 fetch 的响应
+//   const clientResult = await client.aiStatus();           // ③ client.request() 里
+//                                                          //    `return response.json()`
+//                                                          //    → 桩返回的还是①那个引用
+//   assert.equal(shapeOf(mockResult), shapeOf(clientResult)); // ⇒ shapeOf(x) === shapeOf(x)
+//
+// 恒等，没有任何信息量。已知的真实漂移就在它底下活着：真实 `GET /api/ai/status`
+// 回的是 `{ success: true, enabled, provider, textModel, embedModel, embedded, problem }`，
+// mock 里没有 `success` 字段 —— 一直是绿的。
+//
+// 删掉之后「结构对不对」由 **tests/apiContractReal.test.ts** 接管：那边用
+// `makeRealApi(makeRealD1())` 拿真实现，直接调真方法（不碰 fetch 桩），
+// 期望值写成独立事实（字段存在 / 类型 / 具体值），真实实现漂了就会红。
 
 test("记事本模拟契约：层级防环、删除父升根、正文标签只追加且忽略代码", async () => {
     const api = new MockNavigationClient();

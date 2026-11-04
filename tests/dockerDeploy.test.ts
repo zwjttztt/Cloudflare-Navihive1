@@ -42,6 +42,31 @@ function runtimeStage(dockerfile: string): string {
     return stages[stages.length - 1];
 }
 
+/**
+ * 运行阶段唯一被允许的 node_modules 例外行（整行逐字匹配，理由见用到它的那个用例）。
+ *
+ * ⚠️ 必须锚定**整行**（`^…$` + m）：只认「从 builder 的 /app/node_modules/undici 拷到
+ * 同名位置」这一种写法。换来源、换目标、或在行尾追加别的东西都不匹配 —— 那样它就
+ * 不是「那一条已登记的例外」了。
+ * ⚠️ 也别改写成「按名字排除」（`node_modules/(?!undici)`）：那会把 undici-evil 放过去。
+ */
+const UNDICI_COPY_LINE =
+    /^[ \t]*COPY --from=builder \/app\/node_modules\/undici \.\/node_modules\/undici[ \t]*\r?$/m;
+
+/**
+ * 去掉 `#` 注释行，只留下真正会被 Docker 执行的行。
+ *
+ * 用途：断言「镜像里带了什么」时必须只看指令行 —— 注释里出现 `node_modules`、`COPY …`
+ * 之类的字样是**解释**，不是行为。反过来，剥掉注释也让这些断言更严：写一句
+ * 「# COPY xxx」再也骗不过 `assert.match`。
+ */
+function stripComments(dockerfile: string): string {
+    return dockerfile
+        .split(/\r?\n/)
+        .filter((line) => !/^\s*#/.test(line))
+        .join("\n");
+}
+
 // ============ Dockerfile ============
 
 test("Dockerfile 存在且两个 Stage 都用 node:22", () => {
@@ -63,12 +88,46 @@ test("Dockerfile runtime 设 NAVIHIVE_HOST=0.0.0.0（否则端口映射打不通
 });
 
 test("Dockerfile 只带构建产物进 runtime，且 COPY 路径与真实产物一致", () => {
-    const rt = runtimeStage(read("Dockerfile"));
+    // 先把**注释行**剥掉再断言：注释不是指令，它拷不进镜像；而 Dockerfile 里恰好有一句
+    // 解释性注释写着「路径写死到包目录（不是整份 node_modules）」。不剥掉的话，断言会变成
+    // 「不许在注释里提 node_modules」—— 与本用例要钉的事（镜像里到底带了什么）毫无关系。
+    // 剥完剩下的才是真正会被执行、会进镜像的行，断言反而比原来更准（注释再也骗不过它）。
+    const rt = stripComments(runtimeStage(read("Dockerfile")));
     assert.match(rt, /COPY --from=builder \/app\/dist\/client \.\/dist\/client/, "没拷 dist/client（静态资源 + _headers）");
     assert.match(rt, /COPY --from=builder \/app\/dist-server\/entry\.mjs \.\/dist-server\/entry\.mjs/, "没拷 dist-server/entry.mjs（服务本体）");
-    // 自包含单文件：runtime 里不应该出现 node_modules 或源码目录
-    assert.doesNotMatch(rt, /node_modules/, "runtime 不该出现 node_modules（产物是自包含的）");
+
+    // ---- 运行阶段的**唯一** node_modules 例外：undici（整行逐字，见文件头的「⚠️ 唯一的例外」）----
+    //
+    // 为什么允许它：server/egressDispatch.ts 用 `new undici.Agent({ connect: { lookup } })`
+    // 把出站连接钉在校验过的那份 IP 上（消灭「复核时公网、连接时内网」的 DNS rebinding 窗口），
+    // 而 undici 不能被打进 esbuild 单文件（Dynamic require of "node:assert"），只能 external +
+    // 运行期提供；undici 8.x 自身零依赖，所以只拷这一个包目录就够。
+    //
+    // 为什么不许扩大：运行阶段**仍然不许**出现构建链、源码、或 node_modules 通用目录 ——
+    // 下面那句 `doesNotMatch(/node_modules/)` 一个字都没改，**改的是它的输入**：先把这唯一
+    // 一条已登记的行从文本里剔掉，再断言剩下的部分干净。
+    //
+    // ⚠️ 剔除用**整行精确匹配**，不能写成「按名字排除」（`node_modules/(?!undici)` 那种）——
+    //    后者会把 `node_modules/undici-evil`、`node_modules/undici/../../etc` 这类一起放过去，
+    //    等于把「只允许一个明确例外」退化回「凡是叫 undici 的都行」。
+    const withoutUndici = rt.replace(UNDICI_COPY_LINE, "");
+    assert.doesNotMatch(
+        withoutUndici,
+        /node_modules/,
+        "runtime 不该出现 node_modules（产物是自包含的）；唯一允许的是 COPY undici 那一行，其余一律不许",
+    );
     assert.doesNotMatch(rt, /COPY --from=builder \/app\/(worker|server|src|tests)/, "runtime 不该拷源码目录");
+
+    // 反向棘轮：上面那份豁免**必须在 Dockerfile 里真实存在**。
+    // 否则「豁免」会变成永久化石：将来有人把 undici 从镜像里拿掉（比如改回纯复核模式），
+    // 这条豁免还留在测试里，下一个人读到会以为镜像里还有 undici —— 而它已经不在了。
+    // 现在拿掉那行 → 这里红 → 逼人回来把豁免一起删掉。
+    assert.match(
+        rt,
+        UNDICI_COPY_LINE,
+        "runtime 阶段没有 `COPY --from=builder /app/node_modules/undici ./node_modules/undici`：" +
+            "既然不再拷 undici 了，就把本用例里的 undici 豁免一并删掉（别留一个不存在的豁免）",
+    );
 });
 
 test("Dockerfile 的构建命令就是 npm run build + build:server", () => {

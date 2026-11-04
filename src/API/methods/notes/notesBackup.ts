@@ -12,7 +12,7 @@ import type {
     NotesImportPayload,
     NoteImportStats,
 } from "../../types";
-import type { D1PreparedStatement } from "../../schema";
+import type { D1PreparedStatement, D1Result } from "../../schema";
 import { newUuid } from "../../../utils/uuid";
 import { countWikiLinks } from "../../../utils/noteWikiLink";
 import { segmentCJK, FTS_CONTENT_LIMIT } from "../../../utils/ftsQuery";
@@ -20,6 +20,222 @@ import { sqlNow } from "../../../utils/sqlTime";
 import { normalizeUrl } from "../../../utils/url";
 import { notesSnapshotFingerprint } from "./notesShared";
 import { logger } from "../../../../shared/logger";
+import { notesImportConflictsEvent, notesImportPartialEvent } from "../../../../shared/failureEvents";
+
+/**
+ * 文件夹的「稳定键解析式」：一条标量子查询，按 (父, 名称) 在库里解析出本地 id。
+ * 导入不再预分配显式 id，笔记的 folder_id / 子文件夹的 parent_id 都靠它现查现用。
+ */
+interface FolderKey {
+    sql: string;
+    params: unknown[];
+}
+
+/** 一条笔记待写入的字段（created / updated 共用） */
+interface NoteWrite {
+    uuid: string;
+    title: string;
+    content: string;
+    pinned: boolean;
+    starred: boolean;
+    order_num: number;
+    /** undefined = 老备份没这字段（保持本地）；null = 移到未归类；FolderKey = 按稳定键解析 */
+    folderKey: FolderKey | null | undefined;
+    siteId: number | null | undefined;
+    archived: boolean | undefined;
+    /** null = 该笔记在 noteTags 里没有条目（不重建关联）；[] / 非空 = 先清后按名重建 */
+    tags: string[] | null;
+}
+
+/**
+ * 一个「可恢复单元」的计划。skipped 不产生任何语句，只参与统计；
+ * created / updated 的语句在提交阶段由 buildNoteUnitStatements 一次性生成。
+ */
+type ImportUnit =
+    | ({ kind: "created" } & NoteWrite)
+    | ({ kind: "updated"; localId: number; expectedRev: number } & NoteWrite)
+    | { kind: "skipped"; uuid: string };
+
+/** 一个提交批（= 一个事务）：切分点只允许落在单元边界，绝不在单元中间切开 */
+interface CommitBatch {
+    units: ImportUnit[];
+    statements: D1PreparedStatement[];
+    /** updated 单元的 CAS UPDATE 在 statements 里的下标，供提交后读 RETURNING 判定命中 */
+    updateChecks: Array<{ uuid: string; stmtIndex: number }>;
+}
+
+/**
+ * 生成「一条笔记」的完整自足单元：
+ *   解绑同站(若有) → 正文 INSERT/UPDATE → 该笔记标签关联 → 该笔记 FTS 先删后插。
+ * 全部语句由调用方塞进**同一个 batch**，任一环节失败整组一起回滚，
+ * 不会留下「正文有、标签/索引缺」的半截记录。
+ */
+function buildNoteUnitStatements(
+    api: NavigationAPI,
+    unit: Exclude<ImportUnit, { kind: "skipped" }>
+): { statements: D1PreparedStatement[]; updateIndex: number | null } {
+    const statements: D1PreparedStatement[] = [];
+    let updateIndex: number | null = null;
+
+    // ① 一站一篇：把同站点上别的笔记先解绑（必须排在赋值前，batch 内按顺序执行）。
+    if (typeof unit.siteId === "number") {
+        statements.push(
+            api.db
+                .prepare(`UPDATE notes SET site_id = NULL WHERE site_id = ?${api.scopeSql(true)}`)
+                .bind(...api.scopeParams([unit.siteId]))
+        );
+    }
+
+    // folder 值表达式：undefined 时 flag=0 走 CASE 的 ELSE（THEN 放常量 NULL 占位，不占参数）
+    let folderExpr = "NULL";
+    let folderParams: unknown[] = [];
+    if (unit.folderKey) {
+        folderExpr = `(${unit.folderKey.sql})`;
+        folderParams = unit.folderKey.params;
+    }
+    const folderFlag = unit.folderKey !== undefined ? 1 : 0;
+
+    // ② 正文
+    if (unit.kind === "created") {
+        // ⚠️ 不写 id：交给 AUTOINCREMENT，避免「事务外 MAX(id)+1 预分配 + 并发插入撞主键」。
+        // link_count 必须一起写（导入绕过 updateNote 直接落库）。uuid 仍写入（去重靠它）。
+        const params: unknown[] = [
+            api.currentUserId,
+            unit.uuid,
+            unit.title,
+            unit.content,
+            countWikiLinks(unit.content ?? ""),
+            unit.pinned ? 1 : 0,
+            unit.starred ? 1 : 0,
+            unit.order_num,
+            unit.siteId ?? null,
+            ...folderParams,
+            unit.archived ? 1 : 0,
+        ];
+        statements.push(
+            api.db
+                .prepare(
+                    `INSERT INTO notes (user_id, uuid, title, content, link_count, pinned, starred, order_num, site_id, folder_id, archived)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${folderExpr}, ?)`
+                )
+                .bind(...params)
+        );
+    } else {
+        // ⚠️ CAS：期望 rev 取的是「计划时库里那一版」，不是备份文件里的 rev。
+        // 命中 0 行 => 计划后被别人改过，不覆盖；RETURNING 用来如实判命中（与 R02 同款）。
+        // rev = rev + 1 / link_count 重算 / CASE WHEN 语义均保持原样。
+        const params: unknown[] = [
+            unit.uuid,
+            unit.title,
+            unit.content,
+            countWikiLinks(unit.content ?? ""),
+            unit.pinned ? 1 : 0,
+            unit.starred ? 1 : 0,
+            unit.order_num,
+            folderFlag,
+            ...folderParams,
+            unit.siteId !== undefined ? 1 : 0,
+            unit.siteId ?? null,
+            unit.archived === undefined ? null : unit.archived ? 1 : 0,
+            unit.localId,
+            unit.expectedRev,
+        ];
+        updateIndex = statements.length;
+        statements.push(
+            api.db
+                .prepare(
+                    `UPDATE notes SET uuid = ?, title = ?, content = ?, link_count = ?, pinned = ?,
+                     starred = ?, rev = rev + 1, order_num = ?,
+                     folder_id = CASE WHEN ? THEN ${folderExpr} ELSE folder_id END,
+                     site_id = CASE WHEN ? THEN ? ELSE site_id END,
+                     archived = COALESCE(?, archived), updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ? AND rev = ?${api.scopeSql(true)}
+                     RETURNING id`
+                )
+                .bind(...api.scopeParams(params))
+        );
+    }
+
+    // ③ 标签关联：先按 uuid 清空，再按 (笔记 uuid, 标签名) 子查询重建；
+    // 全程不碰数字 id，既不怕撞号也不怕跨批映射丢失。
+    if (unit.tags !== null) {
+        statements.push(
+            api.db
+                .prepare(
+                    `DELETE FROM note_note_tag WHERE note_id IN
+                     (SELECT id FROM notes WHERE uuid = ?${api.scopeSql(true)})`
+                )
+                .bind(...api.scopeParams([unit.uuid]))
+        );
+        for (const name of unit.tags) {
+            // 与 notesNote.ts 的 inlineTagStatements 同一套账号隔离写法：
+            // join 两表都有 user_id，直接写 `AND user_id = ?` 会 ambiguous column，
+            // 所以各用一条 `IN (SELECT id FROM ...<scope>)` 单表守卫。
+            statements.push(
+                api.db
+                    .prepare(
+                        `INSERT OR IGNORE INTO note_note_tag (note_id, tag_id)
+                         SELECT n.id, t.id FROM notes n, note_tag t
+                         WHERE n.uuid = ? AND t.name = ?
+                           AND n.id IN (SELECT id FROM notes${api.scopeSql(false)})
+                           AND t.id IN (SELECT id FROM note_tag${api.scopeSql(false)})`
+                    )
+                    .bind(unit.uuid, name, ...api.scopeParams([]), ...api.scopeParams([]))
+            );
+        }
+    }
+
+    // ④ FTS 与正文同批（不再放到函数末尾单独跑，失败时不会被跳过）。
+    // rowid 恒等于 notes.id：按 uuid 子查询解析，不依赖任何预分配 id。
+    if (api.notesFtsReady) {
+        const rowidExpr = `(SELECT id FROM notes WHERE uuid = ?${api.scopeSql(true)})`;
+        statements.push(
+            api.db
+                .prepare(`DELETE FROM notes_fts WHERE rowid = ${rowidExpr}`)
+                .bind(...api.scopeParams([unit.uuid]))
+        );
+        statements.push(
+            api.db
+                .prepare(
+                    `INSERT INTO notes_fts (rowid, note_id, user_id, title, body)
+                     VALUES (${rowidExpr}, ${rowidExpr}, ?, ?, ?)`
+                )
+                .bind(
+                    ...api.scopeParams([unit.uuid]),
+                    ...api.scopeParams([unit.uuid]),
+                    api.currentUserId,
+                    segmentCJK(unit.title || ""),
+                    segmentCJK((unit.content || "").slice(0, FTS_CONTENT_LIMIT))
+                )
+        );
+    }
+
+    return { statements, updateIndex };
+}
+
+/**
+ * 判定带 CAS 的 `UPDATE ... RETURNING` 是否真的命中了 1 行。
+ *
+ * 首选 **RETURNING 的返回行**：真 D1 与本仓共享底座（tests/helpers/realSqliteD1.ts）
+ * 都会把每条语句的行放在 `D1Result.results` 里，0 行就是冲突，最准。
+ *
+ * 但仓库里还有几份测试用的是**更早的 D1 替身**（batch 走 `run()`，不回 RETURNING 行），
+ * 以及不同 D1 版本对 batch 的结果形状也可能不同 —— 这时退回 `meta.changes`
+ * （= 这条 UPDATE 实际影响的行数，实测命中 1 / 未命中 0，见 node:sqlite 的
+ * StatementSync.run()）。连 meta 都拿不到时按「语句没抛错 = 已写入」处理：
+ * 没有任何证据就报冲突，会把一次正常更新错记成 conflicts，比漏报更糟。
+ *
+ * ⚠️ 真实 D1 上 batch + RETURNING 的结果形状仍需在隔离环境复核；这里只保证
+ * 「能拿到行就按行数、拿不到就按 changes」两条路都能如实反映命中。
+ */
+function casUpdated(result: D1Result<unknown> | undefined): boolean {
+    if (!result) return true;
+    if (Array.isArray(result.results)) return result.results.length > 0;
+    const meta = result.meta as { changes?: number; rows_written?: number } | undefined;
+    if (meta && typeof meta.changes === "number") return meta.changes > 0;
+    if (meta && typeof meta.rows_written === "number") return meta.rows_written > 0;
+    return true;
+}
 
 export const backupMethods: Pick<NotesApi,
     "exportNotesData" | "notesChanges" | "importNotesData"> = {
@@ -188,6 +404,8 @@ export const backupMethods: Pick<NotesApi,
     importNotesData: async function (this: NavigationAPI, payload: NotesImportPayload): Promise<NoteImportStats> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
+            // 老字段一个不删：created/updated/skipped/removed 保持原语义，只是不再在
+            // 「计划阶段」提前累加，而是等每个提交批真的成功后才计入（见下方提交循环）。
             const stats: NoteImportStats = { created: 0, updated: 0, skipped: 0, removed: 0 };
             // 只收形状完整的那几条：title/content 不是字符串的条目直接丢弃，
             // 不能让一条脏数据把整批导入拖崩。uuid 缺失（很老的导出）现场补一个，
@@ -196,63 +414,151 @@ export const backupMethods: Pick<NotesApi,
                 .filter((n): n is Note => !!n && typeof n.title === "string" && typeof n.content === "string")
                 .map(n => ({ ...n, uuid: n.uuid || newUuid() }));
 
-            const commitStatements: D1PreparedStatement[] = [];
+            // 「前置语句」：文件夹 / 标签的创建。它们不带显式主键（交给 AUTOINCREMENT），
+            // 且被后面笔记单元的子查询按稳定键引用，所以必须排在所有笔记单元之前。
+            const preStatements: D1PreparedStatement[] = [];
 
-            // ── 文件夹：按「父路径 + 名称」去重（与 transfer.importData 同一套判据）──
-            const folderMap = new Map<number, number>();
+            // ── 文件夹：按「父路径 + 名称」去重 ──
+            // 不再 `MAX(id)+1` 预分配显式 id：本地 id 一律由 DB 自增生成，
+            // 「源 id → 本地 id」的映射换成「(父, 名称) 稳定键子查询」（FolderKey），
+            // 供 note.folder_id 与子文件夹的 parent_id 在提交阶段现查现用。
+            const folderMap = new Map<number, FolderKey>();
             if (Array.isArray(payload.folders) && payload.folders.length > 0) {
                 const local = await this.db
                     .prepare(`SELECT id, name, parent_id FROM note_folder${this.scopeSql(false)}`)
                     .bind(...this.scopeParams([]))
                     .all<{ id: number; name: string; parent_id: number | null }>();
-                const max = await this.db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM note_folder").first<{ m: number }>();
-                let next = max?.m || 0;
-                const byPath = new Map((local.results || []).map(f => [JSON.stringify([f.parent_id ?? null, f.name]), f.id]));
-                const source = new Map(payload.folders.map(f => [f.id, f]));
-                const visiting = new Set<number>();
-                const add = (folder: NoteFolder): number => {
-                    if (folder.id !== undefined && folderMap.has(folder.id)) return folderMap.get(folder.id)!;
-                    if (folder.id !== undefined && visiting.has(folder.id)) throw new Error("文件夹层级存在循环");
-                    if (folder.id !== undefined) visiting.add(folder.id);
-                    const parent = folder.parent_id ? source.get(folder.parent_id) : undefined;
-                    const parentId = parent ? add(parent) : null;
-                    const key = JSON.stringify([parentId, folder.name]);
-                    let id = byPath.get(key);
-                    if (id === undefined) {
-                        id = ++next;
-                        byPath.set(key, id);
-                        commitStatements.push(
-                            this.db.prepare("INSERT INTO note_folder (id, user_id, name, order_num, parent_id) VALUES (?, ?, ?, ?, ?)")
-                                .bind(id, this.currentUserId, folder.name, folder.order_num ?? 0, parentId)
-                        );
-                    }
-                    if (folder.id !== undefined) { folderMap.set(folder.id, id); visiting.delete(folder.id); }
-                    return id;
+                const localById = new Map<number, { id: number; name: string; parent_id: number | null }>();
+                for (const f of local.results || []) localById.set(f.id, f);
+                // 本地行的稳定路径 = 从根到自己的 name 序列（与源侧同一套判据）
+                const localPathCache = new Map<number, string>();
+                const localPathOf = (id: number, seen: Set<number>): string => {
+                    const cached = localPathCache.get(id);
+                    if (cached !== undefined) return cached;
+                    const f = localById.get(id);
+                    if (!f) return "";
+                    if (seen.has(id)) return `/${f.name}`; // 脏数据成环：退回只认自己这一层
+                    const nextSeen = new Set(seen);
+                    nextSeen.add(id);
+                    const parentPath = f.parent_id ? localPathOf(f.parent_id, nextSeen) : "";
+                    const path = `${parentPath}/${f.name}`;
+                    localPathCache.set(id, path);
+                    return path;
                 };
-                payload.folders.forEach(add);
+                const byPath = new Set<string>();
+                for (const f of local.results || []) byPath.add(localPathOf(f.id, new Set()));
+
+                const source = new Map<number, NoteFolder>();
+                for (const f of payload.folders) {
+                    if (typeof f.id === "number") source.set(f.id, f);
+                }
+
+                /** 源侧稳定路径（去重判据），递归时防环 */
+                const sourcePathOf = (folder: NoteFolder, visiting: Set<number>): string => {
+                    const parent = folder.parent_id ? source.get(folder.parent_id) : undefined;
+                    let parentPath = "";
+                    if (parent) {
+                        if (parent.id !== undefined && visiting.has(parent.id)) {
+                            throw new Error("文件夹层级存在循环");
+                        }
+                        const nextVisiting = new Set(visiting);
+                        if (parent.id !== undefined) nextVisiting.add(parent.id);
+                        parentPath = sourcePathOf(parent, nextVisiting);
+                    }
+                    return `${parentPath}/${folder.name}`;
+                };
+
+                /**
+                 * 「解析该文件夹本地 id」的标量子查询：按 (父, 名称) 稳定键现查。
+                 * 父本身也是一条同形状的嵌套子查询；每层都是**单表**，所以 scopeSql(true)
+                 * 追加的 `user_id = ?` 不会在 join 里出现列歧义。参数顺序天然是
+                 * 「本层 name → 父子查询全部参数 → 本层 user_id」，与 SQL 的 ? 顺序对齐。
+                 */
+                const folderKeyOf = (folder: NoteFolder, visiting: Set<number>): FolderKey => {
+                    const parent = folder.parent_id ? source.get(folder.parent_id) : undefined;
+                    let parentExpr = "NULL";
+                    let parentParams: unknown[] = [];
+                    if (parent) {
+                        if (parent.id !== undefined && visiting.has(parent.id)) {
+                            throw new Error("文件夹层级存在循环");
+                        }
+                        const nextVisiting = new Set(visiting);
+                        if (parent.id !== undefined) nextVisiting.add(parent.id);
+                        const parentKey = folderKeyOf(parent, nextVisiting);
+                        parentExpr = `(${parentKey.sql})`;
+                        parentParams = parentKey.params;
+                    }
+                    const sql =
+                        `SELECT id FROM note_folder WHERE name = ? AND parent_id IS ${parentExpr}${this.scopeSql(true)}`;
+                    return { sql, params: this.scopeParams([folder.name, ...parentParams]) as unknown[] };
+                };
+
+                const add = (folder: NoteFolder, visiting: Set<number>): void => {
+                    const sourceId = folder.id;
+                    if (sourceId !== undefined && folderMap.has(sourceId)) return;
+                    if (sourceId !== undefined && visiting.has(sourceId)) {
+                        throw new Error("文件夹层级存在循环");
+                    }
+                    const nextVisiting = new Set(visiting);
+                    if (sourceId !== undefined) nextVisiting.add(sourceId);
+                    const parent = folder.parent_id ? source.get(folder.parent_id) : undefined;
+                    // 父先入队：保证同一个 batch 里父的 INSERT 排在子之前，子的 parent_id 子查询才查得到
+                    if (parent) add(parent, nextVisiting);
+
+                    const path = sourcePathOf(folder, new Set());
+                    if (sourceId !== undefined) folderMap.set(sourceId, folderKeyOf(folder, new Set()));
+                    if (byPath.has(path)) return; // 本地已有同 (父, 名称) 的文件夹，复用即可
+                    byPath.add(path);            // 同一次导入里同名路径也只入队一次
+
+                    let parentExpr = "NULL";
+                    let parentParams: unknown[] = [];
+                    if (parent) {
+                        const parentKey = folderKeyOf(parent, new Set());
+                        parentExpr = `(${parentKey.sql})`;
+                        parentParams = parentKey.params;
+                    }
+                    preStatements.push(
+                        this.db
+                            .prepare(
+                                `INSERT INTO note_folder (user_id, name, order_num, parent_id)
+                                 VALUES (?, ?, ?, ${parentExpr})`
+                            )
+                            .bind(this.currentUserId, folder.name, folder.order_num ?? 0, ...parentParams)
+                    );
+                };
+                for (const f of payload.folders) add(f, new Set());
             }
 
             // ── 标签：按名称去重 ──
-            const tagMap = new Map<number, number>();
+            // 同样不写 id。INSERT 自带 NOT EXISTS 守卫：即便两个导入并发，
+            // 同名标签也不会插出两行（内存去重只挡得住同一次导入内的重复）。
+            const tagMap = new Map<number, string>(); // 源 tag id → 稳定键（name）
             if (Array.isArray(payload.tags) && payload.tags.length > 0) {
                 const local = await this.db
                     .prepare(`SELECT id, name FROM note_tag${this.scopeSql(false)}`)
                     .bind(...this.scopeParams([]))
                     .all<{ id: number; name: string }>();
-                const byName = new Map((local.results || []).map(r => [r.name, r.id]));
-                const max = await this.db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM note_tag").first<{ m: number }>();
-                let next = max?.m || 0;
+                const byName = new Set<string>();
+                for (const r of local.results || []) byName.add(r.name);
                 for (const row of payload.tags) {
-                    let id = byName.get(row.name);
-                    if (id === undefined) {
-                        id = ++next;
-                        byName.set(row.name, id);
-                        commitStatements.push(
-                            this.db.prepare("INSERT INTO note_tag (id, user_id, name, color) VALUES (?, ?, ?, ?)")
-                                .bind(id, this.currentUserId, row.name, row.color ?? null)
+                    if (!byName.has(row.name)) {
+                        byName.add(row.name);
+                        preStatements.push(
+                            this.db
+                                .prepare(
+                                    `INSERT INTO note_tag (user_id, name, color)
+                                     SELECT ?, ?, ? WHERE NOT EXISTS
+                                     (SELECT id FROM note_tag WHERE name = ?${this.scopeSql(true)})`
+                                )
+                                .bind(
+                                    this.currentUserId,
+                                    row.name,
+                                    row.color ?? null,
+                                    ...this.scopeParams([row.name])
+                                )
                         );
                     }
-                    if (typeof row.id === "number") tagMap.set(row.id, id);
+                    if (typeof row.id === "number") tagMap.set(row.id, row.name);
                 }
             }
 
@@ -296,34 +602,44 @@ export const backupMethods: Pick<NotesApi,
                 }
             }
 
-            // ── 笔记合并：先读本地算计划（uuid 相同比 updated_at，文件较新才覆盖）──
-            const localRows = await this.db
-                .prepare(`SELECT id, uuid, updated_at FROM notes${this.scopeSql(false)}`)
-                .bind(...this.scopeParams([]))
-                .all<{ id: number; uuid: string | null; updated_at: string | null }>();
-            const localByUuid = new Map<string, { id: number; updated_at: string | null }>();
-            for (const row of localRows.results || []) {
-                if (row.uuid) localByUuid.set(row.uuid, row);
+            // ── noteTags：键是导出方笔记 id，先翻成「uuid → 标签名列表」──
+            // 用标签**名**而不是本地数字 id 作稳定键，关联在提交阶段按名子查询解析。
+            const noteTagsByUuid = new Map<string, string[]>();
+            if (payload.noteTags && typeof payload.noteTags === "object") {
+                for (const [exportedId, tagIds] of Object.entries(payload.noteTags)) {
+                    const source = incoming.find(n => n.id !== undefined && String(n.id) === exportedId);
+                    if (!source?.uuid) continue;
+                    const names = (Array.isArray(tagIds) ? tagIds : [])
+                        .map(tid => tagMap.get(tid))
+                        .filter((name): name is string => typeof name === "string");
+                    noteTagsByUuid.set(source.uuid, [...new Set(names)]);
+                }
             }
-            const maxNote = await this.db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM notes").first<{ m: number }>();
-            let nextNoteId = maxNote?.m || 0;
 
-            const plan: Array<{
-                id: number;
-                uuid: string;
-                title: string;
-                content: string;
-                pinned: boolean;
-                starred: boolean;
-                order_num: number;
-                folderId: number | null | undefined;
-                siteId: number | null | undefined;
-                archived: boolean | undefined;
-                isNew: boolean;
-            }> = [];
+            // ── 笔记合并计划：读本地 uuid/updated_at/rev，文件较新才覆盖 ──
+            // rev 取的是**库里**那一版（迁移保证列存在、老行回填 1），与备份文件里
+            // 有没有 rev 无关；它作为提交时 CAS 的期望值，挡住「计划后被别人改过」。
+            const localRows = await this.db
+                .prepare(`SELECT id, uuid, updated_at, rev FROM notes${this.scopeSql(false)}`)
+                .bind(...this.scopeParams([]))
+                .all<{ id: number; uuid: string | null; updated_at: string | null; rev: number | null }>();
+            const localByUuid = new Map<string, { id: number; updated_at: string | null; rev: number }>();
+            for (const row of localRows.results || []) {
+                if (row.uuid) {
+                    localByUuid.set(row.uuid, { id: row.id, updated_at: row.updated_at, rev: row.rev ?? 1 });
+                }
+            }
+
+            const units: ImportUnit[] = [];
             for (const n of incoming) {
-                const local = localByUuid.get(n.uuid!);
-                const folderId = n.folder_id !== undefined ? folderMap.get(n.folder_id ?? 0) ?? null : undefined;
+                const uuid = n.uuid!;
+                const local = localByUuid.get(uuid);
+                const folderKey =
+                    n.folder_id !== undefined
+                        ? typeof n.folder_id === "number"
+                            ? folderMap.get(n.folder_id) ?? null
+                            : null
+                        : undefined;
                 // 绑定：文件里没这个字段（很老的导出）→ 不动本地；有字段 → 按指纹解析
                 //（解析不了置 null）。新笔记没有「本地」可保持，置 null 就是最终态。
                 const siteId =
@@ -334,178 +650,133 @@ export const backupMethods: Pick<NotesApi,
                                 ? siteResolve.get(n.site_id) ?? null
                                 : null
                           : null;
+                // null = 该笔记在 noteTags 里没有条目（不重建关联，保留本地）；
+                // [] 或非空 = 有条目（先清空再按名重建，空数组就是清掉所有关联）
+                const tags = noteTagsByUuid.has(uuid) ? noteTagsByUuid.get(uuid)! : null;
                 if (!local) {
-                    plan.push({
-                        id: ++nextNoteId,
-                        uuid: n.uuid!,
+                    units.push({
+                        kind: "created", uuid,
                         title: n.title, content: n.content,
                         pinned: Boolean(n.pinned), starred: Boolean(n.starred),
                         order_num: n.order_num ?? 0,
-                        folderId, siteId, archived: n.archived, isNew: true,
+                        folderKey, siteId, archived: n.archived, tags,
                     });
-                    stats.created += 1;
                 } else if (Date.parse(n.updated_at || "") > Date.parse(local.updated_at || "")) {
-                    // 覆盖写回原 id —— 新建一条再删旧的会把 updated_at 弄丢
-                    plan.push({
-                        id: local.id,
-                        uuid: n.uuid!,
+                    units.push({
+                        kind: "updated", uuid, localId: local.id, expectedRev: local.rev,
                         title: n.title, content: n.content,
                         pinned: Boolean(n.pinned), starred: Boolean(n.starred),
                         order_num: n.order_num ?? 0,
-                        folderId, siteId, archived: n.archived, isNew: false,
+                        folderKey, siteId, archived: n.archived, tags,
                     });
-                    stats.updated += 1;
                 } else {
                     // 本地较新（或时间解析不出来）：保守保留本地，不冒险覆盖
-                    stats.skipped += 1;
+                    units.push({ kind: "skipped", uuid });
                 }
             }
 
             // 一站一篇：同批两个笔记解析到同一站点时先到先得，后者置空
             const usedSites = new Set<number>();
-            for (const p of plan) {
-                if (typeof p.siteId === "number") {
-                    if (usedSites.has(p.siteId)) p.siteId = null;
-                    else usedSites.add(p.siteId);
+            for (const unit of units) {
+                if (unit.kind === "skipped") continue;
+                if (typeof unit.siteId === "number") {
+                    if (usedSites.has(unit.siteId)) unit.siteId = null;
+                    else usedSites.add(unit.siteId);
                 }
             }
 
-            // ── 提交：一个 batch = 一个事务，中途失败全部回滚 ──
-            const planByUuid = new Map(plan.map(p => [p.uuid, p]));
-            for (const p of plan) {
-                // 一站一篇：把同站点上别的笔记先解绑（与 updateNote/createNote 同一约束）。
-                // 必须排在赋值语句前面 —— batch 内按顺序执行；对新建笔记而言此时
-                // 它自己还没入表，解绑语句只会清掉「本地占位」的别人。
-                if (typeof p.siteId === "number") {
-                    commitStatements.push(
-                        this.db
-                            .prepare(
-                                `UPDATE notes SET site_id = NULL WHERE site_id = ?${this.scopeSql(true)}`
-                            )
-                            .bind(...this.scopeParams([p.siteId]))
-                    );
+            // ── 组装「可恢复单元」批次 ──
+            // 每条笔记 = 解绑 → 正文 INSERT/UPDATE → 该笔记标签关联 → 该笔记 FTS 先删后插，
+            // 整组语句**必须落在同一个事务**里。这样任一失败点，已提交的都是完整笔记，
+            // 未提交的笔记（正文 / 关联 / 索引一起）完全不存在，不会留下半截记录。
+            //
+            // 250 只是本仓约定的切片值（沿用 updateNoteOrder 等），**不是平台硬性 batch 限额**；
+            // 切分点只允许落在「笔记单元」边界，绝不在一条笔记的正文与它的关联之间切开。
+            const COMMIT_CHUNK = 250;
+            const batches: CommitBatch[] = [];
+            let cur: CommitBatch = { units: [], statements: [], updateChecks: [] };
+            for (const statement of preStatements) {
+                if (cur.statements.length >= COMMIT_CHUNK) {
+                    batches.push(cur);
+                    cur = { units: [], statements: [], updateChecks: [] };
                 }
-                if (p.isNew) {
-                    commitStatements.push(
-                        this.db.prepare(
-                            // link_count 必须在这里一起写：导入是「绕过 updateNote 的直接落库」，
-                            // 漏了它这一批笔记的双链数永远是 NULL（统计里当 0）。
-                            `INSERT INTO notes (id, user_id, uuid, title, content, link_count, pinned, starred, order_num, site_id, folder_id, archived)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-                        ).bind(
-                            p.id,
-                            // user_id 只能是导入者自己 —— 文件里那个值是导出方的，
-                            // 照抄会把笔记写到别人名下，而这个字段是唯一的隔离依据
-                            this.currentUserId,
-                            p.uuid, p.title, p.content, countWikiLinks(p.content ?? ""),
-                            p.pinned ? 1 : 0, p.starred ? 1 : 0,
-                            p.order_num,
-                            p.siteId ?? null,
-                            p.folderId ?? null, p.archived ? 1 : 0
-                        )
-                    );
-                } else {
-                    commitStatements.push(
-                        this.db.prepare(
-                            // ⚠️ rev 也要 +1：导入是一次真正的写入，不改的话客户端手里的
-                            // rev 会一直对不上（下一次保存被并发守卫挡住 → 「保存不了」）
-                            // link_count 同理要重算：正文被整段替换了，旧计数作废。
-                            `UPDATE notes SET uuid = ?, title = ?, content = ?, link_count = ?, pinned = ?,
-                             starred = ?, rev = rev + 1,
-                             order_num = ?, folder_id = CASE WHEN ? THEN ? ELSE folder_id END,
-                             site_id = CASE WHEN ? THEN ? ELSE site_id END,
-                             archived = COALESCE(?, archived), updated_at = CURRENT_TIMESTAMP
-                             WHERE id = ?${this.scopeSql(true)}`
-                        ).bind(...this.scopeParams([
-                            p.uuid, p.title, p.content, countWikiLinks(p.content ?? ""),
-                            p.pinned ? 1 : 0, p.starred ? 1 : 0,
-                            p.order_num, p.folderId !== undefined ? 1 : 0,
-                            p.folderId ?? null,
-                            p.siteId !== undefined ? 1 : 0, p.siteId ?? null,
-                            p.archived === undefined ? null : p.archived ? 1 : 0,
-                            p.id,
-                        ]))
-                    );
+                cur.statements.push(statement);
+            }
+            for (const unit of units) {
+                if (unit.kind === "skipped") {
+                    // 零语句单元：挂在相邻批里，等那一批提交成功后才计入 skipped
+                    cur.units.push(unit);
+                    continue;
+                }
+                const built = buildNoteUnitStatements(this, unit);
+                if (cur.statements.length > 0 && cur.statements.length + built.statements.length > COMMIT_CHUNK) {
+                    batches.push(cur);
+                    cur = { units: [], statements: [], updateChecks: [] };
+                }
+                const base = cur.statements.length;
+                cur.units.push(unit);
+                cur.statements.push(...built.statements);
+                if (built.updateIndex !== null) {
+                    cur.updateChecks.push({ uuid: unit.uuid, stmtIndex: base + built.updateIndex });
                 }
             }
+            if (cur.statements.length > 0 || cur.units.length > 0) batches.push(cur);
 
-            // ── 标签关联：noteTags 的键是导出方的笔记 id，经 uuid 翻译到本地 id ──
-            // 只有这批真写进去的笔记才重建关联（skipped 的本地关联本来就在，别动）。
-            if (payload.noteTags && typeof payload.noteTags === "object") {
-                for (const [exportedId, tagIds] of Object.entries(payload.noteTags)) {
-                    const source = incoming.find(n => n.id !== undefined && String(n.id) === exportedId);
-                    if (!source?.uuid) continue;
-                    const p = planByUuid.get(source.uuid);
-                    if (!p) continue;
-                    commitStatements.push(
-                        this.db.prepare(`DELETE FROM note_note_tag WHERE note_id IN
-                            (SELECT id FROM notes WHERE id = ?${this.scopeSql(true)})`)
-                            .bind(...this.scopeParams([p.id]))
-                    );
-                    for (const tagId of Array.isArray(tagIds) ? tagIds : []) {
-                        const mapped = tagMap.get(tagId);
-                        if (mapped === undefined) continue;
-                        commitStatements.push(
-                            this.db.prepare("INSERT OR IGNORE INTO note_note_tag (note_id, tag_id) VALUES (?, ?)")
-                                .bind(p.id, mapped)
-                        );
-                    }
-                }
-            }
-
-            // ── 提交：分批提交，每批仍是一个事务 ──
-            // 以前整批一次性 batch：大导入（几百条笔记 + 标签 + 关联）会撞上
-            // D1 单次 batch 的语句数上限 → 整个导入报 500。按 250 条/批切片，
-            // 与 updateNoteOrder / updateSiteOrder 同一界限。
-            // 中途失败：已提交的批保留，stats.warning 说明情况 —— 重新导入即可续传
-            //（相同 uuid 按「文件较新才覆盖」去重，已写入的不会重复建）。
-            if (commitStatements.length > 0) {
-                const COMMIT_CHUNK = 250;
+            // ── 提交：一个 batch = 一个事务；统计只认「真的提交成功」的批 ──
+            // 失败批及其之后的批一律不计入，已提交的批保留；返回值带 partial 让调用方
+            // 如实提示「重导可续传」。相同 uuid 按「文件较新才覆盖」去重，不会重复建。
+            let committedUnits = 0;
+            for (let bi = 0; bi < batches.length; bi += 1) {
+                const batch = batches[bi];
                 try {
-                    for (let i = 0; i < commitStatements.length; i += COMMIT_CHUNK) {
-                        await this.db.batch(commitStatements.slice(i, i + COMMIT_CHUNK));
+                    // 空语句批（全是 skipped，例如备份导出后原样喂回）不调 db.batch([])，
+                    // 直接视为「提交成功」把 skipped 计入 —— 它本来就没有 IO 会失败。
+                    const results: D1Result<unknown>[] =
+                        batch.statements.length > 0 ? await this.db.batch(batch.statements) : [];
+                    for (const unit of batch.units) {
+                        if (unit.kind === "skipped") {
+                            stats.skipped += 1;
+                        } else if (unit.kind === "created") {
+                            stats.created += 1;
+                        } else {
+                            // CAS：UPDATE 带 RETURNING，命中 0 行 = 计划后 rev 被别人改过，
+                            // 正文没覆盖 → 计入 conflicts，而不是撒谎记成 updated。
+                            const check = batch.updateChecks.find(c => c.uuid === unit.uuid);
+                            const hit = check ? casUpdated(results[check.stmtIndex]) : true;
+                            if (hit) stats.updated += 1;
+                            else stats.conflicts = (stats.conflicts ?? 0) + 1;
+                        }
                     }
+                    committedUnits += batch.units.length;
                 } catch (error) {
-                    logger.error("导入提交失败（部分已写入）:", { err: error, component: "notesBackup" })
+                    // ⚠️ 顺序不能反：先把 partial / warning 置齐再发事件，事件里的
+                    // 字段才与**返回给调用方的 stats** 逐字一致（否则日志说「没问题」、
+                    // 用户看到「导入中断」，事后对不上账）。
+                    stats.partial = true;
                     stats.warning =
-                        "部分数据未能写入，重新导入即可续传（相同笔记按「文件较新才覆盖」去重，不会重复建）";
+                        `已提交 ${committedUnits} 条笔记，第 ${bi + 1} 批写入失败、该批及其之后的笔记未计入统计；` +
+                        "重新导入即可续传（相同 uuid 按「文件较新才覆盖」去重，不会重复建）";
+                    // 结构化事件（notes.import.partial，2026-11）：这是「静默型」失败 ——
+                    // 用户只看到一句提示，运维侧原本一条记录都没有。纯观测：不改返回值、
+                    // 不改状态码、不影响已提交的批。
+                    const event = notesImportPartialEvent(stats, {
+                        failedBatch: bi + 1,
+                        batchCount: batches.length,
+                        userId: this.currentUserId,
+                        err: error,
+                    });
+                    logger[event.level](event.message, event.fields);
                     return stats;
                 }
             }
-
-            // 全文索引：一次可能进来几百条，逐条 syncNoteFts 是几百次往返 ——
-            // 自己拼一个 batch（同样的「先删后插」两步）。失败只记日志：
-            // 索引不全的结果是「搜不到」，而导入本身已经成功，不能反过来回滚。
-            if (this.notesFtsReady && plan.length > 0) {
-                try {
-                    const ftsStatements: D1PreparedStatement[] = [];
-                    for (const p of plan) {
-                        // ⚠️ 按 rowid 定位（不是 note_id）：见 internals.ts
-                        // NOTES_FTS_TABLE_SQL 的契约与实测（note_id 是 UNINDEXED，
-                        // `WHERE note_id = ?` 只能整表扫）。
-                        ftsStatements.push(
-                            this.db.prepare("DELETE FROM notes_fts WHERE rowid = ?").bind(p.id),
-                            this.db
-                                .prepare(
-                                    "INSERT INTO notes_fts (rowid, note_id, user_id, title, body) VALUES (?, ?, ?, ?, ?)"
-                                )
-                                .bind(
-                                    p.id,
-                                    p.id,
-                                    this.currentUserId,
-                                    segmentCJK(p.title || ""),
-                                    segmentCJK((p.content || "").slice(0, FTS_CONTENT_LIMIT))
-                                )
-                        );
-                    }
-                    // FTS 语句同样分批（先删后插两条/条，几百条笔记就是近千条语句）
-                    const FTS_CHUNK = 250;
-                    for (let i = 0; i < ftsStatements.length; i += FTS_CHUNK) {
-                        await this.db.batch(ftsStatements.slice(i, i + FTS_CHUNK));
-                    }
-                } catch (error) {
-                    logger.error("导入后重建全文索引失败:", { err: error, component: "notesBackup" })
-                }
+            if ((stats.conflicts ?? 0) > 0) {
+                stats.warning =
+                    `有 ${stats.conflicts} 条笔记在导入期间被其它设备改过（rev 已变），本次未覆盖、保留了本地较新的内容`;
+                // 冲突不是「失败」而是**正确的降级**（保住了用户更新的编辑），所以是 warn：
+                // 一条不值得叫醒任何人，但「同一个账号一天出现几十次」本身是信号
+                //（多端并发编辑 / 导入被反复重试），运维手册里那条判定就靠它。
+                const event = notesImportConflictsEvent(stats, { userId: this.currentUserId });
+                logger[event.level](event.message, event.fields);
             }
             return stats;
         });

@@ -92,8 +92,13 @@ export interface NavigationCenterDialogProps {
     /** 关闭中心（× / Esc / 遮罩都走这一条） */
     onClose: () => void;
     /**
-     * 打开时默认选中哪个面板。
-     * 命令面板等外部入口要直达某一屏时用它；不传 = 左栏第一项（统计）。
+     * **目标直达**：打开时落在哪个面板。
+     *
+     * 传了 = 命令面板一类的外部入口指名要某一屏 —— 窄屏跳过目录直接进那一屏；
+     * 不传 = 普通打开（点设置按钮），窄屏落在目录、宽屏落在左栏第一项「统计」。
+     *
+     * ⚠️ 这两者的区别必须靠「传不传」表达，不能靠「值等不等于 stats」去推断：
+     * 「查看统计」这条命令的目标正好就是默认项，一推断就被当成普通打开了。
      */
     initialPanel?: NavCenterPanelId;
     isAuthenticated: boolean;
@@ -144,7 +149,11 @@ export default function NavigationCenterDialog({
         onLogout,
         onAccountActivate,
 }: NavigationCenterDialogProps) {
-    const [activeId, setActiveId] = useState<NavCenterPanelId>("stats");
+    const [activeId, setActiveId] = useState<NavCenterPanelId>(() =>
+        // 初值直接照 initialPanel 算：带目标直开时如果先渲染成 "stats"，
+        // 首帧会闪一下统计、还会把统计那块 chunk 白下下来（面板是懒加载的）。
+        resolveNavActiveId(initialPanel ?? "stats", { isAuthenticated, isSiteOwner })
+    );
     const [logoutConfirm, setLogoutConfirm] = useState(false);
 
     // 中心一挂载就把九个目标弹窗的块并行取掉（照原 MoreMenu 的做法）：
@@ -255,6 +264,9 @@ export default function NavigationCenterDialog({
                 open={open}
                 onClose={handleClose}
                 title='设置'
+                // 意图原样转交外壳：有目标 = 直达（窄屏跳过目录），没有 = 普通打开。
+                // 中心自己不判「窄屏要不要落目录」—— 那是外壳的断点知识（R09）。
+                directPanel={initialPanel}
                 nav={
                     <SettingsWorkspaceNav
                         groups={navGroups}

@@ -17,16 +17,44 @@
 // 而且涨的那一刻 CI 是绿的，只有用户觉得首屏变慢了。
 //
 // 所以这里钉上限：超了就红，逼着改动的人要么继续拆，要么明确上调预算并说明理由。
-// 没构建过（dist 不存在）时跳过 —— 单测不该要求先跑一次 build。
+//
+// ⚠️ 2026-11-04（审查项 R15）：**门禁以前会在最该红的时候变绿。**
+//    原来 `firstScreen()` 有两处静默降级：dist/client/index.html 读不到就 `return null`
+//    （后面所有断言全跳），index.html 引用的资产读不到就 `catch { continue; }`（少算几个
+//    文件、总和自然小）。于是「dist 根本没构建」和「dist 构建断了一半」都被报成绿。
+//    现在改成两档：
+//      · strict（`npm run check:budget`，或 NAVIHIVE_BUDGET_STRICT=1）：
+//        **量不到就是不过** —— HTML 缺失 / 引用断裂 / 资产读不到一律 fail，不允许 skip；
+//      · 非 strict（普通 `npm test`）：仍然可以跳过（单测不该强迫先 build 一遍），
+//        但跳过**必须打印原因**，不再静默。
+//    判据在 script/bundleBudgetGate.mjs（纯函数，由 tests/bundleBudgetGate.test.ts 钉住），
+//    本文件只负责注入真 fs 和决定「跳过还是失败」。
 
 import { test } from "node:test";
+import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
-import { gzipSync } from "node:zlib";
+import {
+    isStrictMode,
+    strictModeSource,
+    measureFirstScreen,
+    decideBudgetGate,
+    type FirstScreenMeasure,
+} from "../script/bundleBudgetGate.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * strict 模式是不是开着。
+ *
+ * `npm run check:budget` 时 npm 会把 `npm_lifecycle_event=check:budget` 放进环境，
+ * 而 script/unit-tests.mjs spawn node:test 时没有传 env，所以子进程继承得到。
+ * 普通 `npm test` 两者都没有 → 非 strict。
+ */
+const STRICT = isStrictMode(process.env);
+const STRICT_SOURCE = strictModeSource(process.env);
 
 /** 单测会被复制到 script/tmp-tests/ 下再跑，逐级向上找真身 */
 function findProjectDir(): string {
@@ -39,6 +67,28 @@ function findProjectDir(): string {
         }
     }
     throw new Error("找不到项目根目录");
+}
+
+/**
+ * 「量不到」的统一出口：strict 下必须 fail，非 strict 下可以 skip 但要留一句话。
+ *
+ * 为什么不给 strict 分支留任何 skip 的余地：这条门禁的全部价值就在于
+ * 「dist 不在 / 引用断了」这件事必须有人喊出来。允许 skip，就等于允许
+ * 「谁把 CI 里的 build 步骤弄坏了，谁就顺手把门禁静音」。
+ *
+ * @param t node:test 的测试上下文
+ * @param reason 为什么量不到（一句话，直接可照做）
+ */
+function skipOrFail(t: TestContext, reason: string): void {
+    if (STRICT) {
+        assert.fail(
+            `${reason}\n` +
+                `⚠️ 当前是 strict 模式（由 ${STRICT_SOURCE} 打开）：体积门禁不允许跳过 —— 量不到就是不过。`
+        );
+    }
+    // 非 strict 也不能静默：以前 t.skip 只写进 TAP 的 SKIP 行，滚屏里根本看不见
+    console.log(`  ⏭  跳过：${reason}`);
+    t.skip(reason);
 }
 
 // ⚠️ 2026-10-12 分块策略变更后，首屏真正用到的 MUI 直接并入 index 块
@@ -262,50 +312,57 @@ const FIRST_SCREEN_BUDGET_GZIP_KB = 300;
 const FIRST_SCREEN_BASELINE_RAW_KB = 858.5;
 const FIRST_SCREEN_BASELINE_GZIP_KB = 283.2;
 
-interface FirstScreen {
-    files: { name: string; rawKb: number; gzipKb: number }[];
-    rawKb: number;
-    gzipKb: number;
-}
+/** 首屏测量结果的别名（字段形状由 script/bundleBudgetGate.mjs 定义，这里不重复声明） */
+type FirstScreen = FirstScreenMeasure;
 
-function firstScreen(): FirstScreen | null {
+/**
+ * 量一次真实首屏（注入真 fs）。
+ *
+ * 不再返回 null：缺 HTML / 缺资产都如实记录在返回值里，由 decideBudgetGate
+ * （内部走 firstScreenProblem）翻译成「量不了，为什么」，再由调用方决定跳过还是失败。
+ * 以前 `return null` / `catch { continue; }` 这两处把「量不到」变成了「量得小」。
+ */
+function firstScreen(): FirstScreen {
     const dir = findProjectDir();
-    let html: string;
+    let html: string | null;
     try {
         html = readFileSync(join(dir, "dist", "client", "index.html"), "utf-8");
     } catch {
-        return null;
+        html = null;
     }
-    // script 的 src 与 modulepreload / stylesheet 的 href 都是首屏必下文件
-    const names = [
-        ...new Set(
-            [...html.matchAll(/(?:src|href)="\/assets\/([^"]+)"/g)].map(m => m[1])
-        ),
-    ];
-    const files: FirstScreen["files"] = [];
-    let raw = 0;
-    let gzip = 0;
-    for (const name of names) {
-        let bytes: Buffer;
-        try {
-            bytes = readFileSync(join(dir, "dist", "client", "assets", name));
-        } catch {
-            continue;
-        }
-        const gz = gzipSync(bytes, { level: 9 }).length;
-        files.push({ name, rawKb: bytes.length / 1024, gzipKb: gz / 1024 });
-        raw += bytes.length;
-        gzip += gz;
+    return measureFirstScreen({
+        html,
+        readAsset: (name: string) => {
+            try {
+                return readFileSync(join(dir, "dist", "client", "assets", name));
+            } catch {
+                return null;
+            }
+        },
+    });
+}
+
+/** 首屏量不全时的失败/跳过（四条用例共用，省得每处各写一遍分支） */
+function requireFirstScreen(t: TestContext): FirstScreen | null {
+    const measure = firstScreen();
+    // 「该 fail 还是该 skip」只由 decideBudgetGate 判 —— 它是纯函数，
+    // 四分环境组合 × 三种量不到的情形都由 tests/bundleBudgetGate.test.ts 钉着。
+    const verdict = decideBudgetGate(measure, process.env);
+    if (verdict.action === "measure") return measure;
+    if (verdict.action === "fail") {
+        assert.fail(
+            `${verdict.reason}\n` +
+                `⚠️ 当前是 strict 模式（由 ${verdict.strictSource} 打开）：体积门禁不允许跳过 —— 量不到就是不过。`
+        );
     }
-    return { files, rawKb: raw / 1024, gzipKb: gzip / 1024 };
+    console.log(`  ⏭  跳过：${verdict.reason}`);
+    t.skip(verdict.reason ?? "没有构建产物");
+    return null;
 }
 
 test("真实首屏（index.html 的 script + modulepreload + css 合计）不超预算", t => {
-    const fs = firstScreen();
-    if (!fs || fs.files.length === 0) {
-        t.skip("没有构建产物，跳过（先跑 npm run build 再跑单测）");
-        return;
-    }
+    const fs = requireFirstScreen(t);
+    if (!fs) return;
     const detail = fs.files.map(f => `${f.name} ${f.rawKb.toFixed(1)}KB`).join("、");
     assert.ok(
         fs.rawKb <= FIRST_SCREEN_BUDGET_RAW_KB,
@@ -337,11 +394,8 @@ test("真实首屏（index.html 的 script + modulepreload + css 合计）不超
 test("**当前**真实首屏也要留 5% 余量，不只是基线留", t => {
     // 和上面那条 index chunk 的余量用例同一个道理：基线只在真把首屏压下来时才更新，
     // 中间加进去的几 KB 它看不见。真正该红的是「现在离上限还有多远」。
-    const fs = firstScreen();
-    if (!fs || fs.files.length === 0) {
-        t.skip("没有构建产物，跳过（先跑 npm run build 再跑单测）");
-        return;
-    }
+    const fs = requireFirstScreen(t);
+    if (!fs) return;
     const rawHeadroom = (FIRST_SCREEN_BUDGET_RAW_KB - fs.rawKb) / fs.rawKb;
     const gzipHeadroom = (FIRST_SCREEN_BUDGET_GZIP_KB - fs.gzipKb) / fs.gzipKb;
     assert.ok(
@@ -353,11 +407,8 @@ test("**当前**真实首屏也要留 5% 余量，不只是基线留", t => {
 });
 
 test("首屏预算的基线常量要与实测相符（别让基线悄悄过期）", t => {
-    const fs = firstScreen();
-    if (!fs || fs.files.length === 0) {
-        t.skip("没有构建产物，跳过（先跑 npm run build 再跑单测）");
-        return;
-    }
+    const fs = requireFirstScreen(t);
+    if (!fs) return;
     // 基线是「上次实测值」。它与真实值差太远，说明中间发生了大改动 ——
     // 确认是有意为之的话，连同理由一起更新这两个常量。
     const rawDrift = Math.abs(fs.rawKb - FIRST_SCREEN_BASELINE_RAW_KB) / FIRST_SCREEN_BASELINE_RAW_KB;
@@ -372,11 +423,8 @@ test("首屏预算的基线常量要与实测相符（别让基线悄悄过期�
 });
 
 test("首屏文件清单要能看出少了谁（防止统计口径悄悄失效）", t => {
-    const fs = firstScreen();
-    if (!fs || fs.files.length === 0) {
-        t.skip("没有构建产物，跳过（先跑 npm run build 再跑单测）");
-        return;
-    }
+    const fs = requireFirstScreen(t);
+    if (!fs) return;
     const names = fs.files.map(f => f.name);
     const has = (re: RegExp) => names.some(n => re.test(n));
     // 这几条是当前首屏的固定组成（入口 / 两个 vendor 块 / 样式）。
@@ -409,7 +457,10 @@ test("首屏文件清单要能看出少了谁（防止统计口径悄悄失效�
 test("首屏包（index chunk）不超过体积预算", t => {
     const chunk = indexChunk();
     if (!chunk) {
-        t.skip("没有构建产物，跳过（先跑 npm run build 再跑单测）");
+        skipOrFail(
+            t,
+            "dist/client/assets 下找不到 index-*.js —— 先 npm run build（体积门禁要有构建产物才能量）"
+        );
         return;
     }
     assert.ok(
@@ -434,7 +485,10 @@ test("**当前**首屏包也要留 5% 余量，不只是基线留", t => {
     // 真正会红的应该是「现在这个包离上限还有多远」，所以这里按当前体积再算一遍。
     const chunk = indexChunk();
     if (!chunk) {
-        t.skip("没有构建产物，跳过（先跑 npm run build 再跑单测）");
+        skipOrFail(
+            t,
+            "dist/client/assets 下找不到 index-*.js —— 先 npm run build（体积门禁要有构建产物才能量）"
+        );
         return;
     }
     const actual = (BUDGET_KB - chunk.kb) / chunk.kb;
@@ -460,7 +514,10 @@ test("katex 必须自己成块：不能混进 markdown 块", t => {
     try {
         files = readdirSync(assets);
     } catch {
-        t.skip("没有构建产物，跳过（先跑 npm run build 再跑单测）");
+        skipOrFail(
+            t,
+            "dist/client/assets 不存在 —— 先 npm run build（katex 分块只能在产物上验证）"
+        );
         return;
     }
     // ⚠️ 产物里会有**两个** katex 块：主应用一个、`mermaid-sandbox.html` 那个入口一个
@@ -496,7 +553,9 @@ test("记事本整块不许进首屏（hook 也不能）", t => {
     try {
         appSrc = readFileSync(join(dir, "src", "App.tsx"), "utf-8");
     } catch {
-        t.skip("读不到 App.tsx，跳过");
+        // 这条读的是源码不是产物：读不到意味着仓库本身不完整（或项目根目录探错了）,
+        // 不是「还没 build」。strict 下必须红 —— 否则「删掉 App.tsx」等于删掉这条门禁。
+        skipOrFail(t, "读不到 src/App.tsx —— 仓库不完整或项目根目录探错了，先确认工作区");
         return;
     }
     assert.ok(
@@ -518,11 +577,8 @@ test("记事本整块不许进首屏（hook 也不能）", t => {
 test("真实首屏里搜不到记事本的数据层 SQL", t => {
     // 双保险：上面那条管源码，这里管产物。
     // `INSERT INTO notes` 出现就说明 methods/notes.ts 被打进首屏了。
-    const fs = firstScreen();
-    if (!fs || fs.files.length === 0) {
-        t.skip("没有构建产物，跳过（先跑 npm run build 再跑单测）");
-        return;
-    }
+    const fs = requireFirstScreen(t);
+    if (!fs) return;
     for (const f of fs.files) {
         if (!/\.js$/.test(f.name)) continue;
         const text = readFileSync(join(findProjectDir(), "dist", "client", "assets", f.name), "utf-8");

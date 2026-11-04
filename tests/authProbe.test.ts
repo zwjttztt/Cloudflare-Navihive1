@@ -10,8 +10,10 @@
 //      是看不出退化的，someone 随手加一次 getTokenVersion 就会重新变回 5 次而测试全绿。
 //   2. **降级路径等价**：任何历史库形态（缺 token_blacklist 表 / 缺 status 列）上合并 SQL
 //      会炸，那时必须退回三次独立读，且**判定结果逐字段相同** —— 两边都跑一遍再比对。
-//   3. **fail-closed / fail-open**：黑名单读异常 → 401（改前 catch → true 的语义不许丢）；
-//      迁移没跑完 + 读异常 → 放行（!dbReady 的逃生口）。
+//   3. **fail-closed / 首建豁免**：黑名单读异常 → 401（改前 catch → true 的语义不许丢）；
+//      账号态读异常 → 只有「未就绪 + 缺表类错误」才补跑迁移重试（首建豁免），
+//      其余一律 unavailable → 503。2026-11-04（R07）之前这里是「!dbReady 就放行」，
+//      而 dbReady 当年是实例字段 → 稳态下恒为 false → 任何读异常都放行。
 //   4. **两写合并的语句数**：uid 为 null 时不许碰 users 表（只发会话那一条）。
 //
 // 用真 SQLite（node:sqlite）而不是按前缀猜 SQL 的替身：合并 SQL 里有两个子查询和
@@ -22,6 +24,7 @@ import assert from "node:assert/strict";
 import { makeRealD1 } from "./helpers/realSqliteD1";
 import { errorBody } from "./helpers/apiErrorBody";
 import { NavigationAPI } from "../src/API/navigationApi";
+import { resetMigrationCacheForTests } from "../src/API/methods/internals";
 import { peekJwtClaim } from "../src/API/crypto";
 import { enforceAuth, type TokenSession } from "../worker/routes/middleware";
 import type { RouteCtx } from "../worker/routes/types";
@@ -75,6 +78,26 @@ function withFault(inner: DB, matcher: (sql: string) => boolean): DB {
         prepare(sql: string) {
             if (matcher(sql)) {
                 throw new Error(`注入故障：${sql.replace(/\s+/g, " ").trim().slice(0, 60)}`);
+            }
+            return inner.prepare(sql);
+        },
+        batch: (stmts: Parameters<DB["batch"]>[0]) => inner.batch(stmts),
+        exec: (sql: string) => inner.exec(sql),
+    };
+}
+
+/**
+ * 只抛**一次**、且错误文案可指定的故障：模拟「首请求上 users 表还没建出来」。
+ * 一次性是这条用例的关键 —— 补跑迁移之后的**重试**必须真的能读到，否则验不到
+ * 「首建豁免 = 补跑迁移 + 重试一次」这条路径。
+ */
+function withOneShotFault(inner: DB, matcher: (sql: string) => boolean, message: string): DB {
+    let fired = false;
+    return {
+        prepare(sql: string) {
+            if (!fired && matcher(sql)) {
+                fired = true;
+                throw new Error(message);
             }
             return inner.prepare(sql);
         },
@@ -297,27 +320,64 @@ test("黑名单表读异常：fail-closed 拦下（401），不许让登出过�
     assert.equal(body.message, "认证已过期或无效，请重新登录");
 });
 
-// ================= 3. fail-open：迁移没跑完 + 读异常 → 放行 =================
-test("迁移未完成（!dbReady）时账号态读异常：fail-open 放行", async () => {
+// ============ 3. 首建豁免（唯一还放行的路径）与未知态（503） ============
+//
+// 2026-11-04（审查报告 R07）：这一组原先是「!dbReady → 放行」和「dbReady → 401」。
+// 前者把 bug 写成了契约（dbReady 是实例字段，稳态下恒为 false —— 「迁移没跑完」这条
+// 分支永远成立，于是任何一次读异常都会放行）；后者用 401 顶替「没结论」，
+// 会把一次 DB 抖动变成「所有人被踢下线」。现在的契约：
+//   · 未就绪 + **缺表类**错误 → 补跑迁移 → 重试一次 → 采信重试结果（首建豁免）；
+//   · 其余一律 `unavailable` → 鉴权回 503 + Retry-After（不是 401，也不是放行）。
+test("首请求（未就绪 + 缺表）：补跑迁移后重试一次，读到真实状态就放行", async () => {
+    resetMigrationCacheForTests(); // 前提：这个 isolate 还没迁移过
     const { db, token } = await scenarioDb("active");
-    // 只让「读 status」这一类语句失败：合并 SQL 含 "status"，独立的账号态查询也含
-    const api = makeApi(withFault(db, (sql) => sql.includes('"status"')));
+    // 只让**独立的账号态查询**抛一次「no such table」：这里用行首锚点把它与合并 SQL
+    // （以 `SELECT\n (SELECT "status" …` 开头）区分开，保证抛在 readState 那一次上。
+    const api = makeApi(
+        withOneShotFault(
+            db,
+            (sql) => /^\s*SELECT\s+"status"\s+FROM\s+users/i.test(sql),
+            "no such table: users"
+        )
+    );
+    // 合并读在首请求上同样会炸（users 表还没建），中间件于是退回 getAccountSessionState
+    // —— 这正是线上首次部署时的真实路径，用显式抛错把它固定住。
+    api.authProbe = async () => {
+        throw new Error("no such table: users");
+    };
     assert.equal(api.dbReady, false, "这个用例的前提就是迁移还没跑完");
 
     const { ctx, session } = makeCtx(api, token);
     const res = await enforceAuth(ctx, session);
-    assert.equal(res, null, "首发请求上 DB 还没建好就必须放行，否则整站登不进来");
+    assert.equal(res, null, "首建豁免：补跑迁移之后读得到账号态，就必须放行");
     assert.equal(session.jti, String(peekJwtClaim(token, "jti") ?? ""), "放行时 jti 仍要写回");
+    assert.equal(api.dbReady, true, "补跑迁移真的跑过（结构就绪标记应当翻成 true）");
 });
 
-test("迁移跑完之后同样的读异常：fail-closed 拦下（既有语义不许被本次改动带偏）", async () => {
+test("未就绪但错误不是缺表类：不给首建豁免，按未知态回 503", async () => {
+    resetMigrationCacheForTests();
+    const { db, token } = await scenarioDb("active");
+    const api = makeApi(withFault(db, (sql) => sql.includes('"status"')));
+    assert.equal(api.dbReady, false);
+
+    const { ctx } = makeCtx(api, token);
+    const res = await enforceAuth(ctx, { jti: "", exp: 0 });
+    assert.equal(res?.status, 503, "超时 / 抖动这类错误重跑迁移也没用，不能当成首建放行");
+    assert.equal(await res?.headers.get("Retry-After"), "5", "503 要带 Retry-After");
+    assert.equal((await errorBody(res!)).code, "service_unavailable");
+});
+
+test("迁移跑完之后同样的读异常：未知态 → 503（不是 401，401 会让人重新登录）", async () => {
     const { db, token } = await scenarioDb("active");
     const api = makeApi(withFault(db, (sql) => sql.includes('"status"')));
     api.dbReady = true;
 
     const { ctx } = makeCtx(api, token);
     const res = await enforceAuth(ctx, { jti: "", exp: 0 });
-    assert.equal(res?.status, 401, "迁移完成后查不出账号态 → 按「不可用」拦（hardening item 5）");
+    assert.equal(res?.status, 503, "迁移完成后查不出账号态 → 按「不可用」拦（hardening item 5）");
+    const body = await errorBody(res!);
+    assert.equal(body.code, "service_unavailable");
+    assert.equal(body.status, 503);
 });
 
 // ================= 4. 降级路径等价 =================

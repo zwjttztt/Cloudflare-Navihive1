@@ -19,7 +19,10 @@
 //      （components/StatsHubDialog.tsx 那处是需要避免的反例）。
 //   3. **滚动分区**：外框 / 总标题 / 面板标题 / 底栏固定，左栏与右栏正文
 //      各自 overflowY:auto —— 整个 paper 不滚，换面板时标题不会跟着跑。
-import { useEffect, useId, useState } from "react";
+//   4. **两种打开意图要分清**（R09）：`directPanel` 有值 = 命令指名直达某一屏，
+//      窄屏跳过目录直接进面板；未传 = 普通打开，窄屏落在目录。外壳不靠「目标
+//      面板是不是默认项」来猜意图，也不再每次打开都把步进按回目录。
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -42,10 +45,37 @@ import { QUERY_BELOW_600 } from "../../theme/mediaQueries";
  */
 const FULL_SCREEN_QUERY = QUERY_BELOW_600;
 
+/** 窄屏两步式导航的两步：目录 / 面板 */
+type MobileStep = "list" | "panel";
+
+/**
+ * 焦点接力的重试节奏（只用于窄屏两步式）。
+ *
+ * 弹窗内容是 MUI Portal 里**第二次提交**才挂上的（见组件里 findFocusTarget
+ * 上方那段注释），所以第一次找必然落空。用 0ms 的宏任务补，而不是 rAF：
+ * rAF 在后台标签页里会被挂起，切回来才补一下 —— 那时候用户早就自己点了。
+ * 上限 30 次（≈ 一帧到两帧之内），超时就放弃：不跳焦点也比一直抢强。
+ */
+const FOCUS_RETRY_DELAY = 0;
+const FOCUS_RETRY_LIMIT = 30;
+
 export interface SettingsWorkspaceDialogProps {
     open: boolean;
     /** 统一关闭出口（× / Esc / 遮罩 / 底栏完成都调它） */
     onClose: () => void;
+    /**
+     * **本次打开的意图**：传了值 = 「目标直达某一屏」（窄屏跳过目录，直接进右栏
+     * 面板，焦点落到面板标题）；不传 = 普通打开（窄屏落在目录，宽屏落在左栏第一项）。
+     *
+     * ⚠️ 为什么用「传不传」而不是「面板 id 等不等于默认项」来判：目标可以是
+     * 「统计」，而「统计」正好是左栏第一项 —— 用「不等于默认项」去推断的话，
+     * 命令点「查看统计」就会被当成普通打开，窄屏又落回目录（R09 的另一半）。
+     * 意图必须由调用方**显式**说出来，外壳不猜。
+     *
+     * 值是目标面板 id：它同时是「又来了一个**不同的**直达请求」的判据 ——
+     * 中心已经开着时再下一条命令，步进要跟着切过去。
+     */
+    directPanel?: string;
     /** 弹窗总标题。它同时是 aria-labelledby 指向的那个节点 */
     title: string;
     /** 左栏导航节点（SettingsWorkspaceNav） */
@@ -81,6 +111,7 @@ export interface SettingsWorkspaceDialogProps {
 export default function SettingsWorkspaceDialog({
     open,
     onClose,
+    directPanel,
     title,
     nav,
     children,
@@ -94,15 +125,137 @@ export default function SettingsWorkspaceDialog({
     // 写死 id 会让两个 dialog 的 aria-labelledby 指向同一个节点。
     const titleId = useId();
     const fullScreen = useMediaQuery(FULL_SCREEN_QUERY, { noSsr: true });
-    /** 窄屏两步式：先给完整分组列表，点中条目才进面板 */
-    const [mobileStep, setMobileStep] = useState<"list" | "panel">("list");
+    /**
+     * 窄屏两步式的当前步。
+     *
+     * 初值跟着**打开意图**走：带目标直开就是「面板」，普通打开才是「目录」。
+     * （挂载那一帧 open 一般已经是 true；open 先 false 后 true 的路径由下面的
+     * effect 兜住，两条路都落在同一个判断上，不靠渲染顺序。）
+     */
+    const [mobileStep, setMobileStep] = useState<MobileStep>(() =>
+        directPanel === undefined ? "list" : "panel"
+    );
     const [confirmClose, setConfirmClose] = useState(false);
 
-    // 每次重新打开都从「分组列表」那一步起：上次停在哪个面板不该被记住 ——
-    // 用户第二次打开多半是找另一件事，直接落进上次那个面板等于替他做了决定。
+    /** 左栏 / 右栏的 DOM 入口：窄屏切步进之后要在这里找焦点落点 */
+    const navRef = useRef<HTMLDivElement | null>(null);
+    const panelRef = useRef<HTMLDivElement | null>(null);
+    /**
+     * 待接力的焦点（只在窄屏两步式里用）。
+     *
+     * 为什么用 ref 而不是 state：切步进的那一帧目标节点**还没挂上**，
+     * 要等这一帧渲染完再找；用 ref 既不额外触发一次渲染，也不会把
+     * 「焦点该去哪」这件事写进渲染结果里。
+     */
+    const pendingFocus = useRef<MobileStep | null>(null);
+    /** 没跑完的焦点重试定时器（切步进 / 关闭 / 卸载都要把它清掉） */
+    const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    /**
+     * 焦点接力：窄屏同一时刻只有一栏在 DOM 里，切那一步会把刚拿到焦点的元素
+     * 卸载掉。不接力的话焦点掉到 <body>，键盘用户按 Tab 得从头重新走进弹窗。
+     *
+     * 为什么带重试、而不是「等下一次渲染再看」：弹窗内容走 MUI 的 Portal，
+     * 它在 layout effect 里才拿到挂载点 —— 也就是说**第二次提交**才真的挂上
+     * 左右两栏，而外壳自己不会因为这件事再渲染一次（那次重渲染发生在 Portal
+     * 内部）。所以「这一帧找不到」是常态，必须自己补一帧，否则直达之后的焦点
+     * 永远落不到标题上（实测：外壳 effect 跑的时候 panelRef 还是 null）。
+     */
+    const findFocusTarget = useCallback((where: MobileStep): HTMLElement | null => {
+        if (where === "panel") {
+            return (
+                panelRef.current?.querySelector<HTMLElement>("[data-workspace-panel-title]") ?? null
+            );
+        }
+        // 目录里「刚才那一屏」的条目：左栏用 aria-current 标着它。用渲染出来的
+        // 事实比再传一个 activeId 进来更难失同步；当前项被左栏过滤挡掉时，
+        // 退回目录里第一条（总比焦点掉到 body 强）。
+        return (
+            navRef.current?.querySelector<HTMLElement>('[data-workspace-nav][aria-current="true"]') ??
+            navRef.current?.querySelector<HTMLElement>("[data-workspace-nav]") ??
+            null
+        );
+    }, []);
+
+    const clearFocusRetry = useCallback(() => {
+        if (focusTimerRef.current !== null) {
+            clearTimeout(focusTimerRef.current);
+            focusTimerRef.current = null;
+        }
+    }, []);
+
+    const runFocusRelay = useCallback(
+        (where: MobileStep, attempt = 0) => {
+            // 请求已被后来的操作取代（再切一步 / 关闭）就别再抢焦点了
+            if (pendingFocus.current !== where) return;
+            const el = findFocusTarget(where);
+            if (el) {
+                pendingFocus.current = null;
+                el.focus();
+                return;
+            }
+            // 放弃也是个正经结局：不跳焦点（焦点留在弹窗纸面上）好过一直抢
+            if (attempt >= FOCUS_RETRY_LIMIT) {
+                pendingFocus.current = null;
+                return;
+            }
+            focusTimerRef.current = setTimeout(
+                () => runFocusRelay(where, attempt + 1),
+                FOCUS_RETRY_DELAY
+            );
+        },
+        [findFocusTarget]
+    );
+
+    /** 请求把焦点送到某一栏（窄屏两步式专用；宽屏不调它） */
+    const requestFocus = useCallback(
+        (where: MobileStep) => {
+            pendingFocus.current = where;
+            clearFocusRetry();
+            runFocusRelay(where);
+        },
+        [clearFocusRetry, runFocusRelay]
+    );
+
+    // 卸载时把没跑完的重试清掉：定时器不该在组件没了之后还去动 DOM
+    useEffect(() => clearFocusRetry, [clearFocusRetry]);
+
+    /**
+     * 「这次打开」落在哪一步 —— 步进只由**打开时的意图**决定，不是每次渲染都重置。
+     *
+     * R09（窄屏命令直达被重置）的根因就是这里：原先写的是
+     * `useEffect(() => { if (open) setMobileStep("list") }, [open])`，
+     * 无条件把步进按回目录 —— 命令明明带了目标也照样被按回去，用户还得再点一次。
+     * 现在：
+     *   · directPanel 有值（目标直达）→ "panel"：窄屏直接进那一屏；
+     *   · directPanel 未传（普通打开）→ "list"：窄屏落在目录（原行为不变）。
+     *
+     * 为什么要 openHandledRef 这一层：用户进面板后点「返回」回目录、再点别的条目
+     * 进面板 —— 这一串操作里 open 从头到尾是 true。若 effect 每次都重设步进，
+     * 「返回」会被立刻抹掉。所以用 ref 记住「这次打开已经定过步进了」，之后只有
+     * **又来了一个不同的直达请求**（中心开着时再下一条命令）才切步进。
+     * 重置逻辑因此跟着「本次打开」这个生命周期走，而不是每次渲染。
+     */
+    const openHandledRef = useRef(false);
+    const lastDirectRef = useRef<string | undefined>(undefined);
     useEffect(() => {
-        if (open) setMobileStep("list");
-    }, [open]);
+        if (!open) {
+            // 关着 = 这次打开已结束：清掉标记与没跑完的焦点重试
+            openHandledRef.current = false;
+            pendingFocus.current = null;
+            clearFocusRetry();
+            return;
+        }
+        const firstFrameOfThisOpen = !openHandledRef.current;
+        const newDirectRequest =
+            directPanel !== undefined && directPanel !== lastDirectRef.current;
+        if (!firstFrameOfThisOpen && !newDirectRequest) return;
+        openHandledRef.current = true;
+        lastDirectRef.current = directPanel;
+        setMobileStep(directPanel === undefined ? "list" : "panel");
+        // 焦点接力只在窄屏做：宽屏两栏同时可见，跳焦点反而打断阅读
+        if (fullScreen && directPanel !== undefined) requestFocus("panel");
+    }, [open, directPanel, fullScreen, requestFocus, clearFocusRetry]);
 
     const requestClose = () => {
         if (dirty) {
@@ -110,6 +263,12 @@ export default function SettingsWorkspaceDialog({
             return;
         }
         onClose();
+    };
+
+    /** 面板 → 目录（窄屏那颗「全部选项」）：回目录，并把焦点交给刚才那一屏的条目 */
+    const backToList = () => {
+        if (fullScreen) requestFocus("list");
+        setMobileStep("list");
     };
 
     const showNav = !fullScreen || mobileStep === "list";
@@ -176,7 +335,7 @@ export default function SettingsWorkspaceDialog({
                     <Button
                         size='small'
                         startIcon={<ArrowBackIcon fontSize='small' />}
-                        onClick={() => setMobileStep("list")}
+                        onClick={backToList}
                         data-workspace-back='1'
                         sx={{ minHeight: 44, flexShrink: 0 }}
                     >
@@ -209,6 +368,7 @@ export default function SettingsWorkspaceDialog({
             <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
                 {showNav && (
                     <Box
+                        ref={navRef}
                         sx={{
                             width: fullScreen ? "100%" : navWidth,
                             flexShrink: 0,
@@ -236,6 +396,7 @@ export default function SettingsWorkspaceDialog({
                 )}
                 {showPanel && (
                     <Box
+                        ref={panelRef}
                         sx={{
                             flex: 1,
                             minWidth: 0,

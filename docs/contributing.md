@@ -12,6 +12,18 @@ printf 'AUTH_SECRET=%s\nAUTH_USERNAME=root\nAUTH_PASSWORD=dev-only\n' "$(openssl
 
 详见 `README.md` 与 `deploy/selfhost.md`。
 
+### 0.1 两种本地模式：默认演示（Mock） vs 真实联调
+
+`npm run dev` 默认进**演示模式**：`src/App.tsx:198-205` 在开发环境且 `VITE_USE_REAL_API` 不为 `"true"` 时直接使用 `MockNavigationClient`，
+`src/API/mock.ts` 的 mock 会忽略密码、任意账号/邀请码都能登录，并固定 owner 身份。**这意味着光跑前端、按 README 建好 `.dev.vars`，认证和注册隔离并不会被真正验证** —— 你只是跑通了 UI。
+如果目标是验证真实后端（真实鉴权、账号隔离、备份落库等），必须显式开启真实联调：
+
+1. 给前端设置 `VITE_USE_REAL_API=true`（例如命令行前缀 `VITE_USE_REAL_API=true npm run dev`，或写进 `.env.local`）。
+2. 启动后端并让它监听前端约定地址。当前前端在真实模式下请求 `localhost:8788/api`，因此后端需要以对应端口/前缀运行（Cloudflare 形态走 `npm run dev:server` 一类命令；自托管形态走 `npm run start:selfhost` 并确认端口与静态资源映射一致）。
+3. `.dev.vars` 里的凭据只对 Worker 后端生效；它**不会**自动变成 Vite 前端变量，前端是否走真实 API 只看 `VITE_USE_REAL_API`。
+
+排障时 README 建议删本地 state 重来 —— 那是破坏性操作（会清掉本地真实数据），只在确认要丢弃本地库时才做。
+
 ## 1. 架构一句话
 
 - 前端：React + Vite + MUI，`src/`。

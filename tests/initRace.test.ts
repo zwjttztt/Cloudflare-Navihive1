@@ -153,12 +153,16 @@ test("首次初始化：users 表查询直接抛错时返回 null 而不是崩�
 });
 
 // ================= 2. 缺表 / DB 故障时的鉴权取向 =================
-test("DB 故障（迁移已完成）：默认 fail-closed —— 查不到账号状态就按不可用拦下", async () => {
+// 2026-11-04（审查报告 R07）：这一组的期望值改过。原来「!dbReady → active（放行）」，
+// 而 dbReady 是实例字段、每个请求都是新实例 —— 那条分支在稳态下永远成立，
+// 等于任何一次读失败都放行。现在只有「未就绪 + 明确缺表/缺列」才补跑迁移重试一次，
+// 其余一律 unavailable（鉴权中间件回 503）。详见 accounts.ts 的 getAccountSessionState。
+test("DB 故障（迁移已完成）：查不到账号状态就按「未知态」处理，不放行", async () => {
     const db = new MockD1();
     db.usersFail = true;
     const api = newApi(db);
     api.dbReady = true;
-    assert.equal(await api.getAccountSessionState(1), "missing");
+    assert.equal(await api.getAccountSessionState(1), "unavailable");
 });
 
 test("DB 故障：开了逃生开关 NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR=1 才放行", async () => {
@@ -169,12 +173,16 @@ test("DB 故障：开了逃生开关 NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR=1 才�
     assert.equal(await api.getAccountSessionState(1), "active");
 });
 
-test("迁移还没跑完（缺表）：fail-open 放行，否则整站登不进去", async () => {
+test("迁移还没跑完（缺表）：补跑迁移仍读不出来 → 未知态（不再无条件放行）", async () => {
+    // MockD1 上迁移跑不出结构（它不执行 DDL），所以这次补跑必然白跑一次，
+    // 重试依旧抛「no such table: users」→ 结论是未知态，不是 active。
+    // 「补跑迁移之后真的能读到」那条正向路径在 accountStateFailClosed.test.ts
+    // 用真 SQLite 验（那边才建得出表）。
     const db = new MockD1();
     db.usersFail = true;
     const api = newApi(db);
     api.dbReady = false;
-    assert.equal(await api.getAccountSessionState(1), "active");
+    assert.equal(await api.getAccountSessionState(1), "unavailable");
 });
 
 test("DB 故障推出的结论不进缓存：抖动恢复后立刻拿到真实状态", async () => {
@@ -183,7 +191,7 @@ test("DB 故障推出的结论不进缓存：抖动恢复后立刻拿到真实�
     db.usersFail = true;
     const api = newApi(db);
     api.dbReady = true;
-    assert.equal(await api.getAccountSessionState(1), "missing");
+    assert.equal(await api.getAccountSessionState(1), "unavailable");
     // DB 恢复
     db.usersFail = false;
     assert.equal(await api.getAccountSessionState(1), "disabled", "不该被上一次的兜底结论卡住");

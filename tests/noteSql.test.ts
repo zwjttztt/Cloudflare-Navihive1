@@ -568,9 +568,11 @@ test("正文标签：正文更新和标签写入必须同批，标签失败应�
             batch: async (stmts: typeof captured) => {
                 batches++;
                 assert.equal(stmts.length, 3);
-                assert.match(stmts[0].sql, /UPDATE notes/);
-                assert.match(stmts[1].sql, /INSERT INTO note_tag/);
-                assert.match(stmts[2].sql, /INSERT OR IGNORE INTO note_note_tag/);
+                // 顺序随 R02 调整为：自动标签两条在前、主 UPDATE 在后（让 rev 守卫在
+                // rev 被 +1 之前求值，冲突时零旁写）。行为契约不变：三者同批、标签失败报错。
+                assert.match(stmts[0].sql, /INSERT INTO note_tag/);
+                assert.match(stmts[1].sql, /INSERT OR IGNORE INTO note_note_tag/);
+                assert.match(stmts[2].sql, /UPDATE notes/);
                 for (const s of stmts) assert.equal((s.sql.match(/\?/g) || []).length, s.args.length);
                 throw new Error("标签写入失败");
             },

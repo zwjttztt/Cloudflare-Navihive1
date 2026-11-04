@@ -68,3 +68,10 @@ script/ui-probe-out/
 #    400MB~1GB，375 个 json —— 一个 `git add -A` 就能把近千个文件、46 万行塞进暂存区。
 #    lcov.info / coverage-summary.json 要看重跑一次即可，产物本身不必入库。
 coverage/
+
+# 审计证据产物（script/visual-regression.mjs 生成：每次运行一个时间戳目录，
+# 里面是每个用例的指纹 + diff 明细 + summary.json）
+# ⚠️ 为什么必须忽略：每次运行都会新建一个时间戳目录，内容是「当时那一版产物量出来的
+#    数字」，入库只会让仓库里堆满互相对不上的历史指纹。CI 上它作为 artifact 上传，
+#    本机跑完自己看 ./artifacts/ 即可。
+artifacts/

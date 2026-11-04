@@ -297,12 +297,23 @@ export interface NoteImportStats {
     /** 同 uuid 但本地较新，或内容一致 → 保留本地不动 */
     skipped: number;
     /**
-     * 提交批分片后，中途失败时已提交的批保留、其余未写入 ——
-     * 带上这句话让前端能如实提示（重新导入可按 uuid 续传）。成功时不存在。
+     * 提交批分片后中途失败，或存在 CAS 冲突时的如实说明。
+     * 失败时：已提交的批保留、其余未写入，并带 `partial: true`，前端提示「重导可续传」；
+     * 冲突时：说明被保留、未被覆盖的笔记数。两者都没有时不存在。
      */
     warning?: string;
     /** 完全覆盖模式下被清掉的本地笔记数 */
     removed: number;
+    /**
+     * CAS 未命中的笔记数：导入计划做好后、提交前被其它设备改过（库里 rev 已变），
+     * 本次**没有覆盖**那几条，保留了用户较新的编辑。仅 > 0 时出现（老调用方无需处理）。
+     */
+    conflicts?: number;
+    /**
+     * 有提交批失败：已提交的部分保留，失败批及其之后的笔记未计入上面四项统计。
+     * 调用方据此如实提示「重新导入可续传」，而不是当成一次完整成功的导入。
+     */
+    partial?: boolean;
 }
 
 /**
@@ -749,8 +760,15 @@ export interface RegisterResult {
 /**
  * 会话存活状态：令牌验签通过之后，还要确认账号本身还在不在。
  * missing = 账号已被清除（沉睡治理 / 注销），但手上这张 30 天令牌还没过期。
+ *
+ * unavailable = **未知态**（2026-11-04，审查报告 R07 新增）：库读不出来，
+ * 所以「在 / 不在 / 停用」一个都答不上来。它不是一种账号状态，而是「这次没结论」——
+ * 调用方必须按 fail-closed 处理（鉴权中间件回 503 + Retry-After，而不是 401：
+ * DB 抖动不该把用户的令牌判死，401 会让客户端清 token，抖动恢复后还得重新登录）。
+ * 之所以要专门一个值而不是拿 missing 顶替：missing 是**确定结论**，会 401 并让人重登，
+ * 而且在语义上等于「账号被删了」—— 运维排查时两条路径必须能分开。
  */
-export type AccountSessionState = "active" | "disabled" | "missing";
+export type AccountSessionState = "active" | "disabled" | "missing" | "unavailable";
 
 /** 账号记录（不含哈希，只给能下发的字段用） */
 export interface UserRecord {

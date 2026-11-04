@@ -1,5 +1,5 @@
 // script/api-edge-probe.mjs
-// 接口边界探针：往自托管服务打一批**畸形 / 超限 / 异常输入**，只找 5xx。
+// 接口边界探针：往自托管服务打一批**畸形 / 超限 / 异常输入**，逐条核对状态码是否符合**声明的期望**。
 //
 // 为什么值得单独一条：5xx 是「服务端自己崩了」，和 4xx（正确地拒绝）性质完全不同 ——
 // 500 会触发告警、客户端会当故障重试、日志里还占一个堆栈。而这类崩溃几乎都来自
@@ -11,35 +11,82 @@
 // 外加「传字符串 / 数字时静默建出一条全空笔记」。修法是请求体统一走
 // worker/routes/jsonBody.ts 的 readJsonBody / readJsonArray，入口就拒绝非对象。
 //
+// ---------------------------------------------------------------------------
+// 判据（重做）：从「只找 5xx」改成「逐条核对声明过的期望」
+// ---------------------------------------------------------------------------
+// 旧版唯一判据是 `status >= 500` 才算坏 —— 于是 **401 / 404 全算「好」**：
+// 登录没成功（写接口全 401）照样全绿，路由写错成 404 也全绿，`note-orders`
+// 两条本该 2xx 的有效请求被挡成 400 还是全绿。绿不绿和能力对不对无关。
+//
+// 现在：case 表（script/api-edge-probe-cases.mjs）里每条都带 `expect: number[]`，
+//   · `>= 500` **永远判失败**（旧判据保留，它抓的是一类独立的故障）；
+//   · 其余状态必须在 `expect` 里；
+//   · 故意探「未鉴权 / 不存在」的 case 显式写 `[401]` / `[404]`，不靠默认值蒙。
+//
+// 另外补了两道前置闸：
+//   1. **登录前置**：必须真的拿到会话（Set-Cookie 里的 token 或响应里的 token/session
+//      字段），并且一个受保护接口回 200。拿不到就以**独立退出码 2** 中止 ——
+//      「未登录态把 61 条 case 全跑一遍、全是 401、然后报绿」是最没意义的一种绿。
+//   2. **响应体留全**：以前截到 160 字符，失败时看不到原因；现在正常行留 800 字符，
+//      失败时把（整理过的）全文打出来。
+//
 // 跑在自托管 server/ 上而不是 workerd：Windows 本地 workerd 起不来（access violation），
 // 而 server/ 打包的就是同一套 worker 路由，测的是同一份逻辑。
 //
 // 用法：npm run probe:edge（自己起服务、自己收，需要 dist-server/）
+// 退出码：0 = 全部符合期望；1 = 有 case 不符合；2 = 登录没成功（后续 case 无意义）
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { AUTH_NONE, BODY_PREVIEW_CHARS, buildCases } from "./api-edge-probe-cases.mjs";
 
 const here = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const PORT = 8821 + (process.pid % 100); // 并发跑批时避让
 const BASE = `http://127.0.0.1:${PORT}`;
 
+/** 登录没成功时的独立退出码：与「有 case 不符合期望」区分开，两者要修的东西完全不同 */
+const EXIT_NO_SESSION = 2;
+
+/**
+ * 失败时打印响应体的上限。
+ *
+ * 为什么不是「无条件全文」：好几条 case 故意发 10 万字符，服务端会把它们原样回显在
+ * 报文里 —— 真失败时把 10 万字倒进 CI 日志，真正要看的那句 `{"error":{...}}`
+ * 反而被淹掉。真实的错误体都在 200 字符量级（结构化 `error` 对象），所以 20000
+ * 这个上限对「看清原因」没有任何损失；超了会显式标出「仅打印前 N 字符」。
+ */
+const FULL_BODY_LIMIT = 20_000;
+
 let cookie = "";
-const api = async (method, path, body) => {
+
+/**
+ * 发一个请求。
+ *
+ * @param {string} method
+ * @param {string} path
+ * @param {unknown} body `undefined` = 不带体；`null` = 带 JSON `null`
+ * @param {{ auth?: "none" }} [opts]
+ * @returns {Promise<{ status: number, text: string }>} `text` 是**完整**响应体（由调用方决定截多长）
+ */
+const api = async (method, path, body, opts) => {
+    const withAuth = opts?.auth !== AUTH_NONE;
     const res = await fetch(`${BASE}${path}`, {
         method,
         headers: {
             ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-            ...(cookie ? { Cookie: cookie } : {}),
+            ...(withAuth && cookie ? { Cookie: cookie } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    const sc = res.headers.getSetCookie?.() ?? [];
-    if (sc.length) cookie = sc.map(c => c.split(";")[0]).join("; ");
-    const text = await res.text();
-    return { status: res.status, text: text.slice(0, 160) };
+    // 探「未鉴权」的 case 不能污染会话：不带 cookie 的请求，它的 Set-Cookie 一律不采信
+    if (withAuth) {
+        const sc = res.headers.getSetCookie?.() ?? [];
+        if (sc.length) cookie = sc.map(c => c.split(";")[0]).join("; ");
+    }
+    return { status: res.status, text: await res.text() };
 };
 
 async function waitForServer(deadlineMs = 20000) {
@@ -55,6 +102,9 @@ async function waitForServer(deadlineMs = 20000) {
     }
     throw new Error("自托管服务 20 秒内没起来");
 }
+
+/** 把响应体压成一行，便于日志对齐 */
+const oneLine = s => s.replace(/\s+/g, " ").trim();
 
 const scratch = mkdtempSync(join(tmpdir(), "navihive-edge-probe-"));
 const child = spawn(
@@ -94,89 +144,29 @@ process.on("SIGINT", () => {
     process.exit(1);
 });
 
-// 10 万字符：远超任何字段的长度上限，用来试探「超长输入会不会把服务端搞崩」
-const LONG = "x".repeat(100_000);
-
-/** [方法, 路径, 请求体] —— 期望是 4xx（正确地拒绝）或 2xx，**绝不能是 5xx** */
-const cases = [
-    ["GET", "/api/notes?fields=list&limit=-1", undefined],
-    ["GET", "/api/notes?fields=list&limit=99999999", undefined],
-    ["GET", "/api/notes?fields=list&limit=abc", undefined],
-    ["GET", "/api/notes/-1", undefined],
-    ["GET", "/api/notes/NaN", undefined],
-    ["GET", "/api/notes/1e999", undefined],
-    ["GET", "/api/notes/99999999999999999999", undefined],
-    ["GET", "/api/notes/%20", undefined],
-    ["GET", "/api/notes/..", undefined],
-    ["GET", "/api/notes/folders/../../etc", undefined],
-    ["POST", "/api/notes/search", { query: LONG, limit: 10 }],
-    ["POST", "/api/notes/search", { query: "", limit: -5 }],
-    ["POST", "/api/notes/search", { query: null, limit: "x" }],
-    ["POST", "/api/notes/search", null],
-    ["POST", "/api/notes", { title: LONG, content: "a" }],
-    ["POST", "/api/notes", { title: "边界", content: LONG }],
-    ["POST", "/api/notes", { title: " 控制字符", content: "" }],
-    ["POST", "/api/notes", { title: "emoji \u{1F600}\u{1F1FA}\u{1F1F8}", content: "" }],
-    ["POST", "/api/notes", { title: 12345, content: {} }],
-    ["POST", "/api/notes", "不是对象"],
-    ["POST", "/api/notes", null],
-    ["POST", "/api/groups", { name: LONG, order_num: 0 }],
-    ["POST", "/api/groups", { name: "", order_num: 0 }],
-    ["POST", "/api/groups", { name: "分组", order_num: "abc" }],
-    ["POST", "/api/groups", { name: "分组", order_num: 1e999 }],
-    ["POST", "/api/groups", null],
-    ["POST", "/api/groups", "字符串"],
-    ["POST", "/api/groups", 12345],
-    ["POST", "/api/groups", [1, 2]],
-    ["POST", "/api/sites", { group_id: 999999, name: "孤立", url: "https://e.com" }],
-    ["POST", "/api/sites", { group_id: 1, name: "坏 URL", url: "javascript:alert(1)" }],
-    ["POST", "/api/sites", { group_id: 1, name: "坏 URL2", url: "not-a-url" }],
-    ["POST", "/api/sites", { group_id: 1, name: "坏 URL3", url: "" }],
-    ["POST", "/api/sites", null],
-    ["POST", "/api/notes/tags", { name: LONG }],
-    ["POST", "/api/notes/tags", null],
-    ["POST", "/api/notes/folders", { name: LONG, order_num: 0 }],
-    ["POST", "/api/notes/folders", null],
-    ["PUT", "/api/notes/1", { content: "x", rev: -1 }],
-    ["PUT", "/api/notes/1", { content: "x", rev: 99999999 }],
-    ["PUT", "/api/notes/1", { rev: "abc" }],
-    ["PUT", "/api/notes/1", null],
-    ["PUT", "/api/notes/1/tags", null],
-    ["PUT", "/api/notes/folders/1", { name: LONG }],
-    ["PUT", "/api/configs/x", { value: LONG }],
-    ["PUT", "/api/configs/x", { value: null }],
-    ["PUT", "/api/configs/x", null],
-    ["POST", "/api/notes/import", { data: "not-json" }],
-    ["POST", "/api/notes/import", { data: "{}" }],
-    ["POST", "/api/notes/import", null],
-    ["PUT", "/api/note-orders", { orders: "not-an-array" }],
-    ["PUT", "/api/note-orders", { orders: [{ id: "x", order_num: 1 }] }],
-    ["PUT", "/api/note-orders", null],
-    // 反向：这个接口**两种形状都认**，探针也得钉住「有效的形状不能被挡掉」——
-    // 只验「坏的被拒」会漏掉「好的也被拒」那一类回归（改错过一次）。
-    ["PUT", "/api/note-orders", [{ id: 1, order_num: 0 }]],
-    ["PUT", "/api/note-orders", { orders: [{ id: 1, order_num: 0 }] }],
-    ["PUT", "/api/group-orders", null],
-    ["PUT", "/api/site-orders", null],
-    ["GET", "/api/notes/attachments/..%2F..%2Fetc%2Fpasswd", undefined],
-    // 登录在鉴权链之外，单独一条：`null` 体曾让 validateLogin 去读 .username 抛 500
-    ["POST", "/api/login", null],
-];
-
-let bad = 0;
-try {
-    await waitForServer();
-    console.log(`# 接口边界探针（自托管通道 ${BASE}）`);
-
-    const init = await api("GET", "/api/init");
-    if (init.status !== 200) {
-        console.error(`服务没起来：${init.status}`);
-        process.exit(2);
-    }
-    // 写接口要登录才有意义（未登录时它们统一 401，量不出边界行为）
+/**
+ * 登录，并**证明**真的登上了。
+ *
+ * 返回 `{ ok, reason, checks, status, text }`；`ok === false` 时调用方用 EXIT_NO_SESSION 中止。
+ * 判据四条同时成立才算登上了（只看其中一条都会被「看起来登上了」骗过）：
+ *   1. 最后一次登录响应的状态是 200；
+ *   2. 响应体说 `success: true`；
+ *   3. 不带 `mustChangePassword`（带 = 还停在强制改密页，后续写接口会被闸挡住）；
+ *   4. 拿得到会话凭据：Set-Cookie 里的 token，或响应体里的 token / session 字段。
+ * 之后还会用一个受保护接口实测一次（见调用处）。
+ */
+async function login() {
+    let last = { status: 0, text: "" };
+    let parsed = {};
     for (const pw of ["seed-password", "edge-probe-pw-2026"]) {
-        const r = await api("POST", "/api/login", { username: "root", password: pw });
-        if (r.status === 200 && !JSON.parse(r.text || "{}").mustChangePassword) break;
+        last = await api("POST", "/api/login", { username: "root", password: pw });
+        try {
+            parsed = JSON.parse(last.text || "{}");
+        } catch {
+            parsed = {};
+        }
+        if (last.status === 200 && !parsed.mustChangePassword) break;
+        // 强制改密：先把口令换成第二个，再回到循环头重新登录一次
         await api("PUT", "/api/auth/credentials", {
             username: "root",
             currentPassword: pw,
@@ -184,24 +174,147 @@ try {
         });
     }
 
-    for (const [m, p, b] of cases) {
-        let r;
+    const tokenInBody =
+        (typeof parsed.token === "string" && parsed.token.length > 0) ||
+        (typeof parsed.session === "string" && parsed.session.length > 0);
+    const tokenInCookie = /(^|;\s*)navihive_token=[^;\s]+/.test(cookie);
+    const checks = {
+        "登录状态 200": last.status === 200,
+        "响应体 success: true": parsed.success === true,
+        "没有 mustChangePassword": !parsed.mustChangePassword,
+        "拿到会话凭据（Set-Cookie token 或响应 token/session）": tokenInBody || tokenInCookie,
+    };
+    const broken = Object.keys(checks).filter(k => !checks[k]);
+    return {
+        ok: broken.length === 0,
+        checks,
+        reason: broken.length === 0 ? "" : broken.join("、"),
+        status: last.status,
+        text: last.text,
+    };
+}
+
+/**
+ * 判定一条 case。
+ *
+ * @param {{ expect: number[] }} c
+ * @param {number} status
+ * @returns {{ ok: boolean, reason: string }}
+ */
+const judge = (c, status) => {
+    // 旧判据保留且优先级最高：5xx 是「服务端崩了」，与期望里写没写 500 无关
+    if (status >= 500) return { ok: false, reason: `5xx：服务端自己崩了（期望 ${c.expect.join("/")}）` };
+    if (!c.expect.includes(status)) {
+        return { ok: false, reason: `状态码不符：期望 ${c.expect.join("/")}，实际 ${status}` };
+    }
+    return { ok: true, reason: "" };
+};
+
+const cases = buildCases();
+let confirmed = 0;
+let failed = 0;
+/** @type {Array<{ label: string, expect: string, actual: string, verdict: "confirmed" | "FAILED", reason: string }>} */
+const verdicts = [];
+
+try {
+    await waitForServer();
+    console.log(`# 接口边界探针（自托管通道 ${BASE}）`);
+    console.log(`# case 表：script/api-edge-probe-cases.mjs，共 ${cases.length} 条\n`);
+
+    const init = await api("GET", "/api/init");
+    if (init.status !== 200) {
+        console.error(`服务没起来：/api/init 返回 ${init.status}`);
+        process.exit(2);
+    }
+
+    // ---- 登录前置：未登录态跑完全部 case 等于什么都没测 ----
+    const session = await login();
+    for (const [name, ok] of Object.entries(session.checks)) {
+        console.log(`${ok ? "  ok" : "FAIL"}  ${name}`);
+    }
+    const probeRes = await api("GET", "/api/notes?fields=list");
+    const probeOk = probeRes.status === 200;
+    console.log(`${probeOk ? "  ok" : "FAIL"}  受保护接口实测 GET /api/notes（实际 ${probeRes.status}）`);
+
+    if (!session.ok || !probeOk) {
+        console.error(
+            `\n未登录，后续 case 无意义 —— 中止（退出码 ${EXIT_NO_SESSION}）。\n` +
+                `  卡在：${probeOk ? session.reason : `受保护接口返回 ${probeRes.status}`}\n` +
+                `  登录响应：${session.status} ${oneLine(session.text).slice(0, BODY_PREVIEW_CHARS)}\n` +
+                `  当前 cookie：${cookie ? oneLine(cookie).slice(0, 120) : "（空）"}`
+        );
+        process.exit(EXIT_NO_SESSION);
+    }
+    console.log("");
+
+    // ---- 逐条执行 ----
+    for (let i = 0; i < cases.length; i++) {
+        const c = cases[i];
+        const label = `${c.method} ${c.path}`;
+        const tag = String(i + 1).padStart(2, " ");
+        const expectText = `[${c.expect.join("/")}]`;
+
+        let res;
         try {
-            r = await api(m, p, b);
+            res = await api(c.method, c.path, c.body, { auth: c.auth });
         } catch (e) {
-            console.log(`ERR  ${m} ${p.slice(0, 70)}  ${e?.message}`);
-            bad++;
+            failed++;
+            verdicts.push({
+                label,
+                expect: expectText,
+                actual: "ERR",
+                verdict: "FAILED",
+                reason: `连接/请求失败：${e?.message ?? e}`,
+            });
+            console.log(`FAIL ${tag} ${label}  期望 ${expectText}  实际 ERR`);
+            console.log(`     why   ${c.why}`);
+            console.log(`     error ${e?.message ?? e}`);
             continue;
         }
-        const flag = r.status >= 500 ? "5xx " : r.status >= 400 ? "4xx " : "2xx ";
-        if (r.status >= 500) bad++;
+
+        const verdict = judge(c, res.status);
+        if (verdict.ok) confirmed++;
+        else failed++;
+        verdicts.push({
+            label,
+            expect: expectText,
+            actual: String(res.status),
+            verdict: verdict.ok ? "confirmed" : "FAILED",
+            reason: verdict.reason,
+        });
+
         console.log(
-            `${flag} ${m} ${p.slice(0, 70)}  ${r.status}  ${r.text.replace(/\s+/g, " ").slice(0, 90)}`
+            `${verdict.ok ? "ok  " : "FAIL"} ${tag} ${label}  期望 ${expectText}  实际 ${res.status}`
+        );
+        if (!verdict.ok) {
+            console.log(`     why    ${c.why}`);
+            if (c.note) console.log(`     note   ${c.note}`);
+            console.log(`     reason ${verdict.reason}`);
+        }
+        // 正常行留 800 字符（旧版 160 太短，连一条结构化 error 都看不全）；
+        // 失败时把全文打出来，超长部分显式标出截断位置。
+        const flat = oneLine(res.text);
+        const shown = flat.slice(0, verdict.ok ? BODY_PREVIEW_CHARS : FULL_BODY_LIMIT);
+        const truncated = !verdict.ok && flat.length > FULL_BODY_LIMIT;
+        console.log(
+            `     body   ${shown}${truncated ? ` …（仅打印前 ${FULL_BODY_LIMIT} 字符，全文 ${flat.length} 字符）` : ""}`
+        );
+    }
+
+    // ---- 汇总：逐条「期望 vs 实际 + 判定」 ----
+    console.log(`\n## 汇总（期望 vs 实际）`);
+    for (const v of verdicts) {
+        const mark = v.verdict === "confirmed" ? "confirmed" : "FAILED   ";
+        console.log(
+            `  ${mark}  ${v.label.padEnd(56, " ")} 期望 ${v.expect.padEnd(7, " ")} 实际 ${v.actual.padEnd(4, " ")}${v.reason ? `  ← ${v.reason}` : ""}`
         );
     }
 } finally {
     shutdown();
 }
 
-console.log(`\n5xx / 连接错误：${bad} 条（共 ${cases.length} 项）`);
-process.exit(bad ? 1 : 0);
+console.log(`\nconfirmed：${confirmed} 条    failed：${failed} 条    共 ${cases.length} 项`);
+if (failed) {
+    console.log("失败项逐条看了上面的 `why` / `reason` / `body` 三行 —— 那三行就是全部上下文。");
+}
+process.exit(failed ? 1 : 0);

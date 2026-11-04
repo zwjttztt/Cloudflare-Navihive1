@@ -30,20 +30,30 @@ import { logger } from "../../../../shared/logger";
  * 条件 INSERT 进 note_tag（不存在才建）并挂到 note_note_tag（忽略重复）。
  * 只追加，不撤销手工标签。
  */
-function inlineTagStatements(api: NavigationAPI, noteKey: number | string, content: string): D1PreparedStatement[] {
+function inlineTagStatements(
+    api: NavigationAPI,
+    noteKey: number | string,
+    content: string,
+    guardRev?: number
+): D1PreparedStatement[] {
     const statements: D1PreparedStatement[] = [];
     const noteColumn = typeof noteKey === "number" ? "id" : "uuid";
+    // guardRev 仅 updateNote 在「带 rev 的乐观锁」路径传入（R02）：自动标签副作用也要
+    // 受同一预期 rev 守卫约束，否则冲突（主 UPDATE 命中 0 行）时旧正文里的标签仍会被
+    // 旁写进库。noteColumn === "id" 保证守卫落在笔记主键上；新建笔记走 uuid 且无守卫。
+    const needGuard = typeof guardRev === "number" && noteColumn === "id";
+    const tagGuardBinds = needGuard ? [guardRev as number] : [];
     for (const name of extractNoteTags(content)) {
         statements.push(api.db.prepare(`INSERT INTO note_tag (user_id, name)
-            SELECT ?, ? WHERE EXISTS (SELECT id FROM notes WHERE ${noteColumn} = ?${api.scopeSql(true)})
+            SELECT ?, ? WHERE EXISTS (SELECT id FROM notes WHERE ${noteColumn} = ?${api.scopeSql(true)}${needGuard ? " AND rev = ?" : ""})
             AND NOT EXISTS (SELECT id FROM note_tag WHERE name = ?${api.scopeSql(true)})`)
-            .bind(api.currentUserId, name, ...api.scopeParams([noteKey]), ...api.scopeParams([name])));
+            .bind(api.currentUserId, name, ...api.scopeParams([noteKey, ...tagGuardBinds]), ...api.scopeParams([name])));
         statements.push(api.db.prepare(`INSERT OR IGNORE INTO note_note_tag (note_id, tag_id)
             SELECT n.id, t.id FROM notes n, note_tag t
-            WHERE n.${noteColumn} = ? AND t.name = ?
+            WHERE n.${noteColumn} = ?${needGuard ? " AND n.rev = ?" : ""} AND t.name = ?
               AND n.id IN (SELECT id FROM notes${api.scopeSql(false)})
               AND t.id IN (SELECT id FROM note_tag${api.scopeSql(false)})`)
-            .bind(noteKey, name, ...api.scopeParams([]), ...api.scopeParams([])));
+            .bind(noteKey, ...tagGuardBinds, name, ...api.scopeParams([]), ...api.scopeParams([])));
     }
     return statements;
 }
@@ -66,8 +76,18 @@ function inlineTagStatements(api: NavigationAPI, noteKey: number | string, conte
 function releaseSiteBindingStatement(
     api: NavigationAPI,
     siteId: number,
-    keepNoteId: number | null
+    keepNoteId: number | null,
+    guardRev?: number
 ): D1PreparedStatement {
+    // guardRev 只在「换绑已有笔记」时由 updateNote 传入（R02）：只有当目标笔记确实还
+    // 拿着预期 rev，才允许去解绑同站点的其它笔记。这样并发冲突（主 UPDATE 命中 0 行）时，
+    // 这条解绑也会因 EXISTS 守卫落空而完全不执行 —— 冲突零业务副作用。
+    // 新建笔记（keepNoteId 为 null）没有 rev 概念，不加守卫。
+    const needGuard = typeof guardRev === "number" && keepNoteId !== null;
+    const guard = needGuard
+        ? ` AND EXISTS (SELECT 1 FROM notes WHERE id = ? AND rev = ?${api.scopeSql(true)})`
+        : "";
+    const guardBinds = needGuard ? api.scopeParams([keepNoteId as number, guardRev as number]) : [];
     if (keepNoteId === null) {
         return api.db
             .prepare(`UPDATE notes SET site_id = NULL WHERE site_id = ?${api.scopeSql(true)}`)
@@ -75,9 +95,9 @@ function releaseSiteBindingStatement(
     }
     return api.db
         .prepare(
-            `UPDATE notes SET site_id = NULL WHERE site_id = ? AND id != ?${api.scopeSql(true)}`
+            `UPDATE notes SET site_id = NULL WHERE site_id = ? AND id != ?${api.scopeSql(true)}${guard}`
         )
-        .bind(...api.scopeParams([siteId, keepNoteId]));
+        .bind(...api.scopeParams([siteId, keepNoteId]), ...guardBinds);
 }
 
 export const noteMethods: Pick<NotesApi,
@@ -322,18 +342,23 @@ export const noteMethods: Pick<NotesApi,
                 before !== null &&
                 (before.content !== (patch.content ?? before.content) ||
                     before.title !== (patch.title ?? before.title));
-            const tags = patch.content === undefined ? [] : inlineTagStatements(this, id, patch.content);
-            // 一站一笔记：换绑时把同一站点上别的笔记先解绑（排在本条 UPDATE 之前，
-            // 顺序反了会把刚设上的 site_id 又清掉）。约束只在这两处收口。
+            const tags = patch.content === undefined ? [] : inlineTagStatements(this, id, patch.content, expectRev ?? undefined);
+            // R02：冲突零业务副作用。把「解绑同站其它笔记」与「自动标签」这两条副作用排在
+            // 主 UPDATE **之前**，并都带同样的预期 rev 守卫：主 UPDATE 因 rev 不符而命中 0 行时，
+            // 这些副作用的 EXISTS(目标 rev = 预期) 也一并落空，不会旁写。主 UPDATE 成功（rev 仍是
+            // 预期值）时守卫通过，副作用照常生效。无 rev 老客户端不传守卫 = 旧行为（兼容）。
+            // 一站一笔记：换绑时把同一站点上别的笔记先解绑（解绑只动 id != 目标的其它笔记，
+            // 不会清掉目标自己，所以排在前面也安全）。约束只在这两处收口。
             const pre: D1PreparedStatement[] =
                 typeof patch.site_id === "number"
-                    ? [releaseSiteBindingStatement(this, patch.site_id, id)]
+                    ? [releaseSiteBindingStatement(this, patch.site_id, id, expectRev ?? undefined)]
                     : [];
-            const all = [...pre, statement, ...tags];
+            const all = [...pre, ...tags, statement];
+            const mainIndex = pre.length + tags.length;
             // 快照与正文更新**不在同一个事务**里：快照失败不该让用户的保存失败
             // （历史是辅助功能，存不上只说明少一个版本，不能反过来把正文丢了）。
             const result =
-                all.length === 1 ? await statement.all<Note>() : (await this.db.batch(all))[pre.length];
+                all.length === 1 ? await statement.all<Note>() : (await this.db.batch(all))[mainIndex];
             if (!result.success) return null;
             const updatedRows = (result.results || []) as Note[];
             if (updatedRows.length === 0) {

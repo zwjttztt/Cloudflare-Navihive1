@@ -15,6 +15,7 @@ import net from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createGzip } from "node:zlib";
 import { spawn, spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -80,6 +81,60 @@ const MIME = {
     ".webmanifest": "application/manifest+json",
     ".woff2": "font/woff2",
 };
+
+// ---------------- 压缩（2026-11-04 加，审查项 R14） ----------------
+//
+// 为什么必须压在**本地服务**这一层：线上走 Cloudflare / Nginx，文本资源一律 gzip 传输；
+// 而这里的静态服务原来是把文件原样吐给浏览器 —— 量到的是「未压缩」的口径。
+// 后果不是「数字难看」，而是**数字不可比**：`perf-audit.mjs` 拿这份 FCP/LCP 去和
+// 线上体感、和云端 Lighthouse 对照，中间差着一整个压缩比（实测首屏 JSON/JS 约 3:1）。
+// 首屏体感审计要回答的问题是「用户第一次看到内容要多久」，那条链路上的字节是**压缩后**的，
+// 所以本地服务必须按同一口径下发。
+//
+// 只压文本类（html/js/css/json/svg/webmanifest）。图片、字体、ico 本身已压缩，
+// 压了只会变大，线上也不会那样下发 —— 这条要跟线上一致，不是「压了总比不压强」。
+export const COMPRESSIBLE_EXTS = new Set([".html", ".js", ".css", ".json", ".svg", ".webmanifest"]);
+
+/**
+ * 客户端接受 gzip 的意愿（RFC 9110 的 q 值语义），> 0 表示可以下发 gzip。
+ *
+ * 三条必须做对的事（写错会静默地「偶尔不压缩」，比不压缩更难查）：
+ *   ① `gzip;q=0` 是**明确拒绝**，不能因为出现了 "gzip" 这几个字就当接受；
+ *   ② `q` 写坏了（`q=abc`）按 0 处理 —— 宁可下发未压缩的原文（一定正确），
+ *      也不要赌一个读不懂的协商头；
+ *   ③ 没提 gzip 时看 `*`（`Accept-Encoding: *;q=1` 表示什么编码都收）。
+ *      两者都没提 = 不接受（HTTP 里没写 `Accept-Encoding` 的客户端只保证认 identity）。
+ *
+ * @param {{ headers?: Record<string, string | string[] | undefined> } | null | undefined} req
+ * @returns {number} q 值（0 = 不下发 gzip）
+ */
+export function gzipQuality(req) {
+    const raw = req && req.headers ? req.headers["accept-encoding"] : undefined;
+    const header = Array.isArray(raw) ? raw.join(",") : String(raw ?? "");
+    if (!header.trim()) return 0;
+    /** 显式声明的 gzip q 值（null = 没提） */
+    let explicit = null;
+    /** `*` 的 q 值（null = 没提） */
+    let star = null;
+    for (const part of header.split(",")) {
+        const seg = part.trim();
+        if (!seg) continue;
+        const [nameRaw, ...params] = seg.split(";");
+        const name = nameRaw.trim().toLowerCase();
+        let q = 1;
+        for (const param of params) {
+            const p = param.trim().toLowerCase();
+            if (!p.startsWith("q=")) continue;
+            const value = Number(p.slice(2));
+            q = Number.isFinite(value) ? value : 0;
+        }
+        if (name === "gzip") explicit = q;
+        else if (name === "*") star = q;
+    }
+    if (explicit !== null) return explicit > 0 ? explicit : 0;
+    if (star !== null) return star > 0 ? star : 0;
+    return 0;
+}
 
 function parseHeadersFile() {
     const rules = [];
@@ -457,7 +512,29 @@ export async function startSiteServer(port = 0) {
         if (!filePath.startsWith(DIST) || !fs.existsSync(filePath)) {
             filePath = path.join(DIST, "index.html"); // SPA 兜底
         }
-        res.setHeader("Content-Type", MIME[path.extname(filePath)] || "application/octet-stream");
+        const ext = path.extname(filePath).toLowerCase();
+        res.setHeader("Content-Type", MIME[ext] || "application/octet-stream");
+
+        // 文本资源按线上口径 gzip 下发（见上面 COMPRESSIBLE_EXTS / gzipQuality 的说明）。
+        //
+        // ⚠️ 刻意**不设** Content-Length：压缩后的长度要么先压完拿到缓冲（多占内存、多一次
+        //    全量拷贝），要么算错 —— 而算错比不设糟得多（短了浏览器截断、长了永远等不到结尾）。
+        //    不设就走 chunked，浏览器照样能正常收、正常解压。
+        // ⚠️ `Vary: Accept-Encoding` 必须发：缓存里同一条 URL 的压缩与未压缩版本要能被区分，
+        //    否则带/不带压缩的响应会被错误合并（线上 CDN 也是这么做的）。
+        if (COMPRESSIBLE_EXTS.has(ext) && gzipQuality(req) > 0) {
+            res.setHeader("Content-Encoding", "gzip");
+            res.setHeader("Vary", "Accept-Encoding");
+            res.removeHeader("Content-Length");
+            const gz = createGzip({ level: 6 }); // level 6：Cloudflare 默认档，比 9 快、比 1 小
+            // 管道错误不能吞：压缩流 / 文件流任一炸掉时，不接 error 会变成一个
+            // 没人处理的 'error' 事件 —— 整个审计进程直接崩，看不到是哪一步出的事。
+            const onError = err => {
+                res.destroy(err);
+            };
+            fs.createReadStream(filePath).on("error", onError).pipe(gz).on("error", onError).pipe(res);
+            return;
+        }
         fs.createReadStream(filePath).pipe(res);
     });
     await new Promise((resolve, reject) => {
@@ -814,3 +891,346 @@ export const CONTRAST_CORE = `
     return { refresh, measure, ratio, parse, alphaOf, bgBehind };
   })();
 `;
+
+// ---------------- 可访问名（accessible name）判据 ----------------
+//
+// 为什么要有这一节（2026-11-04，R16）：`a11y-audit.mjs` 原来的判据是
+//
+//     const nameOf = el => (el.getAttribute('aria-label') || el.getAttribute('title')
+//                           || el.textContent || '').trim();
+//
+// 三处都不合规范，而且**两个方向都错**：
+//   ① 完全不认 `aria-labelledby` —— 用委托标签（弹窗 / 表单最常用的写法）
+//      命名的控件一律被判「无名」，那是假红；
+//   ② `title` 排在文本内容**前面**，而规范里 name-from-content 高于 title ——
+//      一个既有文案又有 title 的按钮，读屏念出来的和我量的不是同一个；
+//   ③ `<img alt="">` 是**合法**的装饰图写法（WCAG 明确允许），旧判据
+//      `!getAttribute('alt')` 把 `alt=""` 和「压根没写 alt」混成一件事，判成违规。
+//
+// 修法：把「可访问名」做成**一份实现**，由 `A11Y_NAME_CORE` 注入页面使用；
+// 单测（`tests/a11yNamedRules.dom.test.tsx`）直接把同一份源码放进 jsdom 里跑。
+// 判据只有一份 —— 页面里一份、测试里一份的写法，早晚会漂成两个结论。
+//
+// 判据顺序（对齐 accname / HTML-AAM 的常用部分）：
+//   ① `aria-labelledby`：**递归**解析（引用目标自己也有 labelledby 就继续往下），
+//      多个 id 用空格连接，跳过 `aria-hidden="true"` / `display:none` 的引用目标，
+//      带环检测（a → b → a 不会无限递归）；引用目标不存在就跳过那一条。
+//   ② `aria-label`
+//   ③ 原生：button / a / 任意元素取**文本内容**（img 子节点取它的 alt）；
+//      input / select / textarea 取 `label[for]` / `closest('label')` /
+//      按钮型 input 的 value / placeholder；img 取 alt。
+//   ④ `title`（最后兜底 —— 规范里它排在内容之后）
+//
+// 另外两件必须做对的事：
+//   · 元素若处在 `aria-hidden="true"`（或 display:none / hidden 属性）的子树里，
+//     它**不在可访问树上**，根本不参与「有没有名字」的统计 —— 但必须返回**明确的
+//     标记**而不是空串：空串在调用方眼里和「没名字」长得一模一样，混用必然出错。
+//     所以这里用 `exclusionReason(el)` 返回原因、`isUnnamed(el)` 对排除项返回 false。
+//   · img 的判据换成 `!img.hasAttribute('alt')`（区分「没写 alt」与「写了 alt=""」），
+//     唯一例外是**实际可交互**的图（`role="button"`、在 button/a 里、`tabindex>=0`）：
+//     那种图的 `alt=""` 等于让读屏念出一个没有名字的按钮，仍算无名。
+
+/**
+ * 可访问名核心（工厂）。
+ *
+ * ⚠️ 这个函数会被 `toString()` 序列化后注入页面执行，所以：
+ *   · **不许**引用模块作用域里的任何东西（闭包在页面里不存在，会 ReferenceError）；
+ *   · **不许**在函数体里用模板字符串（源码里出现反引号会把外层模板字符串截断，
+ *     这个坑 `contrast-audit.mjs` 已经踩过三次）；
+ *   · 只用 DOM 标准 API（`getComputedStyle` / `closest` / `getElementById`），
+ *     这样同一份源码在 `jsdom` 里也跑得动，单测测的就是页面里跑的那份。
+ *
+ * @returns {{accessibleName: Function, nameFromLabelledBy: Function, contentName: Function,
+ *            exclusionReason: Function, isExcluded: Function, isUnnamed: Function,
+ *            imgFails: Function, isInteractive: Function}}
+ */
+export function accessibleNameCore() {
+    /** 祖先链深度上限：正常 DOM 十几层，64 是「绝不可能是真实结构」的兜底 */
+    const MAX_DEPTH = 64;
+    /** labelledby 递归链的长度上限（环检测之外的第二道闸） */
+    const MAX_REFS = 32;
+
+    /** 归一化：把各类空白压成一个空格并去首尾（读屏念的也是这样） */
+    const norm = value => String(value === null || value === undefined ? "" : value).replace(/\s+/g, " ").trim();
+
+    /** `aria-hidden` 只认字符串 "true"（大小写 / 空格都容忍） */
+    const ariaHidden = el => {
+        if (!el || typeof el.getAttribute !== "function") return false;
+        const raw = el.getAttribute("aria-hidden");
+        return raw !== null && String(raw).trim().toLowerCase() === "true";
+    };
+
+    /** 排除原因的缓存：一次扫描里同一个元素只算一遍 */
+    const exclCache = new WeakMap();
+
+    /**
+     * 元素为什么不在可访问树上；在树上则返回 null。
+     *
+     * 口径（刻意区分「自己」与「祖先」）：
+     *   · 自己：`display:none` / `visibility:hidden|collapse` 直接判掉；
+     *   · 自己 + 祖先：`aria-hidden="true"`、`hidden` 属性、祖先的 `display:none`。
+     *   · **不**查祖先的 `visibility`：`visibility` 是继承的，元素自己的计算值已经
+     *     包含继承结果；再查祖先会误伤「祖先 visibility:hidden、子元素显式 visible」
+     *     这种合法写法。
+     */
+    const exclusionReason = el => {
+        if (!el || el.nodeType !== 1) return null;
+        if (exclCache.has(el)) return exclCache.get(el);
+        let reason = null;
+        let node = el;
+        let depth = 0;
+        while (node && node.nodeType === 1 && depth < MAX_DEPTH) {
+            if (ariaHidden(node)) {
+                reason = "aria-hidden";
+                break;
+            }
+            if (typeof node.hasAttribute === "function" && node.hasAttribute("hidden")) {
+                reason = "hidden-attr";
+                break;
+            }
+            const cs = getComputedStyle(node);
+            if (cs.display === "none") {
+                reason = "display-none";
+                break;
+            }
+            if (node === el && (cs.visibility === "hidden" || cs.visibility === "collapse")) {
+                reason = "visibility-hidden";
+                break;
+            }
+            node = node.parentElement;
+            depth++;
+        }
+        exclCache.set(el, reason);
+        return reason;
+    };
+
+    const isExcluded = el => exclusionReason(el) !== null;
+
+    /**
+     * 名字来自内容（name from content）：文本节点直接取，元素递归。
+     *
+     * img / area 取 alt（没有 alt 时退到它的 aria-label）—— 按规范，图片的
+     * 「文本替代」就是 alt，不去念它内部的（也不会有）子文本。
+     * `aria-hidden` 的子树**不贡献**名字：那是装饰。
+     */
+    const contentName = el => {
+        if (!el || el.nodeType !== 1) return "";
+        const parts = [];
+        const children = el.childNodes || [];
+        for (let i = 0; i < children.length; i++) {
+            const node = children[i];
+            if (node.nodeType === 3) {
+                parts.push(node.textContent || "");
+                continue;
+            }
+            if (node.nodeType !== 1) continue;
+            if (isExcluded(node)) continue;
+            const tag = node.tagName ? node.tagName.toLowerCase() : "";
+            if (tag === "img" || tag === "area") {
+                const alt = norm(node.getAttribute("alt"));
+                parts.push(alt || norm(node.getAttribute("aria-label")));
+                continue;
+            }
+            const own = norm(node.getAttribute("aria-label"));
+            if (own) {
+                parts.push(own);
+                continue;
+            }
+            parts.push(contentName(node));
+        }
+        return norm(parts.join(" "));
+    };
+
+    /** 按钮型 input（submit / reset / button / image）的文本替代 */
+    const inputValueName = el => {
+        const type = (el.getAttribute("type") || "").toLowerCase();
+        if (type === "submit" || type === "reset" || type === "button") {
+            const value = norm(el.getAttribute("value"));
+            if (value) return value;
+            // 没写 value 的 submit / reset 有浏览器默认文案，这里按规范补上
+            if (type === "submit") return "提交";
+            if (type === "reset") return "重置";
+            return "";
+        }
+        if (type === "image") return norm(el.getAttribute("alt"));
+        return "";
+    };
+
+    /** 表单控件的原生名字：label[for] → 祖先 label → value（按钮型）→ placeholder */
+    const nativeFieldName = el => {
+        const doc = el.ownerDocument || document;
+        const tag = el.tagName ? el.tagName.toLowerCase() : "";
+        const id = el.getAttribute("id");
+        if (id) {
+            // 刻意不拼选择器（id 里可能有引号 / 冒号）：遍历比对属性最稳
+            const labels = doc.querySelectorAll("label[for]");
+            for (let i = 0; i < labels.length; i++) {
+                if (labels[i].getAttribute("for") !== id) continue;
+                const text = contentName(labels[i]);
+                if (text) return text;
+            }
+        }
+        const wrapper = typeof el.closest === "function" ? el.closest("label") : null;
+        if (wrapper) {
+            // 包住控件的 label，其内容里常混着控件自己的值（select 的选项文本），
+            // 这里只取文字节点 + 非控件元素，避免把选项清单当成名字读一遍
+            const text = norm(
+                Array.prototype.filter
+                    .call(wrapper.childNodes, node => {
+                        if (node.nodeType === 3) return true;
+                        if (node.nodeType !== 1) return false;
+                        const t = node.tagName ? node.tagName.toLowerCase() : "";
+                        return t !== "input" && t !== "select" && t !== "textarea";
+                    })
+                    .map(node => (node.nodeType === 3 ? node.textContent || "" : contentName(node)))
+                    .join(" ")
+            );
+            if (text) return text;
+        }
+        if (tag === "input") {
+            const byValue = inputValueName(el);
+            if (byValue) return byValue;
+        }
+        const placeholder = norm(el.getAttribute("placeholder"));
+        if (placeholder) return placeholder;
+        return "";
+    };
+
+    /**
+     * `aria-labelledby` 解析（递归 + 环检测）。
+     *
+     * @param el 取名字的元素
+     * @param seen 已经走过的 id 集合（环检测；undefined 表示新建）
+     */
+    const nameFromLabelledBy = (el, seen) => {
+        if (!el || el.nodeType !== 1) return "";
+        const raw = norm(el.getAttribute("aria-labelledby"));
+        if (!raw) return "";
+        const doc = el.ownerDocument || document;
+        const visited = seen || new Set();
+        const ids = raw.split(/\s+/).filter(Boolean);
+        const parts = [];
+        for (let i = 0; i < ids.length; i++) {
+            const id = ids[i];
+            if (visited.has(id)) continue;
+            visited.add(id);
+            if (visited.size > MAX_REFS) break;
+            const ref = doc.getElementById(id);
+            if (!ref) continue;
+            // 引用目标不可见（aria-hidden / display:none）→ 名字里不出现（规范如此）
+            if (isExcluded(ref)) continue;
+            const name = refName(ref, visited);
+            if (name) parts.push(name);
+        }
+        return norm(parts.join(" "));
+    };
+
+    /** 引用目标自己的名字：它可能又有 labelledby / aria-label / 是表单控件 / 是图 */
+    const refName = (ref, visited) => {
+        const byLabel = nameFromLabelledBy(ref, visited);
+        if (byLabel) return byLabel;
+        const own = norm(ref.getAttribute("aria-label"));
+        if (own) return own;
+        const tag = ref.tagName ? ref.tagName.toLowerCase() : "";
+        if (tag === "img" || tag === "area") return norm(ref.getAttribute("alt"));
+        if (tag === "input" || tag === "select" || tag === "textarea") return nativeFieldName(ref);
+        return contentName(ref);
+    };
+
+    /**
+     * 取可访问名。
+     *
+     * @param el 目标元素
+     * @param opts `{ content?: boolean, title?: boolean }`
+     *   · `content:false`：**不许**用「文本内容」当名字。`role="dialog"` 这类
+     *     角色按 ARIA 规范必须有作者提供的名字（aria-label / aria-labelledby），
+     *     拿正文文字当名字会让「弹窗没有可访问名」这条判据静默失效。
+     *   · `title:false`：连 title 也不认。
+     * @returns {string} 名字（可能是空串）；元素被排除在可访问树外时返回 `null`
+     */
+    const accessibleName = (el, opts) => {
+        if (!el || el.nodeType !== 1) return "";
+        // ⚠️ 排除项返回 **null**（明确标记），不是空串 —— 空串和「没名字」无法区分
+        if (isExcluded(el)) return null;
+        const options = opts || {};
+        const allowContent = options.content !== false;
+        const allowTitle = options.title !== false;
+
+        const byLabel = nameFromLabelledBy(el, null);
+        if (byLabel) return byLabel;
+
+        const label = norm(el.getAttribute("aria-label"));
+        if (label) return label;
+
+        const tag = el.tagName ? el.tagName.toLowerCase() : "";
+        let native = "";
+        if (tag === "img" || tag === "area") native = norm(el.getAttribute("alt"));
+        else if (tag === "input" || tag === "select" || tag === "textarea") native = nativeFieldName(el);
+        else if (allowContent) native = contentName(el);
+        if (native) return native;
+
+        return allowTitle ? norm(el.getAttribute("title")) : "";
+    };
+
+    /**
+     * 这个元素算不算「无名」。
+     *
+     * 不在可访问树上的元素返回 **false**（不参与统计）—— 这是 R16 的核心修正：
+     * 装饰用的 `aria-hidden` 子树里那些没有名字的图标按钮，旧判据全算成违规。
+     */
+    const isUnnamed = el => {
+        if (isExcluded(el)) return false;
+        return accessibleName(el) === "";
+    };
+
+    /** 元素是否实际可交互（决定 `alt=""` 的图算不算「无名按钮」） */
+    const isInteractive = el => {
+        if (!el || el.nodeType !== 1) return false;
+        const role = (el.getAttribute("role") || "").trim().toLowerCase();
+        if (role === "button" || role === "link" || role === "checkbox" || role === "switch" || role === "tab") {
+            return true;
+        }
+        const tabindex = el.getAttribute("tabindex");
+        if (tabindex !== null && Number(tabindex) >= 0) return true;
+        if (typeof el.closest !== "function") return false;
+        return !!el.closest('button, a[href], [role="button"], [role="link"]');
+    };
+
+    /**
+     * img 是否违规（缺文本替代）。
+     *
+     * 判据：`!hasAttribute('alt')` —— 「没写 alt」与「写了 alt=""」是两件事，
+     * 后者是**合法**的装饰图（WCAG 1.1.1 / H67），旧判据把两者混为一谈。
+     * 例外：实际可交互的图 `alt=""` 仍算无名（读屏会念出一个没有名字的按钮），
+     * 除非它另外有 aria-label / aria-labelledby / title 撑住。
+     */
+    const imgFails = img => {
+        if (!img || img.nodeType !== 1) return false;
+        if (isExcluded(img)) return false;
+        if (typeof img.hasAttribute !== "function") return false;
+        if (!img.hasAttribute("alt")) return true;
+        if (norm(img.getAttribute("alt")) !== "") return false;
+        if (!isInteractive(img)) return false;
+        return accessibleName(img) === "";
+    };
+
+    return {
+        accessibleName,
+        nameFromLabelledBy: el => nameFromLabelledBy(el, null),
+        contentName,
+        exclusionReason,
+        isExcluded,
+        isUnnamed,
+        imgFails,
+        isInteractive,
+    };
+}
+
+/**
+ * 注入页面用的源码：`const NHNAME = (…工厂…)();`
+ *
+ * 用 `toString()` 从上面那一个函数生成，而不是再手写一份字符串 —— 两份实现是
+ * 「判据静默漂开」的唯一成因。用字符串拼接而不是模板字符串：工厂的源码里
+ * 一旦出现反引号，模板字符串会被当场截断（`contrast-audit.mjs` 踩过三次）。
+ */
+export const A11Y_NAME_CORE = "const NHNAME = (" + accessibleNameCore.toString() + ")();";

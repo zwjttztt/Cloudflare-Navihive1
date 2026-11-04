@@ -37,7 +37,29 @@ export default function SettingsWorkspacePanel({
             {/* 头部内边距压紧（2026-10-31）：外层顶栏从 56 降到 48、左栏少了三个
                 分组标题，正文的起点还能再往上提 8px —— 省下来的高度直接给正文 */}
             <Box sx={{ flexShrink: 0, px: { xs: 2, sm: 3 }, pt: { xs: 1.5, sm: 1.5 }, pb: 0.5 }}>
-                <Typography component='h3' sx={{ fontSize: 17, fontWeight: 600 }}>
+                {/* 面板标题是窄屏「目标直达」那一步的焦点落点（R09）：
+                    窄屏同一时刻只有一栏在 DOM 里，切到面板那一步时点出来的那颗
+                    按钮已经没了，焦点不接力就掉到 <body>。`tabIndex={-1}` 让它
+                    能被脚本聚焦、又不进 Tab 顺序（用户不该 Tab 到标题上停一下）。
+                    `data-workspace-panel-title` 是外壳找它的唯一钩子 —— 外壳收到的
+                    只是不透明的 children，认不得这个 h3。 */}
+                <Typography
+                    component='h3'
+                    tabIndex={-1}
+                    data-workspace-panel-title='1'
+                    sx={{
+                        fontSize: 17,
+                        fontWeight: 600,
+                        "&:focus": { outline: "none" },
+                        // 只有键盘 / 脚本聚焦才画圈：程序化聚焦（鼠标通路上来的）
+                        // 不给一圈突兀的框，键盘用户仍然看得见焦点在哪
+                        "&:focus-visible": {
+                            outline: "2px solid var(--accent-op)",
+                            outlineOffset: 4,
+                            borderRadius: 0.5,
+                        },
+                    }}
+                >
                     {title}
                 </Typography>
                 {description && (

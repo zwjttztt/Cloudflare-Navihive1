@@ -7,7 +7,7 @@
 //   upgraded / failed（带原因）/ timeout —— 绝不死循环、绝不假装成功。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reloadWithFreshCache, waitForUpgrade } from "../src/utils/upgradeWait";
+import { reloadWithFreshCache, rollbackVeto, waitForUpgrade } from "../src/utils/upgradeWait";
 
 interface Call {
     url: string;
@@ -170,4 +170,112 @@ test("reloadWithFreshCache：缓存/SW 都不可用（隐私模式）也要重�
         reloaded += 1;
     });
     assert.equal(reloaded, 1);
+});
+
+// ---------- R05：回滚终态的显式否决 ----------
+// 事故形态：容器重建成功 → 新静态清单（precache-manifest）已经可读 → 健康门禁随后
+// 判定不健康并回滚。若先判版本号，UI 会先宣布「升级完成」，稍后才被回滚打脸。
+// 下面几例钉死：只要这一跳读到 rolled_back / rollback_failed，版本号再怎么变也不能 upgraded。
+
+test("waitForUpgrade：phase=rolled_back 且清单版本已变 → 显式否决，绝不判 upgraded", async () => {
+    const clock = fakeClock();
+    const { impl, calls } = stubFetch(url =>
+        url.includes("precache-manifest")
+            ? json({ version: "1750000000001" }) // 新版本已经可读
+            : json({ ok: true, phase: "rolled_back", error: "新容器未在限期内 healthy", finishedAt: 1 }),
+    );
+    const result = await waitForUpgrade({
+        localVersion: "1750000000000",
+        fetchImpl: impl,
+        sleep: clock.sleep,
+        now: clock.now,
+    });
+    assert.equal(result.kind, "failed", "回滚终态不能被版本号变化盖过去");
+    assert.match((result as { message: string }).message, /回滚/, "失败原因要写明「回滚」");
+    assert.equal((result as { rollback?: string }).rollback, "rolled_back");
+    assert.ok(
+        !calls.some(c => c.url.includes("precache-manifest")),
+        "否决必须排在版本号检查之前：读到 rolled_back 就不该再去读清单",
+    );
+});
+
+test("waitForUpgrade：phase=rollback_failed → failed，明确提示需人工介入", async () => {
+    const clock = fakeClock();
+    const { impl, calls } = stubFetch(url =>
+        url.includes("precache-manifest")
+            ? json({ version: "1750000000000" })
+            : json({ ok: true, phase: "rollback_failed", error: "回滚 compose 退出码 1", finishedAt: 1 }),
+    );
+    const result = await waitForUpgrade({
+        localVersion: "1750000000000",
+        fetchImpl: impl,
+        sleep: clock.sleep,
+        now: clock.now,
+    });
+    assert.equal(result.kind, "failed");
+    const message = (result as { message: string }).message;
+    assert.match(message, /回滚/);
+    assert.match(message, /人工/, "回滚也失败必须明说需要人工介入");
+    assert.equal((result as { rollback?: string }).rollback, "rollback_failed");
+    assert.ok(!calls.some(c => c.url.includes("precache-manifest")), "同样不该再读清单");
+});
+
+test("waitForUpgrade：先 recreating（版本未变）后 rolled_back（版本已变）→ 否决优先于版本号", async () => {
+    const clock = fakeClock();
+    // 每跳两次 fetch：偶数 = /api/system/upgrade，奇数 = precache-manifest
+    const { impl, calls } = stubFetch((_url, i) => {
+        if (i === 0) return json({ ok: true, phase: "recreating" });
+        if (i === 1) return json({ version: "1750000000000" });
+        if (i === 2) return json({ ok: true, phase: "rolled_back", error: "二次探活仍不健康", finishedAt: 1 });
+        return json({ version: "1750000000009" }); // 新版本已可读，但这一跳不该走到
+    });
+    const result = await waitForUpgrade({
+        localVersion: "1750000000000",
+        fetchImpl: impl,
+        sleep: clock.sleep,
+        now: clock.now,
+    });
+    assert.equal(result.kind, "failed");
+    assert.match((result as { message: string }).message, /回滚/);
+    assert.equal(
+        calls.filter(c => c.url.includes("precache-manifest")).length,
+        1,
+        "第二跳读到 rolled_back 后应立刻返回，不该再读清单判 upgraded",
+    );
+});
+
+test("waitForUpgrade：普通 failed 且版本已变 → 仍判 failed（相位判定始终在版本号之前）", async () => {
+    const clock = fakeClock();
+    const { impl, calls } = stubFetch(url =>
+        url.includes("precache-manifest")
+            ? json({ version: "1750000000001" })
+            : json({ ok: true, phase: "failed", error: "重建容器失败（退出码 21）" }),
+    );
+    const result = await waitForUpgrade({
+        localVersion: "1750000000000",
+        fetchImpl: impl,
+        sleep: clock.sleep,
+        now: clock.now,
+    });
+    assert.equal(result.kind, "failed");
+    assert.match((result as { message: string }).message, /退出码 21/);
+    assert.equal(
+        (result as { rollback?: string }).rollback,
+        undefined,
+        "普通 failed 不带 rollback 判别字段（UI 仍走 data-update-failed 分支）",
+    );
+    assert.ok(!calls.some(c => c.url.includes("precache-manifest")));
+});
+
+test("rollbackVeto：只有两个回滚终态被否决，其余相位一律不干预", () => {
+    assert.equal(rollbackVeto("failed"), null);
+    assert.equal(rollbackVeto("idle"), null);
+    assert.equal(rollbackVeto("recreating"), null);
+    assert.equal(rollbackVeto("pulling"), null);
+    assert.equal(rollbackVeto("done"), null);
+    assert.equal(rollbackVeto(undefined), null);
+    assert.equal(rollbackVeto("rolled_back")?.phase, "rolled_back");
+    assert.equal(rollbackVeto("rollback_failed")?.phase, "rollback_failed");
+    assert.match(rollbackVeto("rolled_back")!.message, /回滚/);
+    assert.match(rollbackVeto("rollback_failed")!.message, /人工/);
 });

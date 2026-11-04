@@ -141,12 +141,37 @@ export class NavigationAPI {
      */
     currentUserId: number | null = null;
     /**
-     * 建表 / 迁移是否已经完整跑过一遍。迁移完成前（首个请求、users 表还没建好时）
-     * 查账号状态会抛错，那时必须 fail-open（放行），否则整站登不进去；
-     * 迁移完成之后若再查出错，就是真·DB 异常，应当 fail-closed（按「不可用」拦下），
-     * 避免一个已被停用 / 清除的账号靠旧令牌继续过审。见 getAccountSessionState。
+     * dbReady 的**实例覆盖值**：null = 跟随模块级（正常情况）。
+     *
+     * 为什么还需要实例这一层：迁移在单个请求内可能先把状态翻过来（runMigrations 收尾
+     * 按失败步数置 false），而 `migrate()` 的结果对同一个实例来说是确定的事实；
+     * 另外测试要能直接 `api.dbReady = true/false` 指定某个用例的起步状态。
+     * 但它**不是**真值的来源 —— 真值在 migrationState.ready（模块级），见下面 getter。
      */
-    dbReady = false;
+    dbReadyOverride: boolean | null = null;
+    /**
+     * 建表 / 迁移是否已经完整跑过一遍。
+     *
+     * 语义（2026-11-04，审查报告 R07 改）：
+     *   · true  = 结构已尽力补齐 → 之后查询出错按「真·DB 异常」处理（unavailable，拦下）；
+     *   · false = 库还没建好 → 只有「错误明确是缺表 / 缺列」时才补跑迁移重试一次
+     *     （见 accounts.ts 的 getAccountSessionState）。
+     *
+     * ⚠️ 为什么是 getter 而不是普通字段：迁移每个 isolate 只跑一次（migrationState.promise），
+     * 而 NavigationAPI 是**每个请求 new 一个**。结论存实例上（2026-11-04 之前就是）
+     * 意味着冷启动后第二个请求起 dbReady 恒为 false，于是「未就绪才放行」这条豁免
+     * 在稳态下永远成立 —— 任何一次账号态读失败都会莫名放行。真值因此搬到模块级
+     * `migrationState.ready`，与 notesFtsReady 同一套做法（见 internals.ts 的注释）。
+     *
+     * 读：实例覆盖值优先，没设过就看模块级（跨请求可见的那份）。
+     * 写：只落实例覆盖值；迁移路径自己同时写模块级（那边才是「这套库」的结论）。
+     */
+    get dbReady(): boolean {
+        return this.dbReadyOverride ?? migrationState.ready;
+    }
+    set dbReady(value: boolean) {
+        this.dbReadyOverride = value;
+    }
     /**
      * DB 异常时的兜底取向。默认 fail-closed（查不到账号状态就拦下，见 dbReady 的注释）；
      * 但那意味着一次 D1 抖动就能把站点所有者自己也锁在门外，所以留一个开关：

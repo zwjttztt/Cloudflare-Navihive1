@@ -2,6 +2,21 @@
 //
 // 用法：npm run coverage      （两层都跑：触及率 + c8 行覆盖率）
 //       npm run check:coverage（同上，任意层跌破下限会退出码 1，供 CI 当门禁）
+//       node script/coverage.mjs --layer1-only
+//                             （只判第 1 层 import 覆盖；第 2 层被**显式**跳过，
+//                               且输出里会标注「本轮只判 import 覆盖」。
+//                               ⚠️ 两个 npm 命令都不传这个开关 —— 门禁默认是严格的）
+//
+// ⚠️ 门禁是 fail-closed 的（2026-11-04 审查项 R13 修）：**「量不到」一律算不过。**
+//    以前有两条静默放行的路 —— 缺 c8 时 `process.exit(gateFailed ? 1 : 0)`、
+//    读不到 coverage-summary.json 时 `return { failed: false }`。门禁在量不到的时候
+//    放行等于没有门禁：真出问题的那一轮恰好就是量不到的那一轮。现在：
+//      · 缺 c8                → 退出码 1（装依赖后重跑）
+//      · summary 不存在        → 退出码 1
+//      · summary 不是合法 JSON → 退出码 1
+//      · 聚合后 lines.total=0  → 退出码 1（一条行统计都没有 = 没测到）
+//    判定逻辑抽到 script/coverageGate.mjs 的纯函数里，由
+//    tests/coverageGateFailClosed.test.ts 表驱动钉住 —— 本文件只负责跑与打印。
 //
 // 输出两层，从粗到细：
 //   1. **触及率（按层，零依赖，秒级）**：用 esbuild 打包所有用例，从 metafile 反推
@@ -38,11 +53,33 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { decideCoverageExit, parseCoverageArgs, LAYER1_ONLY_FLAG } from "./coverageGate.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 const require = createRequire(`${ROOT}/package.json`);
 const esbuild = require("esbuild");
+
+// ---------- CLI：只有 --layer1-only 一个开关 ----------
+//
+// 不认识的 `-x` 直接报错退出：把打错的开关默默忽略，人会以为自己要的模式生效了，
+// 实际跑的是另一套（可能多花几分钟），最后拿到一个他没想过的结论。
+const cliArgs = parseCoverageArgs(process.argv.slice(2));
+if (cliArgs.unknown.length > 0) {
+    console.error(
+        `未知参数：${cliArgs.unknown.join(" ")}\n` +
+            `只认一个开关：${LAYER1_ONLY_FLAG}（只跑第 1 层 import 触及率）。`
+    );
+    process.exit(1);
+}
+const layer1Only = cliArgs.layer1Only;
+
+if (layer1Only) {
+    console.log(
+        `\n⚠️⚠️  第 2 层已按 ${LAYER1_ONLY_FLAG} 跳过，本轮只判 import 覆盖 ` +
+            `（文件被 import 过 ≠ 跑过多少行，本轮没有行覆盖率数据）⚠️⚠️\n`
+    );
+}
 
 const SKIP_DIR = new Set(["node_modules", "dist", "coverage", ".workbuddy", ".git"]);
 
@@ -295,95 +332,54 @@ try {
     /* 没装 */
 }
 
-if (!c8Bin) {
-    console.log(
-        "\n⚠️ 第 2 层（真行覆盖率）没跑：c8 没装。npm i -D c8 之后再跑一次。\n" +
-            "   注意上面第 1 层的百分比只说明「文件被 import 过」，不说明「跑过多少行」。"
-    );
-    process.exit(gateFailed ? 1 : 0);
-}
-
-console.log("\n=== 第 2 层：行覆盖率（c8 + sourcemap 重映射）===");
-console.log("（要重跑一遍全量单测，几分钟）\n");
-
-// 先清掉上一轮的产物：残留的 summary 会让「这一轮没跑出来」看起来像「跑出来了」
-fs.rmSync(COV_DIR, { recursive: true, force: true });
-
-const c8Args = [
-    c8Bin,
-    // 先按 sourcemap 重映射、再套 exclude 规则：顺序反了会把 src/ 一起排除掉
-    "--exclude-after-remap",
-    "--all",
-    "--src",
-    "src",
-    "--src",
-    "worker",
-    // server/ 与 shared/ 在第 1 层里是统计的，这一层不能漏 —— 漏了等于两层口径不同
-    "--src",
-    "server",
-    "--src",
-    "shared",
-    "--extension",
-    ".ts",
-    "--extension",
-    ".tsx",
-    "--reporter",
-    "text",
-    // 机器可读的汇总：下面按层聚合与门禁都读它，不靠解析 text 报表
-    "--reporter",
-    "json-summary",
-    "--reporter",
-    "lcov",
-    "--reports-dir",
-    "coverage",
-    "--exclude",
-    "tests/**",
-    "--exclude",
-    "script/**",
-    "--exclude",
-    "coverage/**",
-    "--exclude",
-    "dist/**",
-    "--exclude",
-    "dist-server/**",
-    "--exclude",
-    "**/*.d.ts",
-    "--exclude",
-    "*.config.*",
-    process.execPath,
-    "script/unit-tests.mjs",
-];
-
-const child = spawn(process.execPath, c8Args, {
-    stdio: "inherit",
-    cwd: ROOT,
-    // 让运行器生成 sourcemap 并保留产物：c8 是在子进程退出之后才去读 .map 做重映射的
-    env: { ...process.env, NAVIHIVE_COVERAGE: "1" },
-});
-
 const fmtPct = p => (p === null ? "—" : `${p.toFixed(1)}%`);
 
 /**
  * 读 c8 的 json-summary 并按第 1 层同一套分层聚合。
  *
+ * ⚠️ 只返回**事实**，不返回结论：判定交给 script/coverageGate.mjs 的纯函数，
+ * 这样「读不到 / 读坏 / 一条行统计都没有」这几条 fail-closed 判据才能被用例钉住。
+ *
  * 聚合用「covered / total 求和」而不是「各文件百分比求平均」：
  * 平均值会让一个 5 行的小文件和一个 900 行的组件等权，数字好看但没意义。
+ *
+ * @returns {{ summaryMissing: boolean, summaryReadError: string | null, linesTotal: number, breaches: string[] }}
  */
 function reportLayer2() {
+    if (!fs.existsSync(SUMMARY_FILE)) {
+        console.log(
+            "\n❌ coverage/coverage-summary.json 不存在 —— 这一轮没跑出行覆盖率，**门禁不通过**。" +
+                "\n   （看上面 c8 的输出，通常是单测本身挂了）"
+        );
+        return { summaryMissing: true, summaryReadError: null, linesTotal: 0, breaches: [] };
+    }
+
+    let raw;
+    try {
+        raw = fs.readFileSync(SUMMARY_FILE, "utf8");
+    } catch (error) {
+        const why = error?.code || error?.message || String(error);
+        console.log(
+            `\n❌ coverage/coverage-summary.json 读不出来（${why}）—— 这一轮没跑出行覆盖率，**门禁不通过**。`
+        );
+        return { summaryMissing: false, summaryReadError: `读取失败（${why}）`, linesTotal: 0, breaches: [] };
+    }
+
     let summary;
     try {
-        summary = JSON.parse(fs.readFileSync(SUMMARY_FILE, "utf8"));
-    } catch {
+        summary = JSON.parse(raw);
+    } catch (error) {
+        const why = error?.message || String(error);
         console.log(
-            "\n⚠️ 没读到 coverage/coverage-summary.json —— 这一轮没跑出行覆盖率，" +
-                "门禁只按第 1 层判。（看上面 c8 的输出，通常是单测本身挂了）"
+            `\n❌ coverage/coverage-summary.json 不是合法 JSON（${why}）—— **门禁不通过**。` +
+                "\n   （产物写了一半就被打断？重跑一次 npm run coverage）"
         );
-        return { failed: false };
+        return { summaryMissing: false, summaryReadError: `JSON.parse 失败（${why}）`, linesTotal: 0, breaches: [] };
     }
 
     const zero = () => ({ lines: [0, 0], branches: [0, 0], functions: [0, 0], files: 0 });
     const agg = zero();
-    const byLayer = new Map();
+    const byLayerL2 = new Map();
     const byDir = new Map();
 
     for (const [file, data] of Object.entries(summary)) {
@@ -397,7 +393,7 @@ function reportLayer2() {
         const dir = path.dirname(relative);
         for (const bucket of [
             agg,
-            byLayer.get(layer) || byLayer.set(layer, zero()).get(layer),
+            byLayerL2.get(layer) || byLayerL2.set(layer, zero()).get(layer),
             byDir.get(dir) || byDir.set(dir, zero()).get(dir),
         ]) {
             bucket.files++;
@@ -410,10 +406,21 @@ function reportLayer2() {
 
     const ratio = ([covered, tot]) => (tot > 0 ? (covered / tot) * 100 : null);
 
+    // fail-closed（R13）：一条行统计都没有 = 这一轮什么都没量到。
+    // 不能继续往下判（下面所有地板都会因为「分母是 0」而被跳过 → 静默变绿）。
+    const linesTotal = agg.lines[1];
+    if (linesTotal === 0) {
+        console.log(
+            `\n❌ 第 2 层聚合后 lines.total === 0（summary 里有 ${Object.keys(summary).length - 1} 个条目，` +
+                "但没有一条落在 src|worker|server|shared 下）—— 等于没测到，**门禁不通过**。"
+        );
+        return { summaryMissing: false, summaryReadError: null, linesTotal, breaches: [] };
+    }
+
     console.log("\n=== 第 2 层结果：真实覆盖率（按第 1 层同一套分层）===");
     console.log("层 | 文件数 | 行覆盖 | 分支覆盖 | 函数覆盖");
     for (const L of LAYER_ORDER) {
-        const s = byLayer.get(L);
+        const s = byLayerL2.get(L);
         if (!s) continue;
         console.log(
             `${L.padEnd(16)} | ${String(s.files).padStart(4)} | ${fmtPct(ratio(s.lines)).padStart(7)} | ` +
@@ -518,10 +525,140 @@ function reportLayer2() {
                 `，各纯函数目录也都在自己的地板上。地板是「别更差」，不是「够好了」。`
         );
     }
-    return { failed: breaches2.length > 0 };
+    return { summaryMissing: false, summaryReadError: null, linesTotal, breaches: breaches2 };
 }
 
-child.on("exit", code => {
+// ---------- 收口：判定 + 汇总 + 退出码 ----------
+//
+// 所有分支都从这里出去，判定只走 decideCoverageExit 一个入口 ——
+// 以前「缺 c8」和「读不到 summary」各自 `return { failed: false }` / `exit(0)`，
+// 那两条正是门禁静默放行的地方。
+
+/**
+ * 打印最终汇总并退出。
+ *
+ * @param {{ summaryMissing?: boolean, summaryReadError?: string | null,
+ *           linesTotal?: number, breaches?: string[], c8Missing?: boolean,
+ *           runnerExitCode?: number }} facts
+ */
+function finish(facts = {}) {
+    const decision = decideCoverageExit({
+        l1Failed: gateFailed,
+        c8Missing: facts.c8Missing === true,
+        summaryMissing: facts.summaryMissing === true,
+        summaryReadError: facts.summaryReadError ?? null,
+        linesTotal: facts.linesTotal ?? 0,
+        l2Breaches: facts.breaches ?? [],
+        layer1Only,
+    });
+
+    console.log("\n=== 汇总 ===");
+    for (const note of decision.notes) console.log(`⚠️  ${note}`);
+    if (decision.reasons.length > 0) {
+        console.log("❌ 覆盖率门禁不通过（退出码 1）：");
+        for (const reason of decision.reasons) console.log("  - " + reason);
+    } else if (decision.layer1Only) {
+        console.log(
+            `✅ 覆盖率门禁通过 —— 但只判了第 1 层：第 2 层已按 ${LAYER1_ONLY_FLAG} 跳过，` +
+                "本轮只判 import 覆盖，没有行覆盖率数据。"
+        );
+    } else {
+        console.log("✅ 覆盖率门禁通过（第 1 层 import 触及率 + 第 2 层真行覆盖率两层都过）。");
+    }
+
+    if (decision.exitCode !== 0) process.exit(1);
+    // 门禁过了：单测本身挂了也要让调用方看见（c8 的退出码一路透传）
+    process.exit(facts.runnerExitCode ?? 0);
+}
+
+if (layer1Only) {
+    // 只判第 1 层：不碰 c8、**也不删** coverage/ 里上一轮的产物
+    //（删了等于顺手毁掉别人上一次的报告，而这一轮我根本没打算重跑）
+    console.log(
+        `\n（第 2 层已按 ${LAYER1_ONLY_FLAG} 跳过：没有跑 c8，coverage/ 里上一轮的产物原样保留。）`
+    );
+    finish({});
+} else if (!c8Bin) {
+    console.log(
+        "\n❌ 第 2 层（真行覆盖率）没跑：c8 没装。\n" +
+            "   → 这一轮**没有行覆盖率数据，门禁不通过**（退出码 1）。\n" +
+            "   → 装依赖之后再跑一次：npm i -D c8\n" +
+            "   注意上面第 1 层的百分比只说明「文件被 import 过」，不说明「跑过多少行」。"
+    );
+    finish({ c8Missing: true });
+} else {
+    console.log("\n=== 第 2 层：行覆盖率（c8 + sourcemap 重映射）===");
+    console.log("（要重跑一遍全量单测，几分钟）\n");
+
+    // 先清掉上一轮的产物：残留的 summary 会让「这一轮没跑出来」看起来像「跑出来了」
+    fs.rmSync(COV_DIR, { recursive: true, force: true });
+
+    const c8Args = [
+        c8Bin,
+        // 先按 sourcemap 重映射、再套 exclude 规则：顺序反了会把 src/ 一起排除掉
+        "--exclude-after-remap",
+        "--all",
+        "--src",
+        "src",
+        "--src",
+        "worker",
+        // server/ 与 shared/ 在第 1 层里是统计的，这一层不能漏 —— 漏了等于两层口径不同
+        "--src",
+        "server",
+        "--src",
+        "shared",
+        "--extension",
+        ".ts",
+        "--extension",
+        ".tsx",
+        "--reporter",
+        "text",
+        // 机器可读的汇总：下面按层聚合与门禁都读它，不靠解析 text 报表
+        "--reporter",
+        "json-summary",
+        "--reporter",
+        "lcov",
+        "--reports-dir",
+        "coverage",
+        "--exclude",
+        "tests/**",
+        "--exclude",
+        "script/**",
+        "--exclude",
+        "coverage/**",
+        "--exclude",
+        "dist/**",
+        "--exclude",
+        "dist-server/**",
+        "--exclude",
+        "**/*.d.ts",
+        "--exclude",
+        "*.config.*",
+        process.execPath,
+        "script/unit-tests.mjs",
+    ];
+
+    const runnerExitCode = await new Promise(resolve => {
+        let settled = false;
+        const settle = value => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+        };
+        const child = spawn(process.execPath, c8Args, {
+            stdio: "inherit",
+            cwd: ROOT,
+            // 让运行器生成 sourcemap 并保留产物：c8 是在子进程退出之后才去读 .map 做重映射的
+            env: { ...process.env, NAVIHIVE_COVERAGE: "1" },
+        });
+        child.on("exit", code => settle(code ?? 1));
+        // 起不来（ENOMEM / ENOENT）也要往 fail-closed 走，不能让进程挂在没有 exit 的 Promise 上
+        child.on("error", error => {
+            console.error("\n启动 c8 失败:", error);
+            settle(1);
+        });
+    });
+
     // 产物（含 sourcemap）已经被 c8 用完，可以清掉；coverage/ 留给 lcov 查询。
     //
     // ⚠️ 清理失败**不能**影响退出码：它只是挪走临时文件，跟「覆盖率达不达标」无关。
@@ -533,6 +670,7 @@ child.on("exit", code => {
     } catch (error) {
         console.log(`\n（临时产物清理失败，不影响本轮结论：${error.code || error.message}）`);
     }
+
     const l2 = reportLayer2();
-    process.exit(gateFailed || l2.failed ? 1 : (code ?? 1));
-});
+    finish({ ...l2, runnerExitCode });
+}

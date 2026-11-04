@@ -96,7 +96,11 @@ export default function VersionUpgradeSection({ version }: { version?: string })
      * null = 还没结论（对应上面的 "upgrading"）。
      */
     const [upgradeOutcome, setUpgradeOutcome] = useState<
-        { kind: "done" } | { kind: "failed"; message: string } | null
+        | { kind: "done" }
+        // 回滚终态单独一种 outcome：绝不复用 done，也绝不出现「升级完成」字样
+        | { kind: "rolled_back"; message: string }
+        | { kind: "failed"; message: string }
+        | null
     >(null);
     /**
      * 「升级中」已经等了多少秒。
@@ -148,6 +152,9 @@ export default function VersionUpgradeSection({ version }: { version?: string })
         const local = localBuildVersion();
         if (!local) return;
         const result = await waitForUpgrade({ localVersion: local });
+        // 只有真正判出 upgraded 才宣布「升级完成」并清缓存重载。
+        // rolled_back / rollback_failed 在 waitForUpgrade 里已被显式否决成 failed，
+        // 这里再分流到独立的 rolled_back outcome —— 回滚场景绝不出现「升级完成」。
         if (result.kind === "upgraded") {
             setUpgradeOutcome({ kind: "done" });
             // 让「升级完成」先露一眼再刷，否则页面直接闪掉，用户看不出发生了什么
@@ -157,13 +164,15 @@ export default function VersionUpgradeSection({ version }: { version?: string })
         }
         // 失败/超时：把按钮放回可用状态（能重试），原因如实摆出来
         setCopyState(null);
-        setUpgradeOutcome({
-            kind: "failed",
-            message:
-                result.kind === "failed"
-                    ? result.message
-                    : "等了 2 分钟没检测到新版本：镜像可能还在构建（仓库版本比镜像早几分钟）。稍后刷新再看，或到服务器 compose 目录执行 docker compose pull && docker compose up -d --force-recreate。",
-        });
+        const message =
+            result.kind === "failed"
+                ? result.message
+                : "等了 2 分钟没检测到新版本：镜像可能还在构建（仓库版本比镜像早几分钟）。稍后刷新再看，或到服务器 compose 目录执行 docker compose pull && docker compose up -d --force-recreate。";
+        setUpgradeOutcome(
+            result.kind === "failed" && result.rollback
+                ? { kind: "rolled_back", message }
+                : { kind: "failed", message },
+        );
     };
 
     /**
@@ -326,6 +335,13 @@ export default function VersionUpgradeSection({ version }: { version?: string })
                     {upgradeOutcome?.kind === "done" && (
                         <Alert severity='success' data-update-done='1' sx={{ py: 0.25, flex: 1, minWidth: 220, lineHeight: 1.5 }}>
                             升级完成，正在刷新到新版本…
+                        </Alert>
+                    )}
+                    {/* 回滚终态的独立 Alert：文案由 upgradeWait 的否决消息给出，明确写
+                        「已回滚 / 需人工」，绝不含「升级完成」；独立锚点便于守卫钉死 */}
+                    {upgradeOutcome?.kind === "rolled_back" && (
+                        <Alert severity='warning' data-update-rolled-back='1' sx={{ py: 0.25, flex: 1, minWidth: 220, lineHeight: 1.5 }}>
+                            {upgradeOutcome.message}
                         </Alert>
                     )}
                     {upgradeOutcome?.kind === "failed" && (

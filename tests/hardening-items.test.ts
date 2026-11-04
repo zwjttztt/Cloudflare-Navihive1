@@ -434,21 +434,27 @@ function newApi(db: InMemoryD1): NavigationAPI {
 }
 
 // ================= Item 5：账号状态 fail-closed =================
-test("Item5：迁移未跑完（dbReady=false）时账号状态查询 fail-open，不锁死首请求", async () => {
+// 2026-11-04（审查报告 R07）：这两条断言改过。原来分别是
+//   「未跑完 → active（放行）」/「跑完 → missing」
+// —— 前者把 bug 写进了契约（dbReady 是实例字段，稳态下恒为 false，
+// 于是「未跑完」这条分支永远成立，任何读失败都放行），后者用 missing 顶替
+// 「没结论」，会让鉴权回 401 把人踢去重新登录。现在统一成 `unavailable`：
+// 未就绪时还必须**错误是缺表类**才会去补跑迁移重试一次（这里注入的是普通异常）。
+test("Item5：迁移未跑完（dbReady=false）时账号状态读不出来 → 未知态，不再当成首建放行", async () => {
     const db = new InMemoryD1();
-    db.throwOnUsersStatus = true; // 模拟首请求时 users 表还没建好
+    db.throwOnUsersStatus = true; // 注入的是普通异常（不是缺表类）
     const api = newApi(db);
     const state = await api.getAccountSessionState(1);
-    assert.equal(state, "active", "迁移未就绪时不应把整站挡在门外");
+    assert.equal(state, "unavailable", "非缺表类错误没有豁免可言，一律未知态");
 });
 
-test("Item5：迁移跑完后（dbReady=true）账号状态查询 fail-closed，DB 异常按「不可用」拦", async () => {
+test("Item5：迁移跑完后（dbReady=true）账号状态读不出来 → 同样未知态（由鉴权回 503）", async () => {
     const db = new InMemoryD1();
     const api = newApi(db);
     await api.migrate(); // 让 dbReady=true
     db.throwOnUsersStatus = true; // 迁移后若还出错，说明是真异常
     const state = await api.getAccountSessionState(1);
-    assert.equal(state, "missing", "迁移后 DB 异常应 fail-closed，拦下被停用/清除的旧令牌");
+    assert.equal(state, "unavailable", "迁移后 DB 异常应 fail-closed，拦下被停用/清除的旧令牌");
 });
 
 // ================= Item 7：审计日志 =================

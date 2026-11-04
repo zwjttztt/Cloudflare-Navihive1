@@ -21,6 +21,15 @@
 //
 // 调用方不要自己写 fetch + redirect loop —— 集中到这里是为了让所有出站请求共用同一套
 // 安全策略，避免某条新路由忘了加校验。
+//
+// 出站 fetch 实现是可注入的（setFetchImpl）：自托管的 server/entry.ts 会在启动时
+// 换成「undici Agent + 校验过的 IP 直连」的那个实现，把「校验用的解析」与
+// 「连接用的解析」合并成一次（DNS rebinding 根治，见 server/egressDispatch.ts）。
+// 不注入时（Cloudflare 侧、单测）就是全局 fetch，行为与以前完全一样。
+//
+// ⚠️ 注入只作用于本文件的 safeFetch。**故意不装全局 dispatcher**：WebDAV 的 davFetch
+// 要支持用户 opt-in 的内网 NAS（webdav.allowPrivateNetwork），把它也钉到「禁止内网 IP」
+// 的 lookup 上会直接废掉那个功能。那条例外的边界写在 SECURITY.md。
 
 import { isBlockedHost } from "./util";
 
@@ -78,8 +87,10 @@ function stripCredentials(
  * 由 server/entry.ts 启动时注册 Node 版实现（dns.lookup + 黑名单复核 + 60s 缓存），
  * Cloudflare 侧与测试环境不注册，行为零变化。
  *
- * ⚠️ 这是缓解不是根治：lookup 与 fetch 内部再次解析之间仍有窗口；要根治得自己
- * 建连接（http.request + 自定义 lookup 函数），对图标代理这类场景成本不成比例。
+ * ⚠️ 这道复核本身是缓解不是根治：lookup 与 fetch 内部再次解析之间仍有窗口。
+ *   根治做法是让连接也用这份解析结果 —— 自托管侧由 server/egressDispatch.ts 通过
+ *   setFetchImpl 注入「undici Agent + 校验过的 IP」，两道合起来才闭环；
+ *   Cloudflare 侧本来就是平台层 egress 拦截兜底，不需要这段。
  * 语义：返回 false = 拒绝这次出站（blocked）。
  */
 export type EgressResolver = (hostname: string) => Promise<boolean>;
@@ -89,6 +100,39 @@ let egressResolver: EgressResolver | null = null;
 /** 注册 / 注销出站解析复核（传 null 注销）。只有自托管 server 会注册。 */
 export function setEgressResolver(fn: EgressResolver | null): void {
     egressResolver = fn;
+}
+
+/**
+ * 出站 fetch 的形状：只收 href 字符串 + 标准 RequestInit，返回标准 Response。
+ *
+ * 用窄接口而不是 `typeof fetch`：注入方（server/egressDispatch.ts）拿到的是
+ * undici 自己的 fetch，入参还多一个 dispatcher；把它收成调用方够用的最小面，
+ * 两边的类型才对得上，也不会把 undici 的类型拖进 worker 侧编译。
+ */
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+/**
+ * 当前生效的出站 fetch 实现。null = 用运行时的全局 fetch（Cloudflare / 单测 / 默认）。
+ * ⚠️ 只在**进程内**有意义：它是模块级变量，Workers 里每个 isolate 各自一份，
+ * 而那侧本来就没人调用 setFetchImpl（零成本、行为不变）。
+ */
+let fetchImpl: FetchLike | null = null;
+
+/**
+ * 注册 / 注销出站 fetch 实现（传 null 恢复全局 fetch）。
+ *
+ * 只有自托管 server 会注册（server/entry.ts 启动时装上 undici dispatcher 版本，
+ * 理由见 server/egressDispatch.ts 的文件头）。不注册 = 走全局 fetch，
+ * 和这个函数存在之前完全一致。
+ */
+export function setFetchImpl(fn: FetchLike | null): void {
+    fetchImpl = fn;
+}
+
+/** 发一跳请求：注入了就用注入实现，否则用全局 fetch。 */
+function doFetch(input: string, init: RequestInit): Promise<Response> {
+    if (fetchImpl) return fetchImpl(input, init);
+    return fetch(input, init);
 }
 
 /**
@@ -257,7 +301,9 @@ export async function safeFetch(
 
         let res: Response;
         try {
-            res = await fetch(current.href, init);
+            // ⚠️ 走 doFetch 而不是裸 fetch：自托管侧注入了「连接用校验过的 IP」的实现，
+            // 这一层就是 DNS rebinding 的闭环（见文件头与本文件的 setFetchImpl）。
+            res = await doFetch(current.href, init);
         } catch (error) {
             const isTimeout =
                 error instanceof DOMException &&

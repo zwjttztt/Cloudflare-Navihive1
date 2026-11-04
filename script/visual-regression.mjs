@@ -210,6 +210,130 @@ if (!Number.isFinite(TOLERANCE) || TOLERANCE < 0) {
     process.exit(1);
 }
 
+// ---------------- 证据落盘（R17）----------------
+//
+// 背景（2026-11-04，R17）：这个脚本以前五条退出路径（中断 / 页面报错 / 有差异 /
+// 无基线 / 全过）**都是直接 done(N)**，一分钟内什么也不留下。CI 上视觉回归是
+// `continue-on-error: true` 的观察期步骤，失败时日志滚过去就没了 —— 「哪个用例
+// 差在哪几个字段、差了多少像素」这唯一有价值的信息，只存在于当时的控制台里。
+// 于是这条审计的实际价值等于「它绿的时候你不知道它在量什么，它红的时候你不知道
+// 为什么红」。
+//
+// 现在每次运行都往 `artifacts/visual-regression/<时间戳>/` 落两份东西：
+//   · `<case>.json` —— 每个用例一份：actual 指纹、基线指纹（有的话）、diff 明细；
+//   · `summary.json` —— 一次运行一份：时间 / 模式 / 容差 / 用例状态表 / pageErrors。
+//
+// ⚠️ `flush()` 必须**幂等**：done() 在若干条路径上都会走一遍，重复调用不许写出
+//    第二份 summary（那会让「一次运行 = 一个目录」这条约定失效，CI artifact 里
+//    出现两份互相矛盾的结论）。
+// ⚠️ `artifacts/` 已进 .gitignore —— 这是运行产物，不入库。
+const ARTIFACT_ROOT = path.join(ROOT, "artifacts", "visual-regression");
+const STARTED_AT = new Date().toISOString();
+/** 目录名用时间戳：`:` 和 `.` 在 Windows 上不合法，全部换成 `-` */
+const RUN_STAMP = STARTED_AT.replace(/[:.]/g, "-");
+const EVIDENCE_DIR = path.join(ARTIFACT_ROOT, RUN_STAMP);
+
+/** 逐用例结果（判定与报告共用；证据落盘也从这里取） */
+const results = [];
+/** 页面自身报错（flush 时一并落盘，否则「结果不作数」这句话在 CI 里查不到证据） */
+const pageErrors = [];
+
+/** 正在跑的用例：中断时靠它把「死在哪个用例、死在哪一步」写下来 */
+let pendingCase = null;
+/** 已经 flush 过：幂等标记 */
+let flushed = false;
+/** artifacts 目录建过了没 */
+let evidenceReady = false;
+
+/** 文件名只保留可移植字符：用例名是脚本拼的，理论上安全，但不值得赌 */
+function caseFileName(caseName) {
+    return `${String(caseName).replace(/[^A-Za-z0-9._-]/g, "_")}.json`;
+}
+
+function ensureEvidenceDir() {
+    if (evidenceReady) return;
+    fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
+    evidenceReady = true;
+}
+
+/**
+ * 落一个用例的证据。
+ *
+ * 写在**每个用例跑完之后立刻**，而不是最后统一写：中断分支（catch）里
+ * 「能写多少写多少」要求前面已经跑完的用例先落了盘。
+ */
+function writeCaseEvidence(record) {
+    try {
+        ensureEvidenceDir();
+        const payload = {
+            case: record.caseName,
+            viewport: record.viewport ?? null,
+            scene: record.scene ?? null,
+            mode: UPDATE ? "update" : "compare",
+            tolerance: TOLERANCE,
+            status: record.status,
+            diffCount: (record.diffs ?? []).length,
+            diffs: record.diffs ?? [],
+            // 指纹整份留着：光有 diff 文案时，「实际长什么样」还是得重跑一次才知道
+            actualFingerprint: record.actualFingerprint ?? null,
+            baselineFingerprint: record.baselineFingerprint ?? null,
+            error: record.error ?? null,
+        };
+        fs.writeFileSync(
+            path.join(EVIDENCE_DIR, caseFileName(record.caseName)),
+            JSON.stringify(payload, null, 2) + "\n"
+        );
+    } catch (err) {
+        // 落盘失败绝不许掩盖判定结论：告警即可，脚本照常给出 exit code
+        console.error(`证据落盘失败（${record.caseName}，不影响判定）：${err?.message || err}`);
+    }
+}
+
+/**
+ * 落 `summary.json`，并且**只落一次**。
+ *
+ * 每条退出路径都必须先调它再 `done()`：CI 上「什么都没留下」是这个审计最坏的形态。
+ *
+ * @param {{ status: string, exitCode: number, error?: string|null }} outcome
+ */
+function flush(outcome) {
+    if (flushed) return;
+    flushed = true;
+    try {
+        ensureEvidenceDir();
+        const totals = {};
+        for (const r of results) totals[r.status] = (totals[r.status] ?? 0) + 1;
+        const summary = {
+            script: "script/visual-regression.mjs",
+            schema: 1,
+            mode: UPDATE ? "update" : "compare",
+            startedAt: STARTED_AT,
+            finishedAt: new Date().toISOString(),
+            tolerance: TOLERANCE,
+            filter: FILTER ?? null,
+            cdpPort: CDP_PORT,
+            status: outcome.status,
+            exitCode: outcome.exitCode,
+            error: outcome.error ?? null,
+            cases: results.map(r => ({
+                case: r.caseName,
+                status: r.status,
+                diffCount: (r.diffs ?? []).length,
+                error: r.error ?? null,
+            })),
+            totals,
+            pageErrors,
+        };
+        fs.writeFileSync(
+            path.join(EVIDENCE_DIR, "summary.json"),
+            JSON.stringify(summary, null, 2) + "\n"
+        );
+        console.log(`证据已落盘：${path.relative(ROOT, EVIDENCE_DIR)}（summary.json + ${results.length} 个用例）`);
+    } catch (err) {
+        console.error(`证据落盘失败（不影响判定）：${err?.message || err}`);
+    }
+}
+
 // ---------------- 指纹采集 ----------------
 
 /** 在页面里跑：采一批选择器的几何 + 关键计算样式 */
@@ -430,9 +554,11 @@ function diffFingerprint(baseline, actual, tolerance, label) {
 
 function requireDist() {
     if (fs.existsSync(path.join(DIST, "index.html"))) return;
-    console.error(
-        `没有 ${path.relative(ROOT, DIST)} —— 先跑 npm run build 再来量（量旧产物等于白量）`
-    );
+    const message = `没有 ${path.relative(ROOT, DIST)} —— 先跑 npm run build 再来量（量旧产物等于白量）`;
+    console.error(message);
+    // 这条也是「失败但没有任何可查证据」的老路：CI 上只留一行 stderr。
+    // 落一份 summary 说明「一个用例都没跑、原因是缺构建产物」。
+    flush({ status: "error", exitCode: 1, error: message });
     process.exit(1);
 }
 
@@ -443,12 +569,24 @@ async function main() {
     const site = await startSiteServer(0);
     const { evaluate, send, done, getErrors } = await openBrowser({ cdpPort: CDP_PORT });
 
-    const results = [];
     try {
         for (const vp of VIEWPORTS) {
             for (const scene of SCENES) {
                 const caseName = `${vp.name}-${scene.name}`;
                 if (FILTER && !caseName.includes(FILTER)) continue;
+
+                // 每个用例先登记「正在跑」：中途抛错时，flush 里能写下死在哪个用例
+                const record = {
+                    caseName,
+                    viewport: vp.name,
+                    scene: scene.name,
+                    status: "运行中",
+                    diffs: [],
+                    actualFingerprint: null,
+                    baselineFingerprint: null,
+                    error: null,
+                };
+                pendingCase = record;
 
                 // 视口先设好再导航：加载时才量得对（Emulation 覆盖了窗口尺寸）
                 await send("Emulation.setDeviceMetricsOverride", {
@@ -538,34 +676,62 @@ async function main() {
                 if (!fingerprint || typeof fingerprint !== "object") {
                     throw new Error(`${caseName}: 采集失败（页面没渲染出可量元素？）`);
                 }
+                record.actualFingerprint = fingerprint;
 
                 const file = path.join(BASELINE_DIR, `${caseName}.json`);
                 if (UPDATE) {
                     fs.writeFileSync(file, JSON.stringify(fingerprint, null, 2) + "\n");
-                    results.push({ caseName, status: "录制基线" });
-                    continue;
-                }
-                if (!fs.existsSync(file)) {
+                    record.status = "录制基线";
+                } else if (!fs.existsSync(file)) {
                     // 不静默录基线（2026-10-24）：老行为在这里 writeFileSync 后当
                     // 「通过」，等于新用例自动获得一张免检金牌。现在记为无基线，
                     // 由汇总段判失败，引导显式 --update。
-                    results.push({ caseName, status: "无基线" });
-                    continue;
+                    record.status = "无基线";
+                } else {
+                    const baseline = JSON.parse(fs.readFileSync(file, "utf8"));
+                    const diffs = diffFingerprint(baseline, fingerprint, TOLERANCE, caseName);
+                    record.baselineFingerprint = baseline;
+                    record.diffs = diffs;
+                    record.status = diffs.length ? "有差异" : "一致";
                 }
 
-                const baseline = JSON.parse(fs.readFileSync(file, "utf8"));
-                const diffs = diffFingerprint(baseline, fingerprint, TOLERANCE, caseName);
-                results.push({ caseName, status: diffs.length ? "有差异" : "一致", diffs });
+                // 每个用例跑完**立刻**落盘：中断时前面跑完的那些不能跟着丢
+                results.push(record);
+                writeCaseEvidence(record);
+                pendingCase = null;
             }
         }
     } catch (error) {
         console.error(`\n视觉回归中断：${error?.stack || error}`);
-        site.close();
+        // 中断分支：能写多少写多少 —— 已跑完的用例各自有文件，再补一份
+        // 「死在哪个用例、死在哪一步」的，最后 flush 一份 summary。
+        if (pendingCase) {
+            pendingCase.status = "中断";
+            pendingCase.error = String(error?.message || error);
+            results.push(pendingCase);
+            writeCaseEvidence(pendingCase);
+            pendingCase = null;
+        }
+        try {
+            pageErrors.push(...getErrors());
+        } catch {
+            // 浏览器已经没了，取不到页面报错不影响落盘
+        }
+        try {
+            site.close();
+        } catch {
+            // 已经关了：close() 抛错绝不能挡住下面的 flush（那才是要留下的东西）
+        }
+        flush({ status: "error", exitCode: 1, error: String(error?.stack || error) });
         done(1);
         return;
     }
 
-    const pageErrors = getErrors();
+    try {
+        pageErrors.push(...getErrors());
+    } catch {
+        // 同上
+    }
     site.close();
 
     // ---- 报告 ----
@@ -581,6 +747,7 @@ async function main() {
     if (pageErrors.length > 0) {
         console.error(`\n页面自身有 ${pageErrors.length} 条报错，本次结果不作数：`);
         for (const e of pageErrors.slice(0, 8)) console.error(`  - ${e}`);
+        flush({ status: "page-errors", exitCode: 1, error: `页面自身 ${pageErrors.length} 条报错` });
         done(1);
         return;
     }
@@ -591,6 +758,11 @@ async function main() {
             `\n${failed.length} 个用例与基线不一致。确认是有意的改动就跑：` +
                 `\n  npm run audit:visual -- --update`
         );
+        flush({
+            status: "diff",
+            exitCode: 1,
+            error: `${failed.length} 个用例与基线不一致（${failed.map(r => r.caseName).join("、")}）`,
+        });
         done(1);
         return;
     }
@@ -604,12 +776,25 @@ async function main() {
             `\n${missing.length} 个用例没有基线（${missing.map(r => r.caseName).join("、")}）。\n` +
                 `确认当前样子就是想要的，跑：\n  npm run audit:visual -- --update`
         );
+        flush({
+            status: "no-baseline",
+            exitCode: 1,
+            error: `${missing.length} 个用例没有基线（${missing.map(r => r.caseName).join("、")}）`,
+        });
         done(1);
         return;
     }
 
     console.log(`\n全部 ${results.length} 个用例通过。`);
+    // 全过也落盘：证明「这次真的量了 N 个用例」，而不是什么都没跑
+    flush({ status: "success", exitCode: 0 });
     done(0);
 }
 
-await main();
+await main().catch(error => {
+    // 走到这里说明失败发生在 main 的 try 之外（起本地服务 / 起浏览器 / 建基线目录）：
+    // 那种情况既没有 site 也没有 done，但「红了却什么都没留下」同样不该发生。
+    console.error(`\n视觉回归未能启动：${error?.stack || error}`);
+    flush({ status: "error", exitCode: 1, error: String(error?.stack || error) });
+    process.exit(1);
+});

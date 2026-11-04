@@ -30,6 +30,7 @@ import {
     parseGuardStore,
 } from "../../../worker/loginGuard";
 import { logger } from "../../../shared/logger";
+import { migrationFailedEvent } from "../../../shared/failureEvents";
 
 /**
  * 表结构版本号，**只进不退**。
@@ -154,8 +155,12 @@ export interface MigrationLogEntry {
  *
  * 为什么要有类型而不是裸 Error：调用方（migrate / withSchemaRetry / 未来的健康检查）
  * 需要能分辨「结构没补齐」与「其它异常」。**它只表示「结构可能不完整」，
- * 不表示请求必须被拦下** —— 收尾会把 `dbReady` 置 false（迁移失败期间按更宽松的
- * fail-open 处理，见 runMigrations 的说明），仍不改变任何路由的放行语义。
+ * 不表示请求必须被拦下** —— 收尾会把 `dbReady` 置 false，仍不改变任何路由的放行语义。
+ *
+ * ⚠️ 2026-11-04（R07）：「dbReady=false」**不再等于 fail-open**。它只让
+ * accounts.ts 的 getAccountSessionState 在「错误明确是缺表 / 缺列」时补跑一次迁移
+ * 再重试；其余情况一律 unavailable（鉴权回 503）。原来的「false 就放行」是那条
+ * 永久生效的豁免，等于把停用 / 清除账号的校验关掉了。
  */
 export class MigrationIncompleteError extends Error {
     /** 本次没跑成功的步骤 id */
@@ -791,7 +796,12 @@ export const migrationImpl: MigrationApi = {
     migrate: async function (this: NavigationAPI ): Promise<void> {
         if (!migrationState.promise) {
             migrationState.promise = this.migrateIfNeeded().catch(error => {
-                logger.error("数据库迁移失败:", { err: error, component: "migration" })
+                // 结构化事件（migration.failed，2026-11）：原来是自由文本，
+                // 「最近有没有迁移失败过」只能靠猜字符串。现在事件名 + phase（第一个失败
+                // 步骤）+ failedSteps + version 都是稳定的机器字段。
+                // 纯观测：下面两行行为一字未改（照旧吞掉异常、照旧清缓存放行重试）。
+                const event = migrationFailedEvent(error, { version: MIGRATION_VERSION });
+                logger[event.level](event.message, event.fields);
                 // 失败后清空缓存，允许下一个请求重试，避免一次偶发错误导致表结构永久缺失
                 migrationState.promise = null;
             });
@@ -806,7 +816,12 @@ export const migrationImpl: MigrationApi = {
             // ⚠️ 版本对得上 ≠ 索引没问题。这里是**正常启动**的路径（线上 99% 的
             // 冷启动都落在这里），ftsReady 必须来自一次真实探测，而不是「步骤跑过没跑过」。
             await ensureNotesFtsReady(this);
+            // ⚠️ 两处都要写（2026-11-04，R07）：`dbReady` 是 getter，读的是
+            // `dbReadyOverride ?? migrationState.ready`。实例那一份只管本请求，
+            // 决定「后续请求怎么判」的模块级 ready 必须一起置上 ——
+            // 漏了它，冷启动后第二个请求起又退回「未就绪」，也就是这次要修的那个 bug。
             this.dbReady = true;
+            migrationState.ready = true;
             return;
         }
         await this.runMigrations();
@@ -943,7 +958,12 @@ export const migrationImpl: MigrationApi = {
         // 所以有失败就保持 false：**更宽松，不是更严**。
         // 代价：这期间一个「被停用的账号」可能靠旧令牌再过一次（窗口 = 迁移修好之前），
         // 两害相权取轻 —— 迁移失败时优先保证站点能进得来。
+        //
+        // ⚠️ 两条路径都要落模块级（2026-11-04，R07）：这条全量迁移的路径原先漏了
+        // 模块级写入，只有版本对得上的快路径置位 —— 表现是「第一次部署/升级之后，
+        // 第二个请求起就当作未就绪」，与 dbReady 存实例上那个 bug 叠加成同一个后果。
         this.dbReady = failed.length === 0;
+        migrationState.ready = failed.length === 0;
 
         if (failed.length > 0) {
             // 往上抛是为了让 migrate() 清掉缓存的 promise —— 否则这一个 isolate 里

@@ -5,6 +5,15 @@ export interface LogFields {
     component?: string;
     action?: string;
     rid?: string;
+    /**
+     * 稳定事件名（`notes.import.partial` 等），取值**只能**来自 shared/failureEvents.ts
+     * 的 `FAILURE_EVENTS`。
+     *
+     * 为什么是独立字段而不是拼进 message：message 是给人读的一句话（可以改文案、
+     * 可以带数字），event 是给机器与告警规则用的稳定标识（文案改了也不能变）。
+     * 两者混在一起的话，任何一次文案调整都会静默打断按字符串匹配的检索与告警。
+     */
+    event?: string;
     [key: string]: unknown;
 }
 

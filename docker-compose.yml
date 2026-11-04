@@ -16,6 +16,12 @@
 services:
   navihive:
     build: .
+    # 本地构建产物 tag（`build: .` 就在上一行）：**不固定 digest**，而且固定不了 ——
+    # 每次 `docker compose build` 产出的镜像内容都不同，digest 必然跟着变，
+    # 写死一个只会在下次重建后指向不存在的层。这里的安全性来自「镜像由本仓源码当场构建」，
+    # 不来自「拉的是哪一份远端内容」。唯一的外部输入是 Dockerfile 的 FROM，那两处已经
+    # 按 digest 钉住了（见 Dockerfile 里 R18 那段注释）。
+    # 例外登记：docs/dependency-upgrade-assessment.md 的「供应链固定例外登记」表。
     image: navihive:latest
     container_name: navihive
     restart: unless-stopped
@@ -130,7 +136,14 @@ services:
     # 2026-11-01 从 docker:27-cli 钉到 docker:27.5-cli：Docker Hub 上 27.x 线的终点是
     # 27.5.1（27-cli / 27.5-cli / 27.5.1-cli 现指向同一份镜像，2025-02 之后未再更新），
     # 钉到 minor 位既冻结了主版本漂移，又不必跟着补丁号走。要完全冻结可换 27.5.1-cli。
-    image: docker:27.5-cli
+    # ⚠️ 2026-11-04（R18 供应链固定）：再钉一层 digest —— tag 本身也是可变的
+    # （27.5-cli 这段 tag 哪天被重新推送，内容就换了，而 upgrader 是唯一带 docker.sock 的
+    # 特权容器，它跑的是什么内容必须定死）。digest 是多架构 manifest list 的，
+    # 2026-11-04 从 Docker Hub 解析（public.ecr.aws / docker.m.daocloud.io / docker.1ms.run
+    # 三个来源一致，且都核对过 sha256(响应体) == Docker-Content-Digest）；
+    # 镜像内 DOCKER_VERSION=27.5.1、created=2025-02-12，与上面「27.x 线终点是 27.5.1」吻合。
+    # 要升级就走一次显式的改 digest，别退回浮动 tag。
+    image: docker:27.5-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c
     container_name: navihive-upgrader
     restart: unless-stopped
     working_dir: /home/docker/navihive
@@ -172,24 +185,50 @@ services:
             if [ -z "$$GUARD_OK" ]; then
               echo "[upgrader] 新容器未在限期内 healthy（最后状态：$$ST），回滚到 navihive:previous"
               docker tag navihive:previous navihive:latest 2>/dev/null || true
-              docker compose -f docker-compose.yml -p navihive up -d --force-recreate --no-deps navihive
-              echo "[upgrader] 已回滚"
+              # ---- 回滚命令：捕获返回码，不再裸跑完就无条件写 done（R05）----
+              RB_OUT=$$(docker compose -f docker-compose.yml -p navihive up -d --force-recreate --no-deps navihive 2>&1) ; RB_CODE=$$?
+              echo "$$RB_OUT"
+              # ---- 回滚后二次探活（20 × 3s）：确认旧容器真的 healthy ----
+              RB_OK=""
+              RB_ST="unknown"
+              for _j in $$(seq 1 20); do
+                RB_ST=$$(docker inspect --format='{{.State.Health.Status}}' navihive 2>/dev/null || echo starting)
+                if [ "$$RB_ST" = "healthy" ]; then RB_OK=1; break; fi
+                if [ "$$RB_ST" = "unhealthy" ]; then break; fi
+                sleep 3
+              done
+              # classifyRollback 的 shell 展开：RB_CODE=0 且二次探活 healthy → rolled_back，否则 rollback_failed
+              if [ "$$RB_CODE" -eq 0 ] && [ -n "$$RB_OK" ]; then
+                RB_PHASE=rolled_back
+                RB_MSG="升级失败，已自动回滚到上一版本，旧容器二次探活 healthy（详见 upgrader 容器日志）"
+                ALERT_TEXT="[NavHive] 已成功回滚到上一版本：新容器未在限期内 healthy（门禁最后状态 $$ST），回滚后旧容器二次探活 $$RB_ST 为 healthy。请查 navihive-upgrader 与 navihive 日志。"
+              else
+                RB_PHASE=rollback_failed
+                RB_MSG="回滚也失败，需人工介入：回滚 compose 退出码 $$RB_CODE，回滚后二次探活最后状态 $$RB_ST，请上服务器检查"
+                ALERT_TEXT="[NavHive] 回滚失败，需人工介入：回滚 compose 退出码 $$RB_CODE，二次探活最后状态 $$RB_ST。站点可能仍在跑不健康的新版本，请立即上服务器检查。"
+              fi
+              printf '{"phase":"%s","image":"","error":"%s","startedAt":%s,"finishedAt":%s}' "$$RB_PHASE" "$$RB_MSG" "$$started" "$$(date +%s)000" > /spool/state.json
+              echo "[upgrader] 终态 $$RB_PHASE： $$RB_MSG"
               # 回滚通知（2026-11-01）：回滚是「升级失败且已自动兜底」的信号，运维必须知道
               # —— 置之不理的话，下一次升级可能还在同一个坑里再摔一遍。镜像里是 alpine 的
-              # busybox wget（支持 --header/--post-data），够发这条 JSON；$$ST 只可能是
-              # healthy/unhealthy/starting 之类的枚举值，不含引号，直接内插进 JSON 是安全的。
+              # busybox wget（支持 --header/--post-data），够发这条 JSON。$$ALERT_TEXT 由上面的
+              # 分类分支给，只含中文/枚举值/数字，不含引号与反斜杠，直接内插进 JSON 是安全的；
+              # 文案区分「已成功回滚」与「回滚失败，需人工介入」。
               # 没配 ALERT_WEBHOOK 就跳过；发送失败只留日志，绝不影响回滚本身。
               if [ -z "$${ALERT_WEBHOOK:-}" ]; then
                 echo "[upgrader] 未配置 ALERT_WEBHOOK，跳过回滚通知"
               else
                 wget -qO- --header='Content-Type: application/json' \
-                  --post-data="{\"text\":\"[NavHive] 升级回滚：新容器未在限期内 healthy（最后状态：$$ST），已回滚到 navihive:previous。请查 navihive-upgrader 与 navihive 日志。\"}" \
+                  --post-data="{\"text\":\"$$ALERT_TEXT\"}" \
                   "$${ALERT_WEBHOOK}" >/dev/null 2>&1 \
                   || echo "[upgrader] 回滚通知发送失败（webhook 不可达？），不影响回滚结果"
               fi
             fi
-            printf '{"phase":"done","image":"","error":"","startedAt":%s,"finishedAt":%s}' "$$started" "$$(date +%s)000" > /spool/state.json
-            echo "[upgrader] 完成"
+            # 只有健康门禁通过（GUARD_OK 非空）才写 done；回滚分支已经在上面写了终态
+            if [ -n "$$GUARD_OK" ]; then
+              printf '{"phase":"done","image":"","error":"","startedAt":%s,"finishedAt":%s}' "$$started" "$$(date +%s)000" > /spool/state.json
+              echo "[upgrader] 完成"
+            fi
           else
             printf '{"phase":"failed","image":"","error":"重建失败（详见 upgrader 容器日志）","startedAt":%s,"finishedAt":%s}' "$$started" "$$(date +%s)000" > /spool/state.json
             echo "[upgrader] 失败"

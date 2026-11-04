@@ -11,7 +11,7 @@ import { hashPassword, isHashedPassword, verifyPassword } from "../crypto";
 import { D1PreparedStatement } from "../schema";
 import { STARTER_GROUPS } from "../starterData";
 import { AccountInfo, AccountSessionState, InviteInfo, LoginRequest, LoginResponse, RegisterResult, UserRecord, computeInactiveTimeline } from "../types";
-import { randomInviteCode } from "./internals";
+import { errorMessageOf, isMissingSchemaError, randomInviteCode } from "./internals";
 // 改密 / 注销前的「校验当前密码」要独立于登录那把锁再限一次流。
 // 这里的 src → worker 引用看着逆着分层（平时是 worker 引 src），但它是**有意的**：
 // 那把锁必须落在 D1 上（跨实例才有效），而它的实现与登录锁共用同一套 CAS 计数，
@@ -348,6 +348,24 @@ export const accountsImpl: AccountsApi = {
      * 只验签就放行的话：被停用的账号照样能改数据（等于停用形同虚设），
      * 被清除的账号写出来的行会挂在一个已不存在的 user_id 上变成孤儿数据。
      * 所以每个请求都要补这一问，用短缓存压掉查库开销（见 sessionStateCache）。
+     *
+     * ---- 2026-11-04（审查报告 R07）：异常分支的降级边界重写 ----
+     *
+     * 改之前是「按 dbReady 二选一」：!dbReady → 直接 active（fail-open）。
+     * 但 dbReady 当年是**实例字段**，而 NavigationAPI 每个请求 new 一个 ——
+     * 冷启动后第二个请求起它恒为 false，于是那条豁免在**稳态下永远成立**：
+     * 任何一次读失败（事务冲突、D1 抖动、语法错）都被当成「首次建表」放行，
+     * 「停用 / 清除的账号靠旧令牌继续过审」这道闸门其实从来没关上过。
+     *
+     * 现在的规则只有三条，全部可判定：
+     *   1. 尚未就绪 + 错误**明确是缺表 / 缺列**（isMissingSchemaError）→ 首建豁免：
+     *      `await this.migrate()` 补跑迁移，再**重试一次**；重试成功就采信重试的结果。
+     *      这是唯一还允许放行的正常路径（首个请求上 users 表确实还没建出来）。
+     *   2. 补跑迁移后仍失败，或错误压根不是缺表类（超时 / 连接失败 / 语法错）→
+     *      `"unavailable"`（未知态）：不再返回 active，由鉴权中间件回 503。
+     *   3. 逃生口 NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR=1：`"unavailable"` 降级成 `"active"`，
+     *      并且**必须**留一条显式日志 —— 否则「谁把闸门打开了」事后无从查起。
+     * 缓存规则不变：由异常推出的结论一律不进缓存（含 unavailable）。
      */
     getAccountSessionState: async function (this: NavigationAPI, uid: number): Promise<AccountSessionState> {
         const now = Date.now();
@@ -358,6 +376,8 @@ export const accountsImpl: AccountsApi = {
         // 由「查询出错」推出的结论不进缓存：缓存了就会让一次偶发抖动把人卡住整个 TTL，
         // 而且下次请求即便 DB 已经恢复也拿不到正确结论。
         let fromError = false;
+        // 这一次异常里有没有补跑过迁移（只用于日志，现场要能分清「首建」与「真故障」）
+        let caughtUpMigration = false;
 
         const readState = async (): Promise<AccountSessionState> => {
             const row = await this.db
@@ -368,24 +388,68 @@ export const accountsImpl: AccountsApi = {
             return row.status === "disabled" ? "disabled" : "active";
         };
 
+        /**
+         * 「这次没结论」的统一出口。默认 unavailable（fail-closed）；
+         * 逃生口打开时降级成 active，且**必须**打一条能被搜到的日志。
+         */
+        const unavailable = (reason: string): AccountSessionState => {
+            if (!this.failOpenOnError) return "unavailable";
+            logger.warn(
+                "账号状态不可用，但逃生开关已打开（NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR=1）：本次按 active 放行",
+                {
+                    component: "accounts",
+                    action: "getAccountSessionState",
+                    uid,
+                    reason,
+                    dbReady: this.dbReady,
+                    caughtUpMigration,
+                    escapeHatch: "NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR",
+                }
+            );
+            return "active";
+        };
+
         try {
             state = await readState();
-        } catch {
-            // 迁移未跑完（首请求、users 表 / status 列还没建好）时 fail-open，放行以免整站登不进
-            if (!this.dbReady) {
-                state = "active";
-                fromError = true;
-            } else {
-                // 迁移跑完之后若还查出错：先重试一次，排除偶发抖动再下结论；
-                // 仍失败就按 fail-closed 处理（除非显式开了逃生开关），
-                // 避免被停用 / 清除的账号靠旧令牌继续过审。
+        } catch (error) {
+            fromError = true;
+            const message = errorMessageOf(error);
+            const schemaMissing = isMissingSchemaError(error);
+            // 先把诊断信息记下来再判定：这条分支只在「首次建表」或「真出问题」时走到，
+            // 两种必须分得开 —— uid / 就绪状态 / 错误原文 / 是否补跑过迁移缺一不可。
+            logger.warn("账号状态查询失败，正在判定是否属于首次建表：", {
+                component: "accounts",
+                action: "getAccountSessionState",
+                uid,
+                dbReady: this.dbReady,
+                schemaMissing,
+                err: message,
+            });
+
+            if (schemaMissing && !this.dbReady) {
+                // 首建豁免：**只**认「还没迁移过 + 错误明确是缺表 / 缺列」这一种组合。
+                // 补跑迁移后重试一次 —— 首次请求上 enforceAuth 排在 api.migrate() 之前
+                // （见 worker/index.ts），所以这里必须自己把结构补齐。
+                caughtUpMigration = true;
                 try {
+                    await this.migrate();
                     state = await readState();
-                } catch (error) {
-                    logger.error(`账号状态查询失败（uid=${uid}）：`, { err: error, component: "accounts" })
-                    state = this.failOpenOnError ? "active" : "missing";
-                    fromError = true;
+                    // 重试成功 = 真读到的结论，不是异常推断 → 照常进缓存
+                    fromError = false;
+                } catch (retryError) {
+                    logger.error("补跑迁移后账号状态仍读不出来：", {
+                        component: "accounts",
+                        action: "getAccountSessionState",
+                        uid,
+                        dbReady: this.dbReady,
+                        err: errorMessageOf(retryError),
+                    });
+                    state = unavailable("补跑迁移后重试仍失败");
                 }
+            } else {
+                // 已经就绪还读不出来（真·DB 异常），或错误不是缺表类（超时 / 连接失败 /
+                // 语法错）—— 都不是「首建」能解释的，重跑迁移也没用，一律按不可用处理。
+                state = unavailable(schemaMissing ? "已就绪但表结构仍缺失" : "非缺表类错误");
             }
         }
 

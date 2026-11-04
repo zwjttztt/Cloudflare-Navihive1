@@ -459,10 +459,20 @@ function App() {
     // 密码保险库（T03 迁进中心之前仍是一级弹窗）
     const [vaultOpen, setVaultOpen] = useState(false);
     /**
-     * 「设置」中心打开时要落在哪一屏。
-     * 顶栏按钮与底栏「更多」不指定（= 左栏第一项），命令面板直达某一屏时才带。
+     * 「设置」中心的**打开意图**：`null` = 普通打开（点顶栏 / 底栏入口），
+     * 有值 = 命令面板指名直达那一屏（R09）。
+     *
+     * 为什么是 `null` 而不是默认成 `"stats"`：默认成第一项会让「有没有目标」
+     * 这件事在两个入口之间**看不出区别** —— 命令点「查看统计」得到的是
+     * 「stats」，普通打开得到的也是「stats」，下游只能靠猜（猜出来的结果就是
+     * 窄屏下命令的目标被当成普通打开、被按回目录那一页）。
+     * 显式的 `null` 让「没目标」成为一个**能写进 if 的事实**。
+     *
+     * 清空时机：中心一关就清（见下面那个 effect）。不清的话上一次命令留下的
+     * 目标会残留到下一次「点设置按钮」—— 用户点开设置，却直接落在他上次用命令
+     * 去过的那一屏，看起来像「设置按钮坏了」。
      */
-    const [navCenterPanel, setNavCenterPanel] = useState<NavCenterPanelId>("stats");
+    const [navCenterPanel, setNavCenterPanel] = useState<NavCenterPanelId | null>(null);
     // 全部站点（含解密后的登录凭据）——喂给「账号与安全」里的「密码健康」面板做客户端分析（方案 A）
     const allSitesWithCreds = useMemo(() => groups.flatMap(g => g.sites ?? []), [groups]);
 
@@ -619,14 +629,27 @@ function App() {
         handleExitGroupsButtonViewport,
     } = useViewportUi({ loading, groupCount: groups.length });
 
-    // 命令面板直达「设置」中心的某一屏（统计 / 备份已收进中心，不再有独立弹窗）
+    // 命令面板直达「设置」中心的某一屏（统计 / 备份已收进中心，不再有独立弹窗）。
+    // 进来就一定带目标：这正是「目标直达」与「普通打开」的差别，下游靠它决定
+    // 窄屏要不要跳过目录（R09）。panel 类型收窄到 NavCenterPanelId，
+    // 命令表里写错一个 id 现在编译期就红（原来是 string + as 强转）。
     const openNavCenter = useCallback(
-        (panel: string) => {
-            setNavCenterPanel(panel as NavCenterPanelId);
+        (panel: NavCenterPanelId) => {
+            setNavCenterPanel(panel);
             setNavCenterOpen(true);
         },
-        [setNavCenterPanel, setNavCenterOpen]
+        [setNavCenterOpen]
     );
+    /**
+     * 中心关掉就把目标清掉：下一次打开（点设置按钮 / 底栏「更多」/ 注销账号
+     * 顺带收起中心）必须按普通打开处理，不能继承上一条命令留下的目标。
+     *
+     * 挂在「关」而不是「开」这一侧：打开有四个入口（顶栏、底栏、命令、
+     * 备份控制器），逐个去清总会漏一个；关只有一条状态线。
+     */
+    useEffect(() => {
+        if (!navCenterOpen) setNavCenterPanel(null);
+    }, [navCenterOpen]);
     // 断网提示挂不挂（决定要不要去下载那个块）；见 hooks/useOfflineBannerVisible
     const showOfflineBanner = useOfflineBannerVisible();
 

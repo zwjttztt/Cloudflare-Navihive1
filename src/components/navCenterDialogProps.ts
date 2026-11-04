@@ -68,7 +68,13 @@ export interface NavCenterDialogArgs {
     configs: Record<string, string>;
     isAuthenticated: boolean;
     currentUser: AccountSession["currentUser"];
-    navCenterPanel?: NavCenterPanelId;
+    /**
+     * 这次打开的目标面板。`null` / 不传 = 普通打开（用户点设置入口，没有指定屏），
+     * 有值 = 命令面板指名直达那一屏（R09）。
+     * 两种意图在中心里必须**分得开**，所以「没有目标」用 null 显式表达，
+     * 不用「等于默认项 stats」去推断。
+     */
+    navCenterPanel?: NavCenterPanelId | null;
     /** 来自 App：中心自身的开合（原 NavigationCenterDialog 的 open/onClose） */
     open: boolean;
     onClose: () => void;
@@ -250,7 +256,7 @@ export function buildNavCenterDialogProps(args: NavCenterDialogArgs): import("./
     return {
         open,
         onClose,
-        initialPanel: navCenterPanel,
+        initialPanel: navCenterPanel ?? undefined,
         isAuthenticated,
         isSiteOwner: currentUser?.role === "owner",
         stats: {

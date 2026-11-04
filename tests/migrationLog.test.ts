@@ -9,7 +9,7 @@
 //      锁在门外，方向正好反了（结构不完整时该更宽松，不是更严）。
 //
 // 所以这里钉四件事：日志有失败记录、下次只重跑那一步、dbReady 跟着失败变成 false、
-// 以及「dbReady=false 时账号状态查询是 fail-open」这条方向的对照。
+// 以及「迁移没跑完时账号状态查询往哪边倒」这条方向。
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -215,9 +215,16 @@ test("全部成功：schema.log 每条 ok:true、ms >= 0，dbReady = true", asyn
     assert.equal(db.configs.get(SCHEMA_VERSION_KEY), SCHEMA_VERSION);
 });
 
-test("迁移失败期间更宽松（不是更严）：账号状态查询 fail-open 放行", async () => {
-    // 方向必须钉死：迁移失败 → dbReady=false → 查账号状态出错时**放行**。
-    // 反过来（fail-closed）就是「迁移一挂，连登录页都进不去」，那是最糟的失败模式。
+test("迁移失败期间账号状态查不出来：未知态，不再据此放行（2026-11-04 R07 改）", async () => {
+    // 改之前这里断言的是「迁移失败 → dbReady=false → 查账号状态出错时**放行**」。
+    // 那条断言把 bug 写进了契约：豁免的判据本是「库刚建、users 表还没出来」，
+    // 却退化成「只要就绪标记是 false 就放行」，而就绪标记当年是实例字段、
+    // 每个请求都是新实例 → 稳态下恒为 false → 任何读失败都放行。
+    //
+    // 现在的契约（见 accounts.ts 的 getAccountSessionState）：
+    //   · 只有「未就绪 + 错误明确是缺表 / 缺列」才补跑迁移并重试一次（首建豁免）；
+    //   · 其余一律 `unavailable`（鉴权中间件回 503 + Retry-After，不是 401）。
+    // 这里注入的是"模拟 D1 异常"——不是缺表类，所以它连重试都不该触发。
     resetMigrationCacheForTests();
     const failed = new ScriptedD1();
     failed.failOn = FAIL_GROUP_SHARE;
@@ -227,11 +234,12 @@ test("迁移失败期间更宽松（不是更严）：账号状态查询 fail-op
     failed.throwOn = /SELECT "status" FROM users/;
     assert.equal(
         await failedApi.getAccountSessionState(1),
-        "active",
-        "迁移没跑完时不该把全站锁在门外"
+        "unavailable",
+        "迁移没跑完 + 非缺表类错误 → 未知态，不再当成首建放行"
     );
 
-    // 对照：迁移成功过（dbReady=true）之后同样的异常是 fail-closed
+    // 对照：结构已就绪（dbReady=true）之后同样的异常，结论必须是同一个 ——
+    // 「就绪与否」只影响要不要补跑迁移，不影响「读不出来就不能放行」这条底线。
     resetMigrationCacheForTests();
     const healthy = new ScriptedD1();
     const healthyApi = apiWith(healthy);
@@ -240,7 +248,21 @@ test("迁移失败期间更宽松（不是更严）：账号状态查询 fail-op
     healthy.throwOn = /SELECT "status" FROM users/;
     assert.equal(
         await healthyApi.getAccountSessionState(1),
-        "missing",
-        "结构已就绪之后的 DB 异常仍要 fail-closed（被停用/清除的账号不能靠旧令牌过审）"
+        "unavailable",
+        "结构已就绪之后的 DB 异常同样按未知态处理（被停用/清除的账号不能靠旧令牌过审）"
     );
+});
+
+test("逃生口 NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR=1：未知态降级成 active（唯一还放行的路径）", async () => {
+    // 迁移修不好又不能让人进不来时，运维要有一个可用的开关。行为和改造前一致，
+    // 但**不再是默认行为**，而且必须能留痕（见 accounts.ts 里那条 logger.warn）。
+    resetMigrationCacheForTests();
+    const db = new ScriptedD1();
+    const api = new NavigationAPI({
+        DB: db,
+        NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR: "1",
+    } as never);
+    await api.migrate();
+    db.throwOn = /SELECT "status" FROM users/;
+    assert.equal(await api.getAccountSessionState(1), "active", "开了逃生口才放行");
 });

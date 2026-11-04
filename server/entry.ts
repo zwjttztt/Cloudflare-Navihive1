@@ -31,13 +31,15 @@ import {
 import { makeFileKv } from "./file-kv";
 import { parseHeaderRules, serveStatic, type HeaderRule } from "./static";
 import { recordUpgradeAudit, type UpgradeOutcome } from "./upgradeAudit";
-import { tagPreviousBeforeRecreate, healthGuardAfterRecreate } from "./upgradeHealth";
+import { tagPreviousBeforeRecreate, healthGuardAfterRecreate, classifyHelperExitCode, rollbackTerminalEvent } from "./upgradeHealth";
 import { NavigationAPI } from "../src/API/navigationApi";
 import { isPublicHost, normalizeRemoteAddress } from "./net";
-import { setEgressResolver } from "../worker/safeFetch";
+import { setEgressResolver, setFetchImpl } from "../worker/safeFetch";
+import { installEgressDispatcher } from "./egressDispatch";
 import { isBlockedHost } from "../worker/util";
 import { REAL_IP_HEADER } from "../worker/httpUtils";
 import { REQUEST_ID_HEADER, REQUEST_ID_LEN } from "../shared/requestId";
+import { logger } from "../shared/logger";
 import type { Env } from "../worker/types";
 // 透传白名单的唯一真源在 shared/env.ts（worker 侧也要能读到同一份约束）。
 // 这份清单由那边的**编译期断言**守着：`Env` 里新增一个非绑定键却忘了加进去，
@@ -98,8 +100,8 @@ const TRUST_X_REAL_IP = env("NAVIHIVE_TRUST_X_REAL_IP", "0");
 //     ⚠️ 用户 opt-in 的内网 WebDAV（webdav.allowPrivateNetwork）不经过这里 ——
 //     worker/webdav/transport.ts 在开了那个开关时会跳过解析复核，所以把这里改严
 //     不会把 NAS 备份一起挡掉。
-// ⚠️ 仍是缓解不是根治（lookup 与 fetch 内部再解析之间有窗口）—— safeFetch.ts
-//    的 setEgressResolver 注释里有完整说明。
+// ⚠️ 上面这道复核**本身**仍是缓解（lookup 与 fetch 内部再解析之间有窗口）——
+//    下面紧接着的 installEgressDispatcher 才是闭环。
 const RESOLVE_TTL_MS = 60_000;
 const RESOLVE_CACHE_MAX = 500;
 const resolvedIps = new Map<string, { ips: string[]; at: number }>();
@@ -124,6 +126,38 @@ setEgressResolver(async (hostname: string): Promise<boolean> => {
     // 一个都不过才算数：多 A 记录时只要有个内网 IP 就该拒
     return ips.every(ip => !isBlockedHost(ip));
 });
+
+// ============ 出站连接绑定校验后的 IP（R06，DNS rebinding 闭环） ============
+//
+// 上面那道复核有个天生的窗口：safeFetch 校验时解析一次，`fetch()` 发请求时**又解析
+// 一次**。两次之间把域名的 A 记录换成 127.0.0.1 就是经典的 DNS rebinding，
+// 校验全绿、连接却落在内网。
+//
+// 这里装上「连接也用这份解析结果」的通道：undici Agent 的 `connect.lookup` 是
+// net.connect 唯一会用的解析入口，我们在这个函数里先拿全部 A/AAAA、逐个过
+// isBlockedHost，**全是公网**才把地址交回去连接；任何一个命中内网就整次拒绝。
+// SNI / Host 头仍是原域名，所以对上游服务端无感（实测 `Host: example.invalid:9988`）。
+//
+// 细节在 server/egressDispatch.ts。这里只关心降级：
+//   · undici 是运行期唯一的非打包依赖（Dockerfile 运行阶段单独 COPY 它）；
+//   · 拿不到 undici（npm 直跑缺依赖 / 裁剪过的镜像）→ 不阻断启动，
+//     退回「出站前复核」的缓解模式，并把风险明说在启动日志里。
+await (async () => {
+    const egress = await installEgressDispatcher({
+        setFetchImpl,
+        // info 不接：成功那行由下面的启动横幅统一打，避免同一件事两行日志
+        logger: { warn: (message: string) => console.warn(message) },
+    });
+    if (egress.installed) {
+        console.log("出站连接已绑定校验后的 IP（undici dispatcher）");
+        return;
+    }
+    console.warn(
+        "⚠️ 出站连接未绑定校验后的 IP：退回「出站前复核」的缓解模式 —— " +
+            "DNS rebinding 在「复核」与「连接」之间仍有窗口。" +
+            "装回 undici 即可恢复闭环（见 Dockerfile 运行阶段那行 COPY）。"
+    );
+})();
 
 // 环境变量白名单透传。只放 worker/src 真正会读的键，避免把 PATH 之类无关变量
 // 泄进 env 对象（worker 侧只认这些名字，多给了也不会用，但白名单更好查）。
@@ -472,6 +506,38 @@ function readSpoolState(): SpoolState {
 }
 
 /**
+ * spool 模式的回滚终态**只能被读到**：相位是 upgrader 容器写进 state.json 的，
+ * 本进程没参与那次判定 —— 唯一能观察到它的地方是 GET /api/system/upgrade 的轮询。
+ * 所以在那里补一条结构化事件（`upgrade.rollback.failed`，见 upgradeHealth.ts）。
+ *
+ * 三条约束（缺一条这个事件就会变成噪音，而噪音型事件等于没有）：
+ *   · 只对两个**回滚终态**发。`idle` / `pulling` / `recreating` / `failed` 都不是回滚，
+ *     尤其 `failed`（重建失败、没走门禁）是另一类事，别混进来；
+ *   · 按 `phase:时间戳` **去重**：前端点完升级会连着轮询好几秒，不去重就是每个请求一条；
+ *   · 去重状态是模块级的（不是每个请求各自一份），进程被换掉后自然清零，
+ *     不影响下一次升级 —— 同一进程里发生第二次回滚（换了新的 finishedAt）照样会报。
+ *
+ * ⚠️ 与 sock 模式那条（下面的失败分支）是同一事件名的两个触发点，字段由
+ * rollbackTerminalEvent 统一生成，别在这里另拼一份。
+ */
+let lastReportedRollback = "";
+
+function reportRollbackOnce(state: SpoolState): void {
+    const phase = state.phase;
+    if (phase !== "rolled_back" && phase !== "rollback_failed") return;
+    const stamp = typeof state.finishedAt === "number" ? state.finishedAt : (state.startedAt ?? 0);
+    const key = `${phase}:${stamp}`;
+    if (key === lastReportedRollback) return;
+    lastReportedRollback = key;
+    const event = rollbackTerminalEvent(phase, {
+        reason: typeof state.error === "string" ? state.error : "",
+        // 升级器只写目标镜像引用；升级前的旧版本在宿主机上只剩 ImageID，没法当版本号报
+        toVersion: typeof state.image === "string" ? state.image : "",
+    });
+    logger[event.level](event.message, event.fields);
+}
+
+/**
  * 提交升级请求。
  * ⚠️ 先写临时文件再 rename：升级器可能在同一瞬间读到半截 JSON，
  *    原子替换能保证它要么看到完整文件、要么看不到。
@@ -598,7 +664,9 @@ const HOST_DOCKER_PLUGINS = env("NAVIHIVE_HOST_DOCKER_PLUGINS", "/usr/libexec/do
  * 进程被 compose 换掉后自然清零（成功后前端靠版本号判断，不靠它）。
  */
 const upgradeStatus: {
-    phase: "idle" | "pulling" | "recreating" | "failed";
+    // rolled_back / rollback_failed 是「健康门禁没过、走了回滚」的两个终态：
+    // 与 spool 侧 state.json 同款相位，前端 upgradeWait 对它们有显式否决。
+    phase: "idle" | "pulling" | "recreating" | "failed" | "rolled_back" | "rollback_failed";
     image: string;
     error: string;
     startedAt: number;
@@ -696,6 +764,8 @@ function upgraderCommand(info: ComposeInfo): string {
         "  exit 1",
         "fi",
         // 重建成功 ≠ 新容器能服务：探活，不健康就回滚 previous（#9 健康门禁）
+        // ⚠️ R05：门禁没过时下面这段会直接 exit 40/41（rolled_back / rollback_failed），
+        // 末尾两句「成功」只在 GUARD_OK 非空（门禁通过）时才跑得到 —— 回滚绝不能再报升级完成。
         healthGuardAfterRecreate(UPGRADE_CONTAINER, project, firstFile),
         `echo "[upgrader] $(date -u +%FT%TZ) 成功" >> "$LOG"`,
         'echo "[upgrader] 完成：容器已按新镜像重建（健康门禁已通过）"',
@@ -799,7 +869,14 @@ async function runUpgraderContainer(image: string, info: ComposeInfo): Promise<v
     const logs = await readHelperLogs(id);
     await dockerApi("DELETE", `/containers/${id}?force=true`).catch(() => undefined);
     if (code !== 0) {
-        throw new Error(`重建容器失败（退出码 ${code}）：${logs || "helper 没有输出"}`);
+        // 40/41 是「健康门禁没过、已走回滚」的终态退出码。把退出码挂在 error 上，
+        // POST 的失败分支才能如实报 rolled_back / rollback_failed（见 upgradeHealth.ts），
+        // 而不是把「已回滚」混成一句普通失败、更不是误报「完成」。
+        const error = new Error(`重建容器失败（退出码 ${code}）：${logs || "helper 没有输出"}`) as Error & {
+            helperExitCode?: number;
+        };
+        error.helperExitCode = code;
+        throw error;
     }
 }
 
@@ -1188,9 +1265,27 @@ const server = createServer((req, res) => {
                             console.log(`[upgrade] 完成：容器已按 ${image} 重建`);
                         } catch (error) {
                             const message = error instanceof Error ? error.message : String(error);
-                            upgradeStatus.phase = "failed";
+                            const helperCode =
+                                error instanceof Error
+                                    ? (error as Error & { helperExitCode?: number }).helperExitCode
+                                    : undefined;
+                            // helper 以 40/41 退出 = 健康门禁没过、已走回滚。如实报同款相位，
+                            // 前端 upgradeWait 对这两个相位有显式否决，绝不能再落到「完成」。
+                            const rollbackPhase =
+                                typeof helperCode === "number" ? classifyHelperExitCode(helperCode) : null;
+                            upgradeStatus.phase = rollbackPhase ?? "failed";
                             upgradeStatus.error = message;
                             upgradeStatus.finishedAt = Date.now();
+                            // 只有「走过门禁、回滚过」的失败才发结构化事件；普通 failed
+                            // （拉不动镜像 / 重建失败）不是回滚，别混进同一个事件名。
+                            // 纯观测：相位、响应体、后续 restart 流程都不受影响。
+                            if (rollbackPhase) {
+                                const event = rollbackTerminalEvent(rollbackPhase, {
+                                    reason: message,
+                                    toVersion: upgradeStatus.image || UPGRADE_IMAGE,
+                                });
+                                logger[event.level](event.message, event.fields);
+                            }
                             console.error("[upgrade] 失败:", message);
                             // 失败时容器可能停着：确认它活着，不在就拉起来。
                             // 站点停摆是比升级失败严重得多的事故。
@@ -1223,6 +1318,9 @@ const server = createServer((req, res) => {
                 if (spoolEnabled()) {
                     // 状态由升级器写；形状与旧路径完全一致，前端不用改
                     const state = readSpoolState();
+                    // 回滚终态在这里才被看见（本进程没参与那次判定）：去重后补一条结构化事件。
+                    // 纯观测，响应体与状态码不受影响。
+                    reportRollbackOnce(state);
                     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
                     res.end(
                         JSON.stringify({

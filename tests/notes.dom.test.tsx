@@ -4541,8 +4541,15 @@ test("Markdown ZIP 导入保留父目录与属性标签，忽略隐藏配置及�
 
 test("数据页导入带附件 ZIP 时进度条要报出「上传附件」阶段（2026-10-17 进度反馈）", async () => {
     // 用户报「笔记恢复太慢，能否加进度条」：导入带附件的 ZIP 要逐个回传附件，
-    // 这一步最慢、最该有反馈。把附件上传拖慢 60ms，确保「上传附件」阶段在 DOM 上停留得够久，
-    // 测试能稳定抓到进度条（data-import-progress）；导入完成后进度条必须消失。
+    // 这一步最慢、最该有反馈。把附件上传拖慢（递增 250ms/500ms），确保「上传附件」
+    // 阶段在 DOM 上停留得够久，测试能稳定抓到进度条（data-import-progress）；
+    // 导入完成后进度条必须消失。
+    //
+    // ⚠️ 窗口宽度不是随便定的：运行器用 --test-concurrency=4 让 4 个 jsdom 文件并行，
+    // 满载时一次 `await act(...)` 的刷新可能吃掉几十毫秒。原来桩延迟 60/120ms + 轮询
+    // 50×10ms 时，「上传附件」的可见窗口只有 60ms 宽，实测在全量跑里偶发整段错过
+    // （单跑必过、全量偶红 —— 2026-11-04 复现）。窗口要显著大于单次刷新耗时，
+    // 断言本身一个字没改。
     const { createZip } = await import("../src/utils/zip");
     const encode = (value: string) => new TextEncoder().encode(value);
     let imported: unknown = null;
@@ -4557,7 +4564,7 @@ test("数据页导入带附件 ZIP 时进度条要报出「上传附件」阶段
         uploadApi: {
             uploadAttachment: async (file: File) => {
                 uploaded.push(file.name);
-                await new Promise(r => setTimeout(r, 60 * uploaded.length)); // 递增延迟：并发下第1个60ms、第2个120ms完成，「上传附件」窗口够宽
+                await new Promise(r => setTimeout(r, 250 * uploaded.length)); // 递增延迟：并发下第1个250ms、第2个500ms完成，「上传附件」窗口宽到不怕调度抖动
                 return { id: "new-" + uploaded.length, url: "http://x/" + file.name };
             },
         } as never,
@@ -4583,13 +4590,13 @@ test("数据页导入带附件 ZIP 时进度条要报出「上传附件」阶段
     await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
 
     let sawUploadPhase = false;
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 100; i++) {
         const el = document.querySelector("[data-import-progress='1']");
         if (el && /上传附件/.test(el.textContent || "")) { sawUploadPhase = true; break; }
-        await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+        await act(async () => { await new Promise(r => setTimeout(r, 20)); });
     }
     assert.ok(sawUploadPhase, "导入带附件 ZIP 时进度条应显示「上传附件」阶段");
-    await act(async () => { await new Promise(r => setTimeout(r, 200)); });
+    await act(async () => { await new Promise(r => setTimeout(r, 900)); });
     assert.ok(imported, "带附件 ZIP 要真走 importNotes");
     assert.equal(document.querySelector("[data-import-progress='1']"), null, "导入完成后进度条应消失");
 });
@@ -6412,7 +6419,7 @@ test("从网盘恢复带附件 ZIP 时进度条要报出「上传附件」阶段
         uploadApi: {
             uploadAttachment: async (file: File) => {
                 uploaded.push(file.name);
-                await new Promise(r => setTimeout(r, 60 * uploaded.length)); // 递增延迟：并发下第1个60ms、第2个120ms完成，「上传附件」窗口够宽
+                await new Promise(r => setTimeout(r, 250 * uploaded.length)); // 递增延迟：并发下第1个250ms、第2个500ms完成，「上传附件」窗口宽到不怕调度抖动
                 return { id: "new-" + uploaded.length, url: "http://x/" + file.name };
             },
         } as never,
@@ -6431,13 +6438,13 @@ test("从网盘恢复带附件 ZIP 时进度条要报出「上传附件」阶段
     );
 
     let sawUploadPhase = false;
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 100; i++) {
         const el = document.querySelector("[data-backup-progress='1']");
         if (el && /上传附件/.test(el.textContent || "")) { sawUploadPhase = true; break; }
-        await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+        await act(async () => { await new Promise(r => setTimeout(r, 20)); });
     }
     assert.ok(sawUploadPhase, "从网盘恢复带附件 ZIP 时进度条应显示「上传附件」阶段");
-    await act(async () => { await new Promise(r => setTimeout(r, 200)); });
+    await act(async () => { await new Promise(r => setTimeout(r, 900)); });
     assert.ok(uploaded.length >= 1, "带附件 ZIP 恢复要真回传附件（进度条的来源）");
     assert.equal(document.querySelector("[data-backup-progress='1']"), null, "恢复完成后进度条应消失");
 });

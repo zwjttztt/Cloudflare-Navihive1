@@ -1251,3 +1251,118 @@ crontab -e
 - **库体积侧面含义**：有 1 年滚动清理兜底，自托管单库的 `audit_log` 不会无限膨胀；但**业务表**（`users` / `sites` / `notes` 等）没有自动清理，体积只增不减，备份文件随之增长 —— 这也是 7.4 那条「保留策略要自己加」的原因之一。
 
 > 想确认当前清理是否真在跑：看第七节的「启动自检」之外，最直接是查 `audit_log` 里最老的一行的 `created_at`（`SELECT MIN(created_at) FROM audit_log;`）。如果最老的行距离今天远小于 1 年，说明清理在正常工作；远超过 1 年则可能是那次 cron 没跑（回到 7.4 查定时任务）。
+
+---
+
+## 十六、静默失败的结构化事件与告警手册（2026-11）
+
+前三类失败有一个共同点：**出问题时不会有任何人发现**。用户侧只有一句提示（或者什么都没有），运维侧原来只有一句自由文本日志 —— 没有稳定事件名、没有结构化字段，事后想「查一下最近有没有发生过」只能靠猜字符串（文案一改就再也查不到）。
+
+现在这三类失败都会打一条**结构化事件**：`message` 是给人读的一句固定话术，`fields.event` 是给机器读的稳定事件名，其余字段是可用作告警条件的数值 / 枚举。**这是纯观测**：响应体、状态码、返回值、控制流一个都没改，关掉日志不会改变任何行为。
+
+### 16.1 四个事件分别是什么
+
+| `fields.event` | 级别 | 什么情况下出现 | 该不该叫醒人 |
+| --- | --- | --- | --- |
+| `notes.import.partial` | error | 笔记导入 / 恢复**提交阶段**中途失败：已提交的批保留，失败批及其之后的笔记没进来 | 不叫醒，但当天必须有人看一眼 |
+| `notes.import.conflicts` | warn | 导入期间某几条笔记被**其它设备**改过（`rev` 已变），本次不覆盖、保留本地较新的内容 | 不叫醒；频繁出现说明多端并发或客户端在重试 |
+| `migration.failed` | error | 数据库迁移没有全部完成（有步骤失败，或迁移链路本身抛错） | **出现即告警** |
+| `upgrade.rollback.failed`（`phase=rollback_failed`） | error | 升级后新版本没通过健康门禁，回滚**也**失败了 | **立刻人工介入**（此时站点大概率已经不可用） |
+| `upgrade.rollback.failed`（`phase=rolled_back`） | warn | 新版本没通过健康门禁，但回滚成功、站点跑在旧版本上 | 不叫醒，但要让人知道「今晚自动回滚过一次」 |
+
+> `upgrade.rollback.failed` 是**一个事件名、两个相位**，靠 `fields.phase` 区分。级别不同是有意的：
+> 回滚失败意味着「升级把站点弄挂了而且没救回来」，回滚成功意味着「已经自动救回来了」。
+> 后者也必须发 —— 「自动回滚了三次」和「一次都没回滚过」是两种完全不同的运维状态，而它在用户侧什么都不说。
+
+各事件的字段（`docker compose logs` 里紧跟事件名那一行往下排）：
+
+- **`notes.import.partial`**：`component="notesBackup"`、`created` / `updated` / `skipped` / `removed`（**只统计真的提交成功的批**，所以就是「实际落库了多少」）、`conflicts`、`partial=true`、`failedBatch`（卡在第几批）、`batchCount`（一共几批）、`warning`（给用户看的那句话）、`userId`（多账号部署才有）、`err`（原始异常）。
+- **`notes.import.conflicts`**：同上的一组统计 + `conflicts`（未覆盖条数）+ `partial`（这条事件里恒为 `false`：一旦某批失败，导入会**提前返回**、只发 `notes.import.partial`，那时的冲突数在它自己的 `conflicts` 字段里）。
+- **`migration.failed`**：`component="migration"`、`phase`（**第一个**上报失败的步骤 id）、`failedSteps`（失败步骤数）、`steps`（完整清单，逗号分隔）、`version`（目标结构版本串）、`err`。
+- **`upgrade.rollback.failed`**：`component="upgrade"`、`phase`（`rolled_back` / `rollback_failed`）、`reason`（人读原因，含回滚退出码与最后探活状态）、`toVersion`（目标镜像引用；拿不到就不给这个字段）。
+
+### 16.2 建议的告警判定
+
+阈值可以按自己站点的量调，但**判定维度**别改（下表括号里是聚合键）：
+
+| 事件 | 判定 | 理由 |
+| --- | --- | --- |
+| `migration.failed`（按 `phase` 聚合） | 出现即告警，24h 内任何一条都算 | 迁移失败是**结构不完整**，它不报错、只是让一批功能悄悄坏掉 |
+| `notes.import.partial`（按 `userId`） | 不逐条告警；同一实例 24h ≥ 3 次，或同一 `userId` 24h ≥ 2 次 | 单次通常是用户那份文件 / 网络的问题；反复出现才是库或磁盘的问题 |
+| `notes.import.conflicts`（按 `userId`） | 不告警；同一 `userId` 24h ≥ 20 次时提示 | 多数是「开了两个标签页」的正常产物，告警会立刻变噪音 |
+| `upgrade.rollback.failed` `phase=rollback_failed` | 出现即告警（P0），要能打电话 | 站点可能已经不可用 |
+| `upgrade.rollback.failed` `phase=rolled_back` | 每天汇总一条即可 | 站点在旧版本上活着，属于「上班时间处理」 |
+
+### 16.3 收到之后先做什么
+
+**`notes.import.partial`**
+
+1. 数据**没有**坏成半条：每条笔记的正文 / 标签关联 / 全文索引在同一个事务里，失败批整批回滚，库是「要么完整、要么没有」。
+2. 让用户**重新导入同一份文件**即可续传（相同 `uuid` 按「文件较新才覆盖」去重，不会重复建）。这句话就是 `warning` 字段里那句。
+3. 只有**同一份文件反复 partial** 才需要查服务端：看 `err` 与 `failedBatch` —— 连续卡在同一批，多半是那批语句撞上库容量 / 只读 / 锁等待，而不是数据问题。
+
+**`migration.failed`**
+
+1. 先打 `curl -fsS http://127.0.0.1:8787/api/readyz`（库通就 200、库不通 503）—— 这一条先分清「库根本打不开」还是「某一步 SQL 失败」。
+2. **别急着回滚代码**。回滚镜像不会修好库；而且迁移失败是 fail-open 的（站点通常还能进），仓促回滚只会让你同时丢两次现场。
+3. 看 `phase` / `steps`（哪几步）与 `version`（想升到哪一版），再查库里的迁移日志：`SELECT value FROM configs WHERE key='schema.log';`（最近一步的 `err` 就在里面）。
+4. 修好条件后**重启进程**就会重试：失败不会把步骤记成已完成，`migrate()` 也会清掉缓存，下一个请求会再走一遍。
+5. 注意 `phase` 是「第一个**上报**失败的步骤」：像 `core-tables` 那一步是故意吞异常、退回逐条执行的，它不会上报 —— 所以 `phase` 指向的未必是步骤表里的第一条。
+
+**`upgrade.rollback.failed`**
+
+- `phase=rollback_failed`：按「站点已经挂了」处理，**立刻**上宿主机手动回滚（第 8.2 节那三步），先看升级器日志定位：`docker logs --tail=50 navihive-upgrader`。
+- `phase=rolled_back`：站点已经在旧版本上服务，不用半夜动手。白天再查「新版本为什么没 healthy」：`/api/readyz`、`docker logs navihive`，以及有没有同时出现 `migration.failed`。确认之后再升一次，或先把镜像固定成某个 sha（第 8.2 节的 digest pinning）。
+
+### 16.4 这次**没有**做的事（显式声明，别当成已上线）
+
+- **没有选定任何日志平台**：Loki / ELK / 云厂商日志服务都没接，日志只落在容器自身的 stdout / stderr 上（`docker compose logs`、`journalctl -u navihive`）。
+- **没有启用任何线上告警**：本节给的判定是「该怎么判」，不是「已经在跑」。要真收到电话 / 消息，需要你把日志送去某个平台并照 16.2 配规则。
+- **接收人、留存期、隐私要求待站点所有者决定**：这三个事件里带 `userId`（内部数字 id）与 `warning`（中文提示语），**不含**笔记标题、正文、令牌或任何凭据；但如果你的合规要求更严（例如不允许日志里出现账号标识），请在采集侧丢弃 `userId` 字段 —— 事件名与其余字段不受影响。
+- **事件仍是「一句话 + 一个多行对象」**，不是单行 JSON。所以逐字段解析要在采集侧做（用平台的多行合并 / `multiline` 解析器）；本节 16.5 的 `jq` 示例只负责筛出「哪几行是事件」，不做字段解析。
+- **日志轮转没配**：`docker compose up` 默认用 json-file 驱动且不设上限，长期跑要自己加 `logging: { driver: json-file, options: { max-size, max-file } }`，否则磁盘会被日志吃满（那是另一类「没人发现」的事故）。
+
+### 16.5 可复制的检索示例
+
+事件是 `console.warn` / `console.error` 打出来的，落在 **stderr**，所以管道里要 `2>&1`。输出形如（字段紧跟事件名那一行往下排，取上下文用 `-A`）：
+
+```text
+笔记导入中断（已提交的批保留，其余未写入）: {
+  event: 'notes.import.partial',
+  component: 'notesBackup',
+  created: 40,
+  ...
+```
+
+**grep（Docker 部署，最近 24 小时）**
+
+```bash
+# 三个事件一次捞全（含上下文 12 行，够覆盖字段）
+docker compose logs --since 24h navihive 2>&1 \
+  | grep -A 12 -E "event: '(notes\.import\.(partial|conflicts)|migration\.failed|upgrade\.rollback\.failed)'"
+
+# 只数「迁移失败」出现几次（按天自查用）
+docker compose logs --since 24h navihive 2>&1 | grep -c "event: 'migration.failed'"
+```
+
+**grep（systemd 部署）**
+
+```bash
+journalctl -u navihive --since -24h --no-pager \
+  | grep -A 12 -E "event: '(notes\.import\.partial|migration\.failed|upgrade\.rollback\.failed)'"
+```
+
+**jq（仅当采集形态是「容器输出逐行包成 JSON」时可用）**
+
+docker 的 `json-file` 驱动与 `journalctl -o json` 都是「一行一个 JSON」，可以直接过 `jq`。注意一条事件会散在**相邻几行**里（多行对象），`jq` 帮你按时间 / 流筛到那几行：
+
+```bash
+# 容器 id（json-file 的日志文件名就是它）
+CID=$(docker inspect --format='{{.Id}}' navihive)
+
+sudo cat "/var/lib/docker/containers/$CID/$CID-json.log" \
+  | jq -r 'select(.log | test("notes\\.import\\.partial|migration\\.failed|upgrade\\.rollback\\.failed"))
+           | "\(.time) [\(.stream)] \(.log)"'
+```
+
+想把每条事件拼成一行 JSON（便于计数 / 入平台），就在采集侧按 `event:` 做多行合并 —— 那是「选平台」的一部分，属于 16.4 里还没做的活，别在这里手搓 `awk`。
