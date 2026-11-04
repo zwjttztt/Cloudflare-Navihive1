@@ -234,12 +234,68 @@ docker inspect --format='{{.State.Health.Status}}' navihive   # → healthy（�
 
 流程：设置 →「版本与升级」→ 更新 → 应用容器写 `/spool/request`（先写 `request.tmp`
 再 `rename`，避免升级器读到半截文件）→ `upgrader` 轮询到它 → `docker pull` 新镜像 →
-`docker compose up -d --force-recreate --no-deps navihive` → 把 `pulling / recreating /
-done / failed` 写进 `/spool/state.json`，前端轮询 `GET /api/system/upgrade` 拿进度。
+`docker compose up -d --force-recreate --no-deps navihive` → 健康门禁 → 把相位写进
+`/spool/state.json`，前端轮询 `GET /api/system/upgrade` 拿进度。六个相位（UI 按它渲染）：
+
+| 相位 | 含义 |
+|---|---|
+| `pulling` | 正在拉取目标镜像 |
+| `recreating` | 正在 compose 重建 `navihive` |
+| `done` | 升级成功：新容器**通过了健康门禁**才写 |
+| `failed` | 升级失败且**没有**进入回滚：镜像拉取失败，或重建本身失败 |
+| `rolled_back` | 升级失败但已自动回滚：回滚命令 rc=0 且回滚后旧容器二次探活 `healthy` |
+| `rollback_failed` | 回滚也失败（回滚 rc≠0，或回滚后旧容器仍不健康）→ **需人工介入** |
+
+> ⚠️ `done` 只能在健康门禁通过后写。回滚过却报 `done`，UI 就会把「失败已回滚」显示成
+> 「升级成功」——R05 要消灭的正是这种假成功。
 
 开关是环境变量 `NAVIHIVE_UPGRADE_SPOOL`（compose 里已设成 `/spool`）。**没设它就没有
 一键升级**：`dockerAvailable()` 里 spool 分支直接不成立，升级端点回 501，前端回落成
 「复制 `docker pull` 命令到服务器执行」。这是刻意的降级，不是故障。
+
+##### ⚠️ 前置条件：`deploy/upgrader/` 必须和 compose 一起同步到部署目录
+
+升级器的执行体是一个**普通的宿主机文件** `<部署目录>/deploy/upgrader/upgrade-loop.sh`
+（2026-11 从 `docker-compose.yml` 的 `upgrader.command` 内联脚本抽出来的，抽出来它才能被
+测试真正执行）。它靠那条「宿主原路径同名挂载」被 upgrader 容器读到 —— 也就是说
+**它不随镜像发布**，是升级路径上第二个需要同步的宿主文件。
+
+所以**只换 `docker-compose.yml` 是不够的**：`deploy/upgrader/` 必须一起过去。少了一头，
+容器启动时的存在性检查会打两行 `[upgrader] 致命：…` 然后退出 1（`restart: unless-stopped`
+会让它反复重启，`docker logs navihive-upgrader` 里刷的就是同一句话）。这是**响亮失败**，
+比静默跑三天前的旧脚本好得多 —— 2026-11-04 那次事故就是后者：compose 没随镜像更新，
+宿主机跑的仍是旧内联脚本，新版回滚终态协议根本没生效，而所有门禁全绿、没人察觉。
+
+**先判断你属于哪种**：`ls <部署目录>/.git` 有 → 第一类；报「No such file」→ 第二类。
+
+**第一类：部署目录本身就是仓库工作区**（手册前面那套 `git clone` 的标准做法，
+`/opt/navihive` 那种）。`git pull` 一次就把 compose 和脚本都带过来了：
+
+```bash
+cd /opt/navihive && git pull        # 或者你的部署目录
+ls deploy/upgrader/upgrade-loop.sh  # 确认脚本也在（HEAD 落后时可能没有）
+docker compose up -d --force-recreate upgrader
+docker compose up -d --force-recreate navihive
+```
+
+**第二类：部署目录不是 git 工作区**（只把 `docker-compose.yml` 和 `.env` 手工拷到
+`/home/docker/navihive`，仓库另存在别处 —— 本仓维护者的线上就是这种）。这里没有 `git pull`
+可打，所以：
+
+```bash
+# 在仓库工作区里：
+git pull
+# 把 compose 与整个 deploy/upgrader/ **同批次**同步到部署目录（别只拷 compose）
+rsync -a docker-compose.yml deploy/upgrader/ /home/docker/navihive/   # 或用 scp / 手工拷
+# 在部署目录里：
+docker compose up -d --force-recreate upgrader
+```
+
+> ⚠️ 别把「升级」理解成只拷 compose 一个文件 —— 这条链上有**两个**宿主文件参与升级。
+> 顺便说清楚：这次抽取**没有**让脚本随镜像走，同步负担反而从 1 个文件变成 2 个；
+> 换来的是它终于可测（三个终态有真执行覆盖）、可 review。根治「宿主机脚本陈旧」要靠
+> 版本握手（脚本自报哈希、应用侧比对），还没做。
+
 
 ##### 这个隔离解决了什么
 
@@ -268,6 +324,9 @@ Docker socket 不是「一个 API」，是**宿主机 root 的等价物** ——
    ⚠️ 仓库模板里写的是 `/home/docker/navihive`。**你的 compose 目录如果是别的路径**
    （比如第四节 B 用的 `/opt/navihive`），必须把 `upgrader` 的 `working_dir` 和那条绑定挂载
    两处一起改成你的真实路径，否则一键升级会在日志里报「找不到 compose 配置文件」。
+   > 只要这两处，`entrypoint` 不用动 —— 它执行的是**相对** `working_dir` 的
+   > `deploy/upgrader/upgrade-loop.sh`（脚本自己引用 compose 文件用的也是相对路径
+   > `-f docker-compose.yml`，同一套 cwd 前提）。
 3. **`pull` 用完整镜像名，再 `tag` 成 compose 里的 `image` 名**：先 `docker pull
    ghcr.io/<owner>/navihive:<tag>`，再 `docker tag` 成 `navihive:latest`。因为不同部署的
    compose 里 `image` 可能是 `navihive:latest` 也可能是 `ghcr.io/...:latest`；直接

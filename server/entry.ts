@@ -479,6 +479,10 @@ function dockerCliHost(): string {
  * 所以变成：应用容器只往共享卷写一个请求文件，由独立的 upgrader 容器
  * （持 sock、不开端口、不跑业务代码、不渲染用户内容）执行 compose。
  * 应用容器从此**零 daemon 权限**。配了 NAVIHIVE_UPGRADE_SPOOL 就启用。
+ *
+ * 那台 upgrader 容器跑什么：`deploy/upgrader/upgrade-loop.sh`（仓库文件，compose 的
+ * `upgrader.command` 只是 exec 它）。它是本文件这套 sock 路径的**另一份实现**，
+ * 两份的锚点必须同步 —— 见 upgradeHealth.ts 文件头与 tests/systemUpgradeGuard.test.ts。
  */
 const UPGRADE_SPOOL = (process.env.NAVIHIVE_UPGRADE_SPOOL || "").trim();
 

@@ -1,9 +1,16 @@
 // 升级健康门禁（P1 #9）的守卫：钉死「是否回滚」的纯决策，并保证两条升级路径
-// （spool 模式的 docker-compose.yml upgrader + sock 模式的 entry.ts upgraderCommand）
+// （spool 模式的 deploy/upgrader/upgrade-loop.sh + sock 模式的 entry.ts upgraderCommand）
 // 使用了**相同**的回滚锚点 / 探活字段 / 回滚命令。
 //
+// ⚠️ 2026-11 变动：spool 那边的 shell 原先内联在 docker-compose.yml 的 `upgrader.command`
+// 里，现在抽成了 `deploy/upgrader/upgrade-loop.sh`（compose 只是 exec 这个文件）。
+// 所以下面凡是「spool 侧脚本」的断言，工具链从 composeYml 换成了 loopScript ——
+// **断言本身一条没删、强度一点没降**（那组锚点是唯一防止两份实现对向漂移的绳子，
+// 削弱它就等于让两份实现可以各自漂走而门禁全绿）。
+//
 // ⚠️ 本机没有 Docker daemon，shell 端到端行为无法本地验证；这里只钉住：
-//   ① shouldRollback 纯决策；② TS 生成的 shell 与 docker-compose.yml 出现相同关键锚点。
+//   ① shouldRollback 纯决策；② TS 生成的 shell 与升级器脚本出现相同关键锚点。
+//   （升级器脚本自己的**行为**由 tests/upgraderLoop.test.ts 用假 docker 真跑覆盖。）
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -17,11 +24,16 @@ import {
     rollbackHelperExitCode,
     HELPER_EXIT_ROLLED_BACK,
     HELPER_EXIT_ROLLBACK_FAILED,
+    HEALTHCHECK_MAX_ATTEMPTS,
+    HEALTHCHECK_POLL_SECONDS,
+    ROLLBACK_RECHECK_MAX_ATTEMPTS,
 } from "../server/upgradeHealth";
 
 const repoRoot = process.cwd();
 const composeYml = readFileSync(resolve(repoRoot, "docker-compose.yml"), "utf8");
 const entryTs = readFileSync(resolve(repoRoot, "server/entry.ts"), "utf8");
+/** spool 升级器的执行体（2026-11 从 compose 内联抽出来的那份） */
+const loopScript = readFileSync(resolve(repoRoot, "deploy/upgrader/upgrade-loop.sh"), "utf8");
 
 describe("shouldRollback 纯决策", () => {
     test("healthy 且未超时 → 不回滚", () => {
@@ -68,15 +80,40 @@ describe("两条升级路径锚点一致", () => {
     const guard = healthGuardAfterRecreate("navihive", "navihive", "docker-compose.yml");
     const tag = tagPreviousBeforeRecreate("navihive");
 
-    // docker-compose.yml（spool upgrader）必须包含与 TS 生成 shell 相同的关键锚点
+    // ⚠️ 这组断言是**整条绳子**：spool 路径（脚本里写的 shell）与 sock 路径（TS 生成的
+    // shell）是两份独立实现，只有它们含同一组关键锚点，才谈得上「改一边必须同步另一边」。
+    // 少了它，两边可以各自漂走而所有门禁全绿 —— 而这恰好是 2026-11-04 那次事故的形状
+    //（线上跑的是三天前的旧脚本，没人发现两份实现已经不一致）。
+    //
+    // compose → 脚本 这一跳也要钉住：脚本抽出去之后，compose 只剩 exec，如果哪天有人
+    // 把 exec 指向别的文件（或退回内联），锚点检查的对象就和线上跑的实物对不上了。
+    test("docker-compose.yml 的 upgrader 真正执行那个脚本文件（compose → 脚本一跳）", () => {
+        // 相对路径：脚本自己引用 compose 文件（-f docker-compose.yml）也是相对的，
+        // 同一套「cwd == working_dir」前提；写绝对路径会把 selfhost.md 里
+        // 「自定义目录只改两处」变成四处。
+        assert.ok(
+            composeYml.includes("exec /bin/sh deploy/upgrader/upgrade-loop.sh"),
+            "compose 的 upgrader 没有执行 deploy/upgrader/upgrade-loop.sh",
+        );
+        assert.ok(
+            !composeYml.includes("/home/docker/navihive/deploy/upgrader/upgrade-loop.sh"),
+            "compose 里出现了脚本的绝对路径：entrypoint 应相对 working_dir",
+        );
+        assert.ok(
+            !composeYml.includes("{{.State.Health.Status}}"),
+            "compose 里又出现了内联的探活脚本：spool 路径的执行体只能在 upgrade-loop.sh 里",
+        );
+    });
+
+    // 升级器脚本（spool upgrader）必须包含与 TS 生成 shell 相同的关键锚点
     for (const anchor of [
         "navihive:previous",
         "{{.Image}}",
         "{{.State.Health.Status}}",
         "docker compose -f docker-compose.yml -p navihive up -d --force-recreate --no-deps navihive",
     ]) {
-        test(`docker-compose.yml 含锚点：${anchor}`, () => {
-            assert.ok(composeYml.includes(anchor), `docker-compose.yml 缺少锚点：${anchor}`);
+        test(`deploy/upgrader/upgrade-loop.sh 含锚点：${anchor}`, () => {
+            assert.ok(loopScript.includes(anchor), `upgrade-loop.sh 缺少锚点：${anchor}`);
         });
     }
 
@@ -87,11 +124,35 @@ describe("两条升级路径锚点一致", () => {
         assert.ok(entryTs.includes("healthGuardAfterRecreate("));
     });
 
-    test("TS 生成锚点与 docker-compose.yml 逐一吻合", () => {
+    test("TS 生成锚点与升级器脚本逐一吻合", () => {
         // 若任一侧改了回滚命令而另一侧没跟着改，这里直接红
         assert.ok(guard.includes("navihive:previous"));
         assert.ok(guard.includes("{{.State.Health.Status}}"));
         assert.ok(tag.includes("{{.Image}}"));
+    });
+
+    // 探活**预算**也算「锚点」：40 × 3s = 120s 门禁、20 × 3s = 60s 回滚后二次探活。
+    // 两份实现如果一边改成 60 次、另一边还是 40 次，行为就分叉了（而锚点字符串仍然对得上），
+    // 所以门槛值也要绑在一起。脚本侧的门槛走「默认值」断言（变量可注入，但默认必须相同）。
+    test("两边的探活预算一致（次数与间隔），脚本侧看的是注入点的默认值", () => {
+        assert.ok(
+            loopScript.includes(`seq 1 ${HEALTHCHECK_MAX_ATTEMPTS}`),
+            `升级器脚本的健康门禁次数应等于 HEALTHCHECK_MAX_ATTEMPTS=${HEALTHCHECK_MAX_ATTEMPTS}`,
+        );
+        assert.ok(
+            loopScript.includes(`seq 1 ${ROLLBACK_RECHECK_MAX_ATTEMPTS}`),
+            `升级器脚本的二次探活次数应等于 ROLLBACK_RECHECK_MAX_ATTEMPTS=${ROLLBACK_RECHECK_MAX_ATTEMPTS}`,
+        );
+        assert.ok(
+            loopScript.includes(`NAVIHIVE_UPGRADER_HEALTH_POLL_SECONDS:-${HEALTHCHECK_POLL_SECONDS}`),
+            `升级器脚本的探活间隔默认值应等于 HEALTHCHECK_POLL_SECONDS=${HEALTHCHECK_POLL_SECONDS}`,
+        );
+        assert.ok(
+            guard.includes(`seq 1 ${HEALTHCHECK_MAX_ATTEMPTS}`),
+            "TS 生成的 shell 门禁次数变了，升级器脚本却没跟着改",
+        );
+        assert.ok(guard.includes(`seq 1 ${ROLLBACK_RECHECK_MAX_ATTEMPTS}`));
+        assert.ok(guard.includes(`sleep ${HEALTHCHECK_POLL_SECONDS}`));
     });
 });
 
@@ -166,7 +227,7 @@ describe("R05：两条升级路径都写回滚终态 / 查回滚命令返回码 
     const guard = healthGuardAfterRecreate("navihive", "navihive", "docker-compose.yml");
     const scripts: Array<[string, string]> = [
         ["TS 生成的 sock helper shell", guard],
-        ["docker-compose.yml 的 spool upgrader command", composeYml],
+        ["deploy/upgrader/upgrade-loop.sh 的 spool 升级器", loopScript],
     ];
 
     for (const [label, script] of scripts) {
@@ -193,28 +254,81 @@ describe("R05：两条升级路径都写回滚终态 / 查回滚命令返回码 
         });
     }
 
-    test("spool：只有 GUARD_OK 非空（健康门禁通过）才写 phase=done", () => {
-        const guardAt = composeYml.indexOf('if [ -n "$$GUARD_OK" ]; then');
-        const doneAt = composeYml.indexOf('"phase":"done"');
-        assert.ok(guardAt > 0, "done 写入必须被 GUARD_OK 守卫");
-        assert.ok(doneAt > guardAt, "done 必须写在 GUARD_OK 守卫里面");
-    });
+/**
+ * 从 shell 脚本里切出「`opener` 那一行 → 与之配对的 `fi`」之间的整段（含首尾）。
+ *
+ * 为什么需要按结构切、不能只比 indexOf 大小（2026-11 修）：原来那条断言是
+ * `doneAt > guardAt`，而它能被**与守卫无关的**写法满足 —— 变异测试把别处（重建失败的
+ * else 分支）的 `"phase":"failed"` 改成 `"phase":"done"`，`"phase":"done"` 的首次出现
+ * 依然在 guardAt 之后，于是「done 写在守卫里」照样绿。顺序比较证明不了「在块内」。
+ *
+ * 深度计数：块内每行以 `if `/`if (`/`if[` 开头算开一层（`elif` / `else` 不算），
+ * 单独一行的 `fi` 关一层；关到 0 就是配对的那一行。
+ */
+function extractShellBlock(script: string, opener: string): string {
+    const lines = script.split("\n");
+    const start = lines.findIndex(line => line.trim() === opener);
+    assert.ok(start >= 0, `脚本里找不到块起始行：${opener}`);
+    let depth = 0;
+    for (let i = start; i < lines.length; i += 1) {
+        const trimmed = lines[i].trim();
+        if (/^if(\s|\(|\[)/.test(trimmed)) depth += 1;
+        if (trimmed === "fi") {
+            depth -= 1;
+            if (depth === 0) return lines.slice(start, i + 1).join("\n");
+        }
+    }
+    assert.fail(`脚本里的 if 块没有闭合：${opener}`);
+}
 
+    describe("spool：done 的写入位置（守卫块内外都要钉）", () => {
+        const guardBlock = extractShellBlock(loopScript, 'if [ -n "$GUARD_OK" ]; then');
+
+        test("done 的 printf 与「完成」回显都落在 GUARD_OK 守卫块**内部**", () => {
+            assert.ok(
+                guardBlock.includes('"phase":"done"'),
+                `GUARD_OK 守卫块里没有写 done —— 这等于门禁没过也能报升级成功：\n${guardBlock}`,
+            );
+            assert.ok(
+                guardBlock.includes("[upgrader] 完成"),
+                `「完成」回显要跟着 done 一起在守卫块里：\n${guardBlock}`,
+            );
+        });
+
+        test("守卫块之外没有第二处写 done（块是唯一出口）", () => {
+            // 这条才是真正能证伪 M7 的那半：别处（例如重建失败的 else 分支）
+            // 一旦也写 done，就出现了第二个「假成功」出口。
+            const outside = loopScript.split(guardBlock).join("");
+            assert.ok(
+                !outside.includes('"phase":"done"'),
+                "GUARD_OK 守卫块之外还有写 done 的地方：门禁没通过也可能报升级成功",
+            );
+        });
+
+        test("守卫块确实是「GUARD_OK 非空」这一个条件（不是恒真）", () => {
+            const openerLine = guardBlock.split("\n")[0].trim();
+            assert.equal(openerLine, 'if [ -n "$GUARD_OK" ]; then', `守卫条件被改了：${openerLine}`);
+            assert.ok(guardBlock.trimEnd().endsWith("fi"), "切出来的块没有闭合到 fi");
+        });
+    });
     test("spool：两个回滚终态都带人读 error 文案与 finishedAt", () => {
         assert.match(
-            composeYml,
+            loopScript,
             /"phase":"%s","image":"","error":"%s","startedAt":%s,"finishedAt":%s}/,
             "state.json 的终态写入要带 error 与 finishedAt",
         );
-        assert.ok(composeYml.includes("已自动回滚到上一版本"));
-        assert.ok(composeYml.includes("需人工介入"));
+        assert.ok(loopScript.includes("已自动回滚到上一版本"));
+        assert.ok(loopScript.includes("需人工介入"));
     });
 
     test("spool：webhook 文案区分「已成功回滚」与「回滚失败，需人工介入」", () => {
-        assert.ok(composeYml.includes("已成功回滚到上一版本"));
-        assert.ok(composeYml.includes("回滚失败，需人工介入"));
-        assert.ok(composeYml.includes("$$ALERT_TEXT"), "webhook 要发分类后的文案，不能还是那句无条件「已回滚」");
-        assert.ok(!composeYml.includes('echo "[upgrader] 已回滚"'), "不许再无条件 echo 已回滚");
+        assert.ok(loopScript.includes("已成功回滚到上一版本"));
+        assert.ok(loopScript.includes("回滚失败，需人工介入"));
+        // 抽取后是单 $（原 compose 里写作 $$ALERT_TEXT）；先断言“没有 $$ 残留”再把单 $ 钉住，
+        // 这样既保留了原来那条语义，也顺手堵住「抽取时漏还原转义」这类错误。
+        assert.equal((loopScript.match(/\$\$/g) ?? []).length, 0, "脚本里还有 compose 转义 $$ 残留");
+        assert.ok(loopScript.includes("$ALERT_TEXT"), "webhook 要发分类后的文案，不能还是那句无条件「已回滚」");
+        assert.ok(!loopScript.includes('echo "[upgrader] 已回滚"'), "不许再无条件 echo 已回滚");
     });
 
     test("sock：回滚以非 0 退出（40/41），不会落到「完成」回显", () => {

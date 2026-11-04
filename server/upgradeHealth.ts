@@ -19,10 +19,14 @@
 // 而「探活结果 → 是否回滚 / 回滚完算什么」的决策抽成纯函数后能被单测逐格钉死；
 // entry.ts 因为一 import 就起服务，本就不能被单测引入（同 upgradeAudit.ts 的理由）。
 //
-// ⚠️ 本机没有 Docker daemon，这两段 shell 的**端到端行为无法在本地验证**——
+// ⚠️ 本机没有 Docker daemon，这两段 shell 对**真实 daemon** 的行为无法在本地验证。
 // 能验证的是：① shouldRollback / classifyRollback 纯决策的单元测试；② 两条路径的
 // 脚本里都出现了相同的锚点 tag / 探活字段 / 回滚命令 / 终态相位
-//（由 tests/systemUpgradeGuard.test.ts 钉住）。真实的 daemon 行为要等 CI 或 VPS 验证。
+//（由 tests/systemUpgradeGuard.test.ts 钉住，含探活预算 40×3s / 20×3s）。
+// ③ 2026-11 起 spool 那一份搬到了 deploy/upgrader/upgrade-loop.sh，于是可以被
+// tests/upgraderLoop.test.ts 用假 docker **真跑**：done / rolled_back /
+// rollback_failed 三个终局都有行为覆盖。本文件（sock 路径）仍只有锚点 + 纯函数覆盖。
+// 真实的 daemon 行为要等 CI 或 VPS 验证。
 
 import { FAILURE_EVENTS, type FailureEvent } from "../shared/failureEvents";
 
@@ -81,7 +85,8 @@ export function shouldRollback(healthStatus: string, timedOut: boolean): boolean
  *
  * 与 shouldRollback 并列：那个管「要不要回滚」，这个管「回滚完算成功还是失败」。
  * 两条升级路径的 shell 都按同一张表展开（见 healthGuardAfterRecreate 与
- * docker-compose.yml 的 upgrader.command），改动必须同步，否则守卫测试会红。
+ * deploy/upgrader/upgrade-loop.sh —— spool 升级器的执行体，是**另一份实现**），
+ * 改动必须同步，否则 tests/systemUpgradeGuard.test.ts 会红。
  *
  * @param rollbackExitCode    回滚用的 `docker compose up -d` 退出码（0 = 成功）
  * @param recheckHealthStatus 二次探活循环结束时的 Health.Status
