@@ -30,17 +30,13 @@ import type Token from "markdown-it/lib/token.mjs";
  * —— 可展开收起。放进这个枚举而不是另写一套块规则，是因为折叠块的**解析**
  * （首段首行摘标记、包一层）与内容块完全一致，只有渲染层的表现不同。
  *
- * `COPY` 是「可复制块」：语法 `> [!COPY]`（**标记独占一行**）。
- * 渲染形态（2026-11-05 方案三）：块内**每个反引号片段**是一个独立的可复制单元
- * —— 静止只有一条 1px 虚线下划线，悬停 / 聚焦浮浅蓝底 + 「⧉ 点击复制」气泡；
- * 整块复制按钮只在**悬停整块**时出现在右上角（触屏设备常显）。
- * 块内一个反引号都没有时，退化成「只有整块复制」，不报错也不吞内容。
- * 它进这个枚举而不另造语法，理由同上：解析层零改动，只在渲染层分叉。
- * ⚠️ 也正因为共用解析，「标记 + 正文同一行」的写法对 COPY 是不可靠的：
- * 正文以 `1. ` / `## ` 开头时 markdown-it 会先切成列表/标题，
- * 首段首行的 inline 就不是那句话了，`takeMarker` 摘不到标记 → 退化成普通引用。
+ * ⚠️ `COPY` 已**彻底移除**（v31 复制能力下线后，语法本身也一并清掉）。
+ * 历史笔记里残留的 `> [!COPY]` 标记行由数据迁移
+ * `notes-copy-callout-marker`（见 `API/methods/migration.ts`）一次性删掉，
+ * 正文一字不动；迁移之后不会再有任何 `[!COPY]` 源码需要解析。
+ * 因此这里**不要**再加回 `"COPY"` —— 加回来等于把已下线功能死灰复燃。
  */
-export const CALLOUT_TYPES = ["NOTE", "TIP", "IMPORTANT", "WARNING", "QUOTE", "FOLD", "COPY"] as const;
+export const CALLOUT_TYPES = ["NOTE", "TIP", "IMPORTANT", "WARNING", "QUOTE", "FOLD"] as const;
 export type CalloutType = (typeof CALLOUT_TYPES)[number];
 
 /** 折叠块（`> [!FOLD]`）：标题之外的正文默认收起来 */
@@ -73,8 +69,8 @@ interface Marker {
     /**
      * 摘掉标记后首段是不是**彻底空了**。
      *
-     * 只在「标记独占一行、下一行直接是列表/标题」时发生（`> [!COPY]` 换行后接
-     * `> 1. xxx`）—— 那时 `[!COPY]` 自己是一个段落，摘完标记剩空串，
+     * 只在「标记独占一行、下一行直接是列表/标题」时发生（`> [!QUOTE]` 换行后接
+     * `> 1. xxx`）—— 那时 `[!QUOTE]` 自己是一个段落，摘完标记剩空串，
      * 渲染出来块顶部会多出一段 MD_GAP 的空白。调用方据此把这三个 token 一起丢掉。
      */
     emptyHead?: boolean;
@@ -84,8 +80,8 @@ interface Marker {
  * 把一个 inline token 的 children 拼回「人看到的文字」（软换行算一个 `\n`）。
  *
  * ⚠️ 不能只看 `children[0].content`：markdown-it 的 inline 解析会把段内换行
- * 拆成独立的 `softbreak` 子节点，所以 `> [!COPY]\n> 第一行` 的 children 是
- * `[text "[!COPY]", softbreak, text "第一行"]` —— 只看第一个 text 会以为
+ * 拆成独立的 `softbreak` 子节点，所以 `> [!QUOTE]\n> 第一行` 的 children 是
+ * `[text "[!QUOTE]", softbreak, text "第一行"]` —— 只看第一个 text 会以为
  * 摘完标记「整段空了」，进而把**带着正文的**段落删掉（踩过：正文凭空消失）。
  */
 function inlineText(inline: Token): string {
@@ -141,7 +137,7 @@ function takeMarker(tokens: Token[]): Marker | null {
     head.content = rest;
     dropLeadingBreaks(firstInline);
     // 非折叠类型没有标题概念：标记后面那截就是正文。
-    // 「标记独占一行且下一行直接是列表/标题」（`> [!COPY]` 换行接 `> 1. 甲`）时，
+    // 「标记独占一行且下一行直接是列表/标题」（`> [!QUOTE]` 换行接 `> 1. 甲`）时，
     // 整段真的空了 —— 标出来让调用方把这三个 token 一起丢掉。
     return { type, title: "", emptyHead: inlineText(firstInline).trim() === "" };
 }

@@ -75,7 +75,7 @@ test("保险库：migrate() 在真实 SQLite 里建出 vault_keys / vault_entrie
     }
 });
 
-test("保险库：SCHEMA_VERSION 已升到 29（新步骤吃快路径，不升号老库永远建不出来）", () => {
+test("迁移版本号：只许前进，当前是 30（新步骤吃快路径，不升号老库永远建不出来）", () => {
     // 2026-10-25：迁移改成「已执行 step 集合」后版本串升到 27，
     // 为的是让老库跑一遍并拿到新增的两条索引（idx_notes_user_updated / idx_notes_site_recent）。
     // 2026-10-28：再加 `notes-fts-rowid` 这一步（把 FTS 行的 rowid 对齐到 notes.id，
@@ -84,5 +84,16 @@ test("保险库：SCHEMA_VERSION 已升到 29（新步骤吃快路径，不升�
     // 2026-11（C1）：再加 `rate-limit-bucket-rows`（限速计数从 configs 的大 JSON 搬到
     // rate_limit_bucket 一桶一行）+ 两条索引。**同样吃快路径** —— 不升号的话老库上
     // 新表永远不存在，十把限速锁会全部退化成「记不上数就放行」。所以版本串走到 29。
-    assert.equal(SCHEMA_VERSION, "29");
+    // 2026-11：再加 `notes-copy-callout-marker`（把历史笔记里残留的 `> [!COPY]`
+    // 标记行洗掉，配合 `CALLOUT_TYPES` 去掉 COPY）。同样吃快路径 ——
+    // 不升号的话老库一次都不会洗，用户正文里会一直显示 `[!COPY]` 字样。
+    // 所以版本串走到 30。
+    //
+    // ⚠️ 这个用例原来叫「保险库：SCHEMA_VERSION 已升到 29」—— 它守的其实从来不只是
+    //    保险库，而是「这次新增的步骤有没有跟着升号」。名字改成中性的，
+    //    再加一条 `>= 29` 让「只许前进」这层原始意图活下来：
+    //    只留一个写死的字面量的话，这条测试就退化成「某处有个数字」。
+    assert.equal(Number(SCHEMA_VERSION) >= 29, true, "版本号不许倒退到 29 以下");
+    // 钉住当前口径。升号时**必须**同步改这里 —— 它是「这次升号我想过了」的签字位。
+    assert.equal(SCHEMA_VERSION, "30", "当前版本串，升号后请连同上面的历史叙事一起更新");
 });

@@ -112,10 +112,16 @@ import { migrationFailedEvent } from "../../../shared/failureEvents";
 //     所以必须有 `rate-limit-bucket-rows` 这一步显式建表并搬数据：
 //     不升号的话老库上表永远不存在 → 十把锁全部退化成「记不上数就放行」。
 //
+// 30 = 清掉历史笔记里残留的 `> [!COPY]` 标记行（复制块语法整体下线后的数据收尾）。
+//     这一步**不是结构变更、纯搬数据**，但它同样吃快路径：老库里 schema.version 已经是
+//     "29"，不升号的话 migrateIfNeeded 会直接返回，脏数据一条都洗不掉，
+//     而渲染层（CALLOUT_TYPES 已无 COPY）会把 `[!COPY]` 当普通文本显示出来。
+//     所以「纯数据迁移」一样必须升号 —— 这是 13 号那次 500 教的那一课。
+//
 // ⚠️ 从 27 起，「什么时候该升号」不再靠人记住 —— 见下面 MIGRATION_VERSION 的说明：
 // 往 MIGRATION_STEPS 加一条步骤、或往 INDEX_STATEMENTS 加一条索引，落库的版本串会
 // 自动往前走一格。手工改这个字面量，只在「搬数据但没新增步骤」这类情况下才还需要。
-export const SCHEMA_VERSION = "29";
+export const SCHEMA_VERSION = "30";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 /** 「已执行过的迁移步骤」集合存在 configs 里的键名（值是 JSON 字符串数组） */
@@ -422,27 +428,51 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
     },
     // 索引排在最后：它依赖上面补出来的 user_id 列
     { id: "indexes", run: api => api.createIndexes() },
+    /**
+     * 清掉历史笔记里残留的 `> [!COPY]` 标记行（复制块语法整体下线后的数据收尾，schema 30）。
+     *
+     * 为什么要落一步「洗数据」而不是让渲染层兜着：v31 移除复制能力时，
+     * `CALLOUT_TYPES` 里还留着 `COPY`，标记照常被摘掉，所以脏数据无害。
+     * 现在语法本身也删了，`parseCalloutType("[!COPY]")` 返回 null，
+     * 那行源码会**原样显示**成一段引用里的 `[!COPY]` 文字 —— 用户看到的就是残留。
+     *
+     * 口径（与用户确认过）：**只删标记行，正文一字不动**。
+     * 具体怎么做由 `stripCopyCalloutMarkers` 负责（纯函数，边界都在它的注释里），
+     * 这一步只管「选行 → 洗 → 写回」，写回时：
+     *   · `rev = rev + 1` —— 客户端缓存按 rev 判定新旧，不 +1 的话别的设备
+     *     手里那份脏正文永远不会失效；
+     *   · **不动 `updated_at`** —— 这一列决定笔记列表的排序，动它等于替用户
+     *     把笔记顺序重排一遍（纯属副作用，没有任何收益）；
+     *   · 同步 notes_fts —— 索引里存的是**分词后**的文本，不重写的话
+     *     洗完的正文与索引对不上（多一个 `[!COPY]` token，少几个词）；
+     *   · 回收站里那份 `{ note, tagIds }` 的 JSON 也一起洗 —— 用户在回收站
+     *     点「还原」时插回去的是**这份快照**，不洗就等于把脏数据又搬回 notes。
+     *
+     * 排在 `indexes` **之后**：它不建表不建索引，只读写数据；
+     * 而索引越早建好，后面启动路径上受益越早。
+     */
+    { id: "notes-copy-callout-marker", run: api => api.migrateStripCopyCalloutMarkers() },
 ];
 
-/** 29 号这一版登记的步骤条数（加步骤时**不用**改这个数，见 MIGRATION_VERSION） */
-const STEPS_AT_V29 = 20;
-/** 29 号这一版 INDEX_STATEMENTS 的条数（加索引时**不用**改这个数） */
-const INDEXES_AT_V29 = 26;
+/** 30 号这一版登记的步骤条数（加步骤时**不用**改这个数，见 MIGRATION_VERSION） */
+const STEPS_AT_V30 = 21;
+/** 30 号这一版 INDEX_STATEMENTS 的条数（加索引时**不用**改这个数） */
+const INDEXES_AT_V30 = 26;
 /**
  * 自 27 号以来新增的「结构变更」条数：多一条迁移步骤、或多一条索引都算一格。
  *
- * 它大于 0 时闸门用的版本串就变成 `27+N`，于是**老库必然被判定为需要迁移** ——
+ * 它大于 0 时闸门用的版本串就变成 `30+N`，于是**老库必然被判定为需要迁移** ——
  * 「补列写了却忘了升号」这类事故（见 tests/noteFolderTagRealSql.test.ts:296）
  * 在结构上就不可能再发生：升号是算出来的，不是记出来的。
  */
 const SCHEMA_DELTA =
-    MIGRATION_STEPS.length - STEPS_AT_V29 + (INDEX_STATEMENTS.length - INDEXES_AT_V29);
+    MIGRATION_STEPS.length - STEPS_AT_V30 + (INDEX_STATEMENTS.length - INDEXES_AT_V30);
 /**
  * 真正落库、也真正拿来比对的版本串。
  *
  * ⚠️ 在当前这份代码里它必须**正好等于** SCHEMA_VERSION（也就是 delta 为 0）。
- * 不为 0 的话要么 STEPS_AT_V29 没跟上 MIGRATION_STEPS 的实际条数，要么
- * INDEXES_AT_V29 没跟上 INDEX_STATEMENTS 的实际条数 ——
+ * 不为 0 的话要么 STEPS_AT_V30 没跟上 MIGRATION_STEPS 的实际条数，要么
+ * INDEXES_AT_V30 没跟上 INDEX_STATEMENTS 的实际条数 ——
  * tests/migrationVersion.test.ts 第一条（写回的版本串要等于 SCHEMA_VERSION）会立刻红。
  */
 export const MIGRATION_VERSION = SCHEMA_DELTA > 0 ? `${SCHEMA_VERSION}+${SCHEMA_DELTA}` : SCHEMA_VERSION;
@@ -679,6 +709,8 @@ export interface MigrationApi {
     migrateNoteStarRevColumns(): Promise<void>;
     /** 2026-10-24：notes 补 link_count（双链条数），让数据页统计不再全表拉正文 */
     migrateNoteLinkCount(): Promise<void>;
+    /** 2026-11：删掉历史笔记里残留的 `> [!COPY]` 标记行（复制块语法已下线），正文一字不动 */
+    migrateStripCopyCalloutMarkers(): Promise<void>;
     /** 2026-10-11：group_share（公开分组分享，阶段④） */
     migrateGroupShareTable(): Promise<void>;
     /** 2026-10-25：保险库 vault_keys / vault_entries（方案 B 端到端加密，schema 26） */
@@ -693,6 +725,85 @@ export interface MigrationApi {
     ensureOwnerUser(): Promise<number | null>;
     findMissingSiteColumns(): Promise<string[]>;
     withSchemaRetry<T>(run: () => Promise<T>): Promise<T>;
+}
+
+/**
+ * 一条「整行都是标记」的 COPY 标记行：可以有任意层引用前缀（`> `、`> > `）、
+ * 前后可以有空格或制表符，但标记之后**不许有别的字符**。
+ */
+const COPY_MARKER_LINE = /^[ \t]*(?:>[ \t]*)+\[!COPY\][ \t]*$/i;
+/**
+ * 「行首是标记、后面还跟着正文」的形态（手写出来的那种：`> [!COPY] 见下`）。
+ * 捕获组 1 是引用前缀（含它后面的空格），留给替换时保留。
+ */
+const COPY_MARKER_PREFIX = /^([ \t]*(?:>[ \t]*)+)\[!COPY\][ \t]*/i;
+/** 代码围栏的开合行（``` 或 ~~~，允许挂在引用里） */
+const FENCE_LINE = /^[ \t]*(?:>[ \t]*)*(?:`{3,}|~{3,})/;
+
+/**
+ * 把笔记正文里残留的 `> [!COPY]` 标记行删掉，**其余字节一律不动**。
+ *
+ * 背景：复制块（`> [!COPY]`）在 v31 下线了能力、v30→ 这一版连语法一起删了
+ * （`CALLOUT_TYPES` 里已经没有 `COPY`）。于是历史笔记里那行源码不再是「被摘掉的
+ * 标记」，而是会**原样显示**成 `[!COPY]` 文本。这个函数就是那条一次性洗数据的
+ * 实现，也是唯一的口径来源（迁移步骤 `notes-copy-callout-marker` 只负责搬）。
+ *
+ * 规则（边界都是刻意钉死的）：
+ *  1. **只有「整行就是标记」才整行删掉** —— 包含它自己的换行符，
+ *     所以删完不会留下空行。首行、末行（末尾没有换行符）、CRLF 都吃得住。
+ *  2. 行首是标记、后面还有正文（`> [!COPY] 见下` 这种手写形态）时，
+ *     **只删标记本身**、把引用前缀原样留下（`> 见下`）——
+ *     整行删掉会把正文一起吃掉，那是数据丢失，不是清理。
+ *  3. **行中间的 `[!COPY]` 一个字都不许动**：`这写法来自 [!COPY] 语法` 是一句
+ *     正常的话，它在行中没有引用前缀，不会被任何一条规则命中。
+ *  4. **代码围栏里的内容不动**：用户可能正在笔记里写一段「COPY 块长这样」的
+ *     示例代码，把示例删掉同样是数据丢失。
+ *  5. 大小写不敏感、多余空格 / 制表符都认（`  >   [!copy]  ` 也算）。
+ *  6. **幂等**：结果里不再有可命中的标记行，跑第二遍一个字节都不变
+ *     （迁移步骤重试、或者用户在别的设备上又跑一遍，都必须安全）。
+ *
+ * 不做的事：不碰 `[!NOTE]` 等其他 callout、不重排空行、不 trim 正文、
+ * 不统一换行符（CRLF 原样保留）。洗完之后 `stripCopyCalloutMarkers(x) === x`
+ * 是对「其余字节不动」最直接的证据。
+ */
+export function stripCopyCalloutMarkers(content: string): string {
+    // 快路径：整篇连一个标记都没有（绝大多数笔记）时原样返回，
+    // 连切行都不做 —— 这是「其余字节不动」最彻底的保证。
+    if (!/\[!copy\]/i.test(content)) return content;
+
+    const lines = content.split("\n");
+    const kept: string[] = [];
+    let inFence = false;
+    for (const raw of lines) {
+        // ⚠️ CRLF 的 `\r` 属于**这一行的行尾**，不参与匹配；留着它才不会把
+        // 一篇 CRLF 笔记洗成混合换行。整行被删时 `\r` 跟着这一行走（连带它的 `\n`）。
+        const hasCr = raw.endsWith("\r");
+        const line = hasCr ? raw.slice(0, -1) : raw;
+
+        if (FENCE_LINE.test(line)) {
+            // 围栏行本身不进任何删除分支（它不可能是标记行），只翻转状态
+            inFence = !inFence;
+            kept.push(raw);
+            continue;
+        }
+        if (inFence) {
+            kept.push(raw);
+            continue;
+        }
+        if (COPY_MARKER_LINE.test(line)) {
+            // 整行都是标记：丢掉这一项 = 连它后面的 `\n` 一起丢掉（join 时不留空行）
+            continue;
+        }
+        const prefixed = COPY_MARKER_PREFIX.exec(line);
+        if (prefixed) {
+            // 只摘标记，正文与引用前缀原样留下
+            const rest = line.slice(prefixed[0].length);
+            kept.push(`${prefixed[1]}${rest}${hasCr ? "\r" : ""}`);
+            continue;
+        }
+        kept.push(raw);
+    }
+    return kept.join("\n");
 }
 
 /**
@@ -1285,6 +1396,156 @@ export const migrationImpl: MigrationApi = {
                 // 代价只是「双链」那个数字暂时偏小。
                 return;
             }
+        }
+    },
+
+    /**
+     * 删掉历史笔记里残留的 `> [!COPY]` 标记行（复制块语法下线后的数据收尾，schema 30）。
+     *
+     * 口径只有一条：**只删标记行，正文一字不动** —— 具体边界全在
+     * `stripCopyCalloutMarkers` 里（纯函数，可单测、可复用于任何调用方）。
+     * 这个方法只负责三件事：**选行**、**写回并连带维护下游**、**坏行隔离**。
+     *
+     * 三个刻意的写法：
+     *
+     * 1. `LIKE '%[!COPY]%'` 只是**预筛**，不是判据。SQLite 的 LIKE 对 ASCII
+     *    大小写不敏感（`[!copy]` 也能选中），省掉「把全库正文拉回 JS」那趟；
+     *    真正删不删由纯函数逐行判。宁可多选、不可漏选 —— 漏了的行会一直
+     *    以 `[!COPY]` 字样杵在用户正文里。
+     *
+     * 2. `rev = rev + 1` 但**不动 `updated_at`**。rev 是客户端判定缓存新旧的
+     *    乐观锁，不 +1 的话别的设备手里那份脏正文永远不会失效（一直显示 `[!COPY]`）；
+     *    而 `updated_at` 决定笔记列表的排序，动它等于替用户把笔记顺序重排一遍 ——
+     *    纯副作用，没有任何收益，所以坚决不碰。
+     *
+     * 3. 逐行 try/catch 隔离。一条笔记写失败只跳过它自己（正文保持原样，
+     *    至少不会丢数据），不让整步挂掉 —— 整步挂掉会被记成「迁移未完成」，
+     *    于是每次冷启动都重试、每次都在同一行上再失败一遍。
+     *
+     * 已知代价（诚实记录）：因为坏行被跳过、而整步仍算完成，那条笔记会
+     * 一直留着 `[!COPY]` 字样。相比「整站每次启动都报迁移失败」，这个代价更小；
+     * 而且洗不掉的原因（D1 抖动 / 单行数据异常）已经在上面的 warn 日志里点名了。
+     */
+    migrateStripCopyCalloutMarkers: async function (this: NavigationAPI ): Promise<void> {
+        let cleanedNotes = 0;
+        let cleanedRecycle = 0;
+        let failed = 0;
+
+        // ── 1) notes 正文 ──
+        let rows: Array<{ id: number; user_id: number | null; title: string | null; content: string | null }>;
+        try {
+            const result = await this.db
+                .prepare("SELECT id, user_id, title, content FROM notes WHERE content LIKE ?")
+                .bind("%[!COPY]%")
+                .all<{ id: number; user_id: number | null; title: string | null; content: string | null }>();
+            rows = result.results || [];
+        } catch (error) {
+            // notes 表还不存在（全新库 / 有些降级路径还没建表）：没有行需要洗。
+            // 不抛：这一步的价值是洗老数据，全新库本来就干净。
+            logger.warn("读取待清理的笔记失败（本次跳过 COPY 标记行清理）:", { err: error, component: "migration" })
+            return;
+        }
+
+        for (const row of rows) {
+            const before = row.content ?? "";
+            const after = stripCopyCalloutMarkers(before);
+            // 预筛会捞到「正文里就写着 [!COPY] 四个字」这类正常笔记，
+            // 纯函数判定没变化 —— 这类行必须**一个字节都不写回**（否则白涨 rev）。
+            if (after === before) continue;
+            try {
+                await this.db
+                    .prepare("UPDATE notes SET content = ?, rev = rev + 1 WHERE id = ?")
+                    .bind(after, row.id)
+                    .run();
+            } catch (error) {
+                failed += 1;
+                logger.warn("清理一条笔记的 COPY 标记行失败（正文保持原样，跳过这条）:", { err: error, component: "migration" })
+                continue;
+            }
+            cleanedNotes += 1;
+
+            // 全文索引要跟着重写：索引里存的是**已分词**的文本（segmentCJK），
+            // 而且现在还带着 `[!COPY]` 那几个 token —— 不重写就会出现
+            // 「搜 COPY 能搜到、搜正文里的词却搜不到」这种反向不一致。
+            // 与 syncNoteFts 同一条写入契约：rowid 恒等于 notes.id。
+            try {
+                await this.db.batch([
+                    this.db.prepare("DELETE FROM notes_fts WHERE rowid = ?").bind(row.id),
+                    this.db
+                        .prepare(
+                            "INSERT OR REPLACE INTO notes_fts (rowid, note_id, user_id, title, body) VALUES (?, ?, ?, ?, ?)"
+                        )
+                        .bind(
+                            row.id,
+                            row.id,
+                            row.user_id ?? null,
+                            segmentCJK(row.title || ""),
+                            segmentCJK(after.slice(0, FTS_CONTENT_LIMIT))
+                        ),
+                ]);
+            } catch (error) {
+                // FTS5 不可用 / 表不存在：搜索本来就降级成 LIKE，正文已经洗干净了，
+                // 不能因为一张加速表把这一步判成失败（同 migrateNotesFtsTable 的口径）。
+                logger.warn("重写全文索引失败（搜索仍可用，索引可能短暂不一致）:", { err: error, component: "migration" })
+            }
+        }
+
+        // ── 2) 回收站里的笔记快照 ──
+        // kind='note' 的 data 是 `JSON.stringify({ note, tagIds })`：
+        //   · note  = 删除那一刻 `SELECT * FROM notes` 的**整行**（含 content / rev / uuid…）
+        //   · tagIds = 当时的标签关联 id
+        // 「还原」插回 notes 的就是 note.content 这一份，所以不洗它 =
+        // 用户一点还原，脏正文又回来了。
+        let recycled: Array<{ id: number; data: string }>;
+        try {
+            const result = await this.db
+                .prepare("SELECT id, data FROM recycle_bin WHERE kind = 'note' AND data LIKE ?")
+                .bind("%[!COPY]%")
+                .all<{ id: number; data: string }>();
+            recycled = result.results || [];
+        } catch (error) {
+            logger.warn("读取回收站里的笔记快照失败（本次跳过回收站清理）:", { err: error, component: "migration" })
+            return;
+        }
+
+        for (const row of recycled) {
+            let parsed: unknown;
+            try {
+                parsed = JSON.parse(row.data);
+            } catch (error) {
+                // 坏 JSON 一律**不删不改**：它可能是别的版本写进去的格式，
+                // 猜错结构去改写等于把用户还能还原的数据毁掉。
+                failed += 1;
+                logger.warn("回收站里有一条笔记快照不是合法 JSON，原样保留、跳过:", { err: error, component: "migration" })
+                continue;
+            }
+            const wrapper = parsed as { note?: Record<string, unknown> } | null;
+            const snapshot = wrapper?.note;
+            const before = typeof snapshot?.content === "string" ? snapshot.content : null;
+            // 不是 `{ note: {...} }` 这个形状（别的 kind 混进来 / 老格式）就不碰
+            if (!snapshot || before === null) continue;
+            const after = stripCopyCalloutMarkers(before);
+            if (after === before) continue;
+            snapshot.content = after;
+            try {
+                await this.db
+                    .prepare("UPDATE recycle_bin SET data = ? WHERE id = ?")
+                    .bind(JSON.stringify(parsed), row.id)
+                    .run();
+                cleanedRecycle += 1;
+            } catch (error) {
+                failed += 1;
+                logger.warn("清理回收站里一条笔记快照失败（原样保留，跳过这条）:", { err: error, component: "migration" })
+            }
+        }
+
+        if (cleanedNotes > 0 || cleanedRecycle > 0 || failed > 0) {
+            logger.info("COPY 标记行清理完成:", {
+                component: "migration",
+                cleanedNotes,
+                cleanedRecycle,
+                failed,
+            })
         }
     },
 

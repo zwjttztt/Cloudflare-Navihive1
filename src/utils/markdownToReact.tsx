@@ -23,11 +23,10 @@
 import type MarkdownIt from "markdown-it";
 import type { Options as MarkdownItOptions } from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
-import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { useEffect, useState, type ChangeEvent, type ReactNode } from "react";
 import { MathNode } from "./MathNode";
 import { MermaidNode } from "./MermaidNode";
 import AttachmentLink from "./AttachmentLink";
-import { copyToClipboard } from "./clipboard";
 import { registerMath } from "./markdownMath";
 import { registerMark } from "./markdownMark";
 import footnote from "markdown-it-footnote";
@@ -150,34 +149,15 @@ interface Cursor {
     depth: number;
     /** 页面注入的外部能力 */
     ctx: RenderContext;
-    /**
-     * 当前是否站在 `> [!COPY]` 块**内部**（块级渲染上下文，逐层往下传）。
-     *
-     * 只为一件事存在：块内的行内代码（反引号）要渲染成「可单独复制的片段」，
-     * 而块**外**的行内代码必须保持原来的灰底圆角胶囊，一个字节都不能变。
-     * 为什么挂在 Cursor 上而不是当 renderInline 的参数：块内可能套列表 / 表格 /
-     * 二级引用，`child()` 会自动把它带给每个子游标 —— 参数式写法每加一个递归
-     * 出口就得记得补一次，漏一处就是「列表里的代码点不动」这种只在特定排版下
-     * 才复现的 bug。
-     */
-    inCopyBlock: boolean;
 }
 
 function nextKey(c: Cursor): string {
     return `md${c.key++}`;
 }
 
-/**
- * 递归渲染用：同样的上下文往下传一层，深度 +1。
- * `inCopyBlock` 默认**继承**父游标 —— 进了 COPY 块，块里的一切都是可复制片段。
- */
-function child(
-    tokens: Token[],
-    c: Cursor,
-    depthOffset = 0,
-    inCopyBlock: boolean = c.inCopyBlock
-): Cursor {
-    return { tokens, i: 0, key: c.key++, depth: c.depth + depthOffset, ctx: c.ctx, inCopyBlock };
+/** 递归渲染用：同样的上下文往下传一层，深度 +1。 */
+function child(tokens: Token[], c: Cursor, depthOffset = 0): Cursor {
+    return { tokens, i: 0, key: c.key++, depth: c.depth + depthOffset, ctx: c.ctx };
 }
 
 /** 渲染某段 Markdown 的闭包（给嵌入 / 标签页用） */
@@ -214,7 +194,7 @@ export async function renderMarkdownToReact(
             : 0,
     };
     const tokens = md.parse(fm.body, {});
-    const cursor: Cursor = { tokens, i: 0, key: 0, depth, ctx, inCopyBlock: false };
+    const cursor: Cursor = { tokens, i: 0, key: 0, depth, ctx };
     const body = renderBlocks(cursor);
     if (fm.entries.length === 0) return body;
     return (
@@ -619,13 +599,7 @@ function renderLeaf(tok: Token, c: Cursor): ReactNode {
         case "text":
             return <span key={key}>{tok.content}</span>;
         case "code_inline":
-            // `> [!COPY]` 块**内**：每个反引号片段 = 一个独立可复制单元
-            // （一行里有几个就能分别复制几个，见 CopyFragment）。
-            // `> [!COPY]` 块**外**：照旧是灰底圆角胶囊 —— 全站的行内代码样式，
-            // 这段分支是「别的地方一个字都不变」的唯一保证点。
-            if (c.inCopyBlock) {
-                return <CopyFragment key={key} text={tok.content} />;
-            }
+            // 行内代码一律是灰底圆角胶囊。
             return (
                 <code key={key} style={INLINE_CODE}>
                     {tok.content}
@@ -803,28 +777,6 @@ function renderBlocks(c: Cursor): ReactNode[] {
                             </summary>
                             <div style={{ paddingTop: 6 }}>{renderBlocks(child(inner, c))}</div>
                         </details>
-                    );
-                    break;
-                }
-                if (type === "COPY") {
-                    // 可复制块：外壳 + 「悬停整块才显形」的整块复制按钮，正文照旧走通用渲染。
-                    //
-                    // ⚠️ 这里要把外层的 blockquote 包装**摘掉**：内容块的正文本来就包在
-                    // 引用块里，其它类型刻意保留那根左侧竖线（当作「这是一块内容」的标记），
-                    // 但 COPY 走的是极简路线 —— 灰底、边框都去掉了，再留一根 3px 灰竖线
-                    // 就整个退回「引用块」的样子（实测截图里就是这么回来的）。
-                    // 只摘最外层那一对，嵌套在里面的引用照常渲染。
-                    const body = inner.length > 1
-                        && inner[0].type === "blockquote_open"
-                        && inner[inner.length - 1].type === "blockquote_close"
-                        ? inner.slice(1, -1)
-                        : inner;
-                    out.push(
-                        <CopyBlock key={key}>
-                            {/* ⚠️ 第 4 个参数 = 打开「块内行内代码 → 可复制片段」开关。
-                                少了它，块里的 `xxx` 就只是一个长得像胶囊的死文本。 */}
-                            {renderBlocks(child(body, c, 0, true))}
-                        </CopyBlock>
                     );
                     break;
                 }
@@ -1166,9 +1118,9 @@ const CODE_STYLE: React.CSSProperties = {
 const LIST_STYLE: React.CSSProperties = { margin: `0 0 ${MD_GAP}`, paddingLeft: 22 };
 const LI_STYLE: React.CSSProperties = { margin: "2px 0" };
 /**
- * 中性色板：`QUOTE` 与 `COPY` 共用。
+ * 中性色板：非语义类型共用（当前是 `QUOTE`）。
  *
- * 两者都不是**语义**色（红黄蓝绿那套在说「这是警告/这是技巧」），只是排版提示，
+ * 它们都不是**状态语义**色（红黄蓝绿那套在说「这是警告/这是技巧」），只是排版提示，
  * 所以跟着正文走的中性灰才对。提成一个常量也是为了让「同一个色值只写一次」——
  * `tests/hardcodedColorGuard.test.ts` 是按**出现次数**钉 cap 的，复制粘贴一份
  * 同样的 rgba 就会顶破 16 那条线。
@@ -1186,190 +1138,9 @@ const CALLOUT_STYLE: Record<CalloutType, { border: string; bg: string; fg: strin
     IMPORTANT: { border: "var(--callout-important-border, #8b5cf6)", bg: "var(--callout-important-bg, rgba(139,92,246,0.10))", fg: "inherit", icon: "❗" },
     WARNING: { border: "var(--callout-warning-border, #f59e0b)", bg: "var(--callout-warning-bg, rgba(245,158,11,0.12))", fg: "inherit", icon: "⚠" },
     QUOTE: NEUTRAL_CALLOUT,
-    // COPY 不要左侧图标：块内每段代码下方的虚线下划线 + 悬停气泡才是「这块能复制」
-    // 的提示（2026-11-05 起整块按钮只在悬停整块时浮现），再加个左侧图标会和它们
-    // 抢注意力，也白占一列 10px 的 gap。
-    COPY: { ...NEUTRAL_CALLOUT, icon: "" },
     // FOLD 走 <details> 分支，palette 不会被读到；放这里只为满足类型完整性
     FOLD: { border: "var(--callout-fold-border, rgba(128,128,128,0.6))", bg: "var(--callout-fold-bg, transparent)", fg: "inherit", icon: "▸" },
 };
-
-/** 块级标签：只有它们之间才补换行，`<strong>` 这类行内标签之间不能补 */
-const BLOCK_TAGS = new Set([
-    "P", "DIV", "UL", "OL", "LI", "H1", "H2", "H3", "H4", "H5", "H6",
-    "PRE", "TABLE", "THEAD", "TBODY", "TR", "BLOCKQUOTE", "DETAILS", "SUMMARY", "HR",
-]);
-/** 列表项/表格行：彼此之间一个换行就够，不要空行 */
-const TIGHT_TAGS = new Set(["LI", "TR"]);
-
-/**
- * 取一个渲染好的块的**纯文本**（复制用）。
- *
- * 浏览器里 `innerText` 最准（按块级元素补换行、跳过隐藏内容）；jsdom 没实现它，
- * 回落时手工在**块级**子节点之间补换行 —— 两条路径结果一致，单测才不会
- * 因为「单测环境和真机不一样」而变成一条永远绿的假用例。
- */
-function blockTextOf(el: HTMLElement): string {
-    if (typeof el.innerText === "string" && el.innerText) return el.innerText;
-    const kids = Array.from(el.children) as HTMLElement[];
-    if (kids.length > 0 && kids.every(k => BLOCK_TAGS.has(k.tagName))) {
-        const sep = kids.every(k => TIGHT_TAGS.has(k.tagName)) ? "\n" : "\n\n";
-        return kids.map(blockTextOf).join(sep);
-    }
-    return el.textContent ?? "";
-}
-
-/**
- * `> [!COPY]` 块里的**一个可复制片段**（= 一处行内代码 / 反引号包住的内容）。
- *
- * 2026-11-05 起用「方案三」：静止态只有一条 1px 浅灰虚线（`border-bottom`），
- * 鼠标悬停（或键盘聚焦）时浮浅蓝底 + 一枚微型气泡「⧉ 点击复制」。
- * 这是用户两次反馈的解法：
- *   ① 「占地方太大」—— 常驻胶囊 + 块顶 28px 操作带一起去掉了，版面与纯文本一样紧凑；
- *   ② 「看不出预览区到底复制哪一段」—— 虚线把**每一段**单独圈出来，一行里两个片段
- *      也能分别认出、分别复制。
- *
- * ⚠️ 气泡文字走 CSS 的 `::before { content }`，DOM 里**没有**文本节点。这不是洁癖：
- *    `blockTextOf()` 在浏览器里用 `innerText`（能跳过不可见文本），但 jsdom 没实现
- *    `innerText`，回落的是 `textContent` —— 只要气泡里放一个字，整块复制的产物就会
- *    在单测和真机上不一样（粘出去多一行「⧉ 点击复制」）。生成内容两边都不算，才对得上。
- *
- * ⚠️ 可访问名带着**片段原文**（「复制：10.0.42.18:5432」），不是光秃秃的「复制」——
- *    读屏用户连听五个「复制」根本分不出是哪一个。
- */
-function CopyFragment({ text }: { text: string }) {
-    const [copied, setCopied] = useState(false);
-    const timerRef = useRef<number | null>(null);
-    useEffect(() => () => {
-        if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-    }, []);
-    const handleCopy = () => {
-        // 复制的就是**片段原文**（tok.content），不是渲染后的文本、不带反引号。
-        void copyToClipboard(text).then(ok => {
-            if (!ok) return;
-            setCopied(true);
-            if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-            timerRef.current = window.setTimeout(() => setCopied(false), 1200);
-        });
-    };
-    return (
-        <span
-            data-copy-op='copy-frag'
-            data-copied={copied ? "1" : undefined}
-            // role=button + tabIndex：键盘 Tab 能逐个片段走到，Enter / Space 触发复制。
-            // 用 <span> 而不是 <button> 是因为它必须**行内**排进正文（<button> 是
-            // inline-block，长 URL 会整块不换行地把行撑爆）。
-            role='button'
-            tabIndex={0}
-            aria-label={copied ? `已复制：${text}` : `复制：${text}`}
-            className='md-copy-frag'
-            onClick={handleCopy}
-            onKeyDown={event => {
-                if (event.key === "Enter" || event.key === " ") {
-                    // 拦住 Space 的默认滚动，否则按一下页面会跳。
-                    event.preventDefault();
-                    handleCopy();
-                }
-            }}
-        >
-            <code className='md-copy-frag-code'>{text}</code>
-            {/* 气泡：内容全交给 index.css 的 ::before（见上面「DOM 里不能有文本节点」） */}
-            <span className='md-copy-frag-tip' aria-hidden='true' />
-        </span>
-    );
-}
-
-/**
- * `> [!COPY]` 可复制块：正文 + 一颗**悬停整块才显形**的整块复制按钮。
- *
- * ⚠️ 交互演进史（别再往回走）：
- *   ① `float: right` 放在正文**前面** —— 占掉首行约 70px、正文绕排，
- *      用户报「复制键影响文字排序」；
- *   ② 绝对定位 + 只留 13px 图标 + 半透明 —— 用户连着两次报「看不见 / 看不清」；
- *   ③ 图标 + 「复制」两字的浅底胶囊**常驻**，块顶固定预留 28px 给它 ——
- *      看得见了，但「占地方太大」+「看不出复制哪一段」，用户第三次提；
- *   ④ 现在（方案三）：按钮**静止时不占位、不可见**，`悬停整块` 才浮现；
- *      真正的复制粒度下沉到块内每个反引号片段（见 `CopyFragment`），
- *      所以块顶那 28px 操作带**去掉了**，长首行再也不需要为按钮让位。
- *
- * 颜色 / 边框 / 尺寸写在 index.css 的 `.md-copy-btn`（内联值优先级更高，写在这儿
- * 会把 :hover 与「已复制」的配色压掉）。内联只负责 position / top / right。
- * `opacity: 0` 的「静止隐藏」也只在 CSS 的 `@media (hover: hover)` 里做 ——
- * 触屏设备没有 hover，藏起来等于按不到（那条路径由 CSS 常显兜住）。
- *
- * 为什么按钮不挂在「选中那几个字的右边」：即时渲染是**块级**的
- * （`NoteEditorLivePreview` 按空行把整段替换成一个组件），一行文字在源码里
- * 没有自己的 DOM 节点 —— 能挂按钮的只有「渲染出来的块」和「工具栏」。
- *
- * 复制的是**渲染后的纯文本**（`innerText`），不是 markdown 源码：用户选中的是
- * 「看到的这句话」，粘出去不该带 `**` 和 `#`。jsdom 没有实现 innerText，
- * 那里回落到 textContent —— 单测走的就是这条分支。
- * ⚠️ 块里一个反引号都没有时，这条降级路径是**唯一**的复制方式：不报错、不吞内容。
- */
-function CopyBlock({ children }: { children: ReactNode }) {
-    const bodyRef = useRef<HTMLDivElement | null>(null);
-    const [copied, setCopied] = useState(false);
-    const timerRef = useRef<number | null>(null);
-    useEffect(() => () => {
-        if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-    }, []);
-    const handleCopy = () => {
-        const raw = bodyRef.current ? blockTextOf(bodyRef.current) : "";
-        void copyToClipboard(raw.replace(/\n{3,}/g, "\n\n").trim()).then(ok => {
-            if (!ok) return;
-            setCopied(true);
-            if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-            timerRef.current = window.setTimeout(() => setCopied(false), 1200);
-        });
-    };
-    return (
-        <div
-            data-callout='COPY'
-            className='md-copy-host'
-            style={{
-                // relative：让按钮能绝对定位到本块右上角；
-                // flow-root：自己包住子元素，下外边距不和后面的段落折叠。
-                position: "relative",
-                display: "flow-root",
-                margin: `0 0 ${MD_GAP}`,
-                // ⚠️ 这里**不许**再加 paddingTop。第 ③ 版为常驻胶囊留的 28px
-                //    操作带是「占地方太大」的元凶；按钮改成悬停显形后，
-                //    它只在自己出现的那一瞬间浮在最上层，不需要版面让位。
-            }}
-        >
-            {/* 正文先渲染，按钮在后 —— 读屏 / Tab 顺序是「先内容后操作」。 */}
-            <div ref={bodyRef}>{children}</div>
-            <button
-                type='button'
-                data-copy-op='copy-block'
-                data-copied={copied ? "1" : undefined}
-                aria-label={copied ? "已复制整块" : "复制整块"}
-                onClick={handleCopy}
-                className='md-copy-btn'
-                style={{
-                    // 只留定位：绝对定位 → 脱离文档流，永不像 float 那样挤首行，
-                    // 静止不可见时也不占版面（这是「紧凑」的另一半）。
-                    // 尺寸 / 底色 / 描边 / 字号 / 显隐全在 index.css（内联会压掉 :hover）。
-                    position: "absolute",
-                    top: 0,
-                    right: 12,
-                }}
-            >
-                {copied ? (
-                    <svg width='13' height='13' viewBox='0 0 12 12' aria-hidden='true'>
-                        <path d='M2 6.4 4.8 9.2 10 3.2' fill='none' stroke='currentColor' strokeWidth='1.7' strokeLinecap='round' strokeLinejoin='round' />
-                    </svg>
-                ) : (
-                    <svg width='13' height='13' viewBox='0 0 12 12' aria-hidden='true'>
-                        <rect x='1' y='1' width='7' height='7' rx='1.5' fill='none' stroke='currentColor' strokeWidth='1.2' />
-                        <path d='M4 9.5h5.5a1 1 0 0 0 1-1V4' fill='none' stroke='currentColor' strokeWidth='1.2' strokeLinecap='round' />
-                    </svg>
-                )}
-                <span>{copied ? "已复制" : "复制"}</span>
-            </button>
-        </div>
-    );
-}
 
 const QUOTE_STYLE: React.CSSProperties = {
     borderLeft: "3px solid var(--md-quote-border, rgba(128,128,128,0.45))",

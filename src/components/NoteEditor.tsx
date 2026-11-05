@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useImperativeHandle, useState, type Ref } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useImperativeHandle, useState, type Ref } from "react";
 import { EditorState, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, placeholder, Decoration, type DecorationSet } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
@@ -386,6 +386,38 @@ const CHANGE_COALESCE_MS = 150;
  */
 const TYPING_USER_EVENTS = ["input.type", "delete.backward", "delete.forward"] as const;
 
+/**
+ * 漏掉 compositionend 的兜底间隔（毫秒）。
+ *
+ * Android / Safari 会漏 compositionend（CM 自己在 dist/index.js:5378 也有 20ms 兜底）。
+ * 若只靠事件，组合期被挂起的外部 value 改动（版本恢复 / 协同写入）会永远灌不进编辑器。
+ * 1.2s × 最多 4 轮，比一次正常中文输入长得多，正常组合不会撞上。
+ */
+const COMPOSITION_WATCHDOG_MS = 1200;
+
+/**
+ * 把 CodeMirror 文档对齐到 `next`，但**只改真正不同的那一截**（前后缀 diff）。
+ *
+ * 算法与 `utils/noteEditorHandle.ts:41-49` 的工具栏写入完全一致 —— 那边的写法是
+ * 正确的，而 `[value]` effect 原来用 `from:0 .. doc.length` 整篇替换整棵
+ * contenteditable DOM：组合期间足以把 IME 绑定的文本节点换掉、把拼音固化成正文。
+ * 这一层比「组合期 guard」更根本：即使不在组合中，整篇重绘也没有任何必要。
+ *
+ * 保持 `addToHistory.of(false)`：外部灌内容不是用户的一次编辑，不该进撤销栈。
+ */
+function applyDocDiff(view: EditorView, next: string): void {
+    const old = view.state.doc.toString();
+    if (old === next) return;
+    let from = 0;
+    while (from < old.length && from < next.length && old[from] === next[from]) from++;
+    let end = old.length, nextEnd = next.length;
+    while (end > from && nextEnd > from && old[end - 1] === next[nextEnd - 1]) { end--; nextEnd--; }
+    view.dispatch({
+        changes: { from, to: end, insert: next.slice(from, nextEnd) },
+        annotations: Transaction.addToHistory.of(false),
+    });
+}
+
 export default function NoteEditor({
     value,
     onChange,
@@ -409,6 +441,21 @@ export default function NoteEditor({
     const viewRef = useRef<EditorView | null>(null);
     const changeRef = useRef(onChange);
     /**
+     * 最新受控 value 的镜像。`[value]` effect 的闭包只拿到「那一次渲染」的 value，
+     * compositionend / 看门狗的定时器回调里必须读 ref，否则会拿旧值去覆盖正文。
+     */
+    const valueRef = useRef(value);
+    valueRef.current = value;
+    /**
+     * 「组合期间有外部 value 改动等着检查」的 flag —— **只作标记，绝不存 value 快照**。
+     * 快照极可能是 150ms 合并窗口上抛的含拼音中间态，回放它等于人为制造一次回写。
+     */
+    const pendingSyncRef = useRef(false);
+    /** 最近一次由本编辑器上抛的正文（回声标记，不是 dispatch 的内容） */
+    const lastEmittedRef = useRef<string | null>(null);
+    /** syncFromProp 的 stable 入口：domEventHandlers / 定时器都从这里调 */
+    const syncRef = useRef<(force?: boolean) => void>(() => {});
+    /**
      * 正文回传的**合并窗口**（2026-10-25）。
      *
      * 原来 `updateListener` 里每次 docChanged 都 `doc.toString()` —— 长笔记上一次
@@ -429,6 +476,16 @@ export default function NoteEditor({
     const emit = useMemo(() => {
         const pendingRef: { text: string | null } = { text: null };
         const timerRef: { id: ReturnType<typeof setTimeout> | null } = { id: null };
+        /** 所有上抛都过这里：记下回声，让 syncFromProp 认得出「这是我自己刚发的旧值」 */
+        const notify = (text: string) => {
+            lastEmittedRef.current = text;
+            // ⚠️ 乐观镜像：父级 onChange → setDraft → 重渲染是异步的，而
+            //    compositionend 的补同步定时器就夹在这中间；若等渲染才更新
+            //    valueRef，比较时会拿到上一版旧 prop，把刚上屏的中文回灌成拼音。
+            //    这里同步跟上「父级马上会变成的 value」，doc 才是权威这一条不变。
+            valueRef.current = text;
+            changeRef.current(text);
+        };
         const flush = () => {
             if (timerRef.id !== null) {
                 clearTimeout(timerRef.id);
@@ -437,7 +494,7 @@ export default function NoteEditor({
             const text = pendingRef.text;
             if (text === null) return;
             pendingRef.text = null;
-            changeRef.current(text);
+            notify(text);
         };
         return {
             push(text: string) {
@@ -447,7 +504,7 @@ export default function NoteEditor({
                     timerRef.id = null;
                     const t = pendingRef.text;
                     pendingRef.text = null;
-                    if (t !== null) changeRef.current(t);
+                    if (t !== null) notify(t);
                 }, CHANGE_COALESCE_MS);
             },
             /**
@@ -463,9 +520,100 @@ export default function NoteEditor({
                     timerRef.id = null;
                 }
                 pendingRef.text = null;
-                changeRef.current(text);
+                notify(text);
             },
             flush,
+        };
+    }, []);
+
+    /**
+     * 把「最新 prop」与「CodeMirror 文档」对齐一次。组合期间 / 组合结束 / 看门狗
+     * 走的是**同一个**函数，只比较、不回放任何存下来的字符串。
+     *
+     * @param force 看门狗等满若干轮仍收不到 compositionend 时才置 true，
+     *              越过 CM 的组合态判断做一次兜底同步（避免外部改动永久挂起）。
+     */
+    const syncFromProp = useCallback((force = false) => {
+        const view = viewRef.current;
+        if (!view) return;
+        // 两个 CM getter 都要判：`composing` 只在组合里产生过第一次 change 后为真，
+        // `compositionStarted` 覆盖「刚 compositionstart、还没 change」的那段窗口。
+        if (!force && (view.composing || view.compositionStarted)) {
+            pendingSyncRef.current = true; // 只记 flag，不存 value 快照
+            return;
+        }
+        pendingSyncRef.current = false;
+        const target = valueRef.current;   // 最新 prop，不用 effect 闭包里的旧 value
+        const current = view.state.doc.toString();
+        if (current === target) return;
+        // 150ms 合并窗口上抛的拼音是**自己的旧回声**，不是权威：doc 已经往前走了，
+        // 等下一次 onChange 收敛即可，绝不回灌（这是「不拿过期 value 覆盖中文」的落点）。
+        if (target === lastEmittedRef.current) return;
+        applyDocDiff(view, target);
+    }, []);
+    syncRef.current = syncFromProp;
+
+    /**
+     * IME 组合生命周期的补同步通道。
+     *   · compositionstart —— 起看门狗（漏 compositionend 的兜底）；
+     *   · compositionend   —— 清看门狗，等合并窗口收敛后调 syncFromProp 比较一次。
+     *     不能立刻比：CM 的 observer.flush() 是微任务、Chrome 还会在 compositionend
+     *     后补发最后一次 input，而且 150ms 合并窗口可能还没把最新 doc 顶进 valueRef。
+     * 两者都不 dispatch、不存字符串，只负责「什么时候去比较一次」。
+     */
+    const compositionSync = useMemo(() => {
+        let watchdog: ReturnType<typeof setTimeout> | null = null;
+        let deferred: ReturnType<typeof setTimeout> | null = null;
+        let attempt = 0;
+        const clearWatchdog = () => {
+            if (watchdog !== null) { clearTimeout(watchdog); watchdog = null; }
+        };
+        const clearDeferred = () => {
+            if (deferred !== null) { clearTimeout(deferred); deferred = null; }
+        };
+        const armWatchdog = () => {
+            clearWatchdog();
+            watchdog = setTimeout(() => {
+                watchdog = null;
+                const view = viewRef.current;
+                if (!view) return;
+                const stuck = view.composing || view.compositionStarted;
+                if (stuck && attempt < 3) {
+                    attempt += 1;
+                    armWatchdog();
+                    return;
+                }
+                // 组合已结束，或等满 4 轮仍收不到 compositionend（疑似漏事件）：
+                // 有挂起检查需求就按最新 prop 做一次兜底同步，别让外部改动永久失效。
+                if (stuck && !pendingSyncRef.current) return;
+                syncRef.current(stuck);
+            }, COMPOSITION_WATCHDOG_MS);
+        };
+        return {
+            extension: EditorView.domEventHandlers({
+                compositionstart() {
+                    attempt = 0;
+                    clearDeferred();
+                    armWatchdog();
+                },
+                compositionend() {
+                    clearWatchdog();
+                    clearDeferred();
+                    // ⚠️ 不是 setTimeout(0)：组合刚结束时 `valueRef.current` 很可能还是
+                    //    150ms 合并窗口**之前**的旧草稿（短组合连一次上抛都没发生过），
+                    //    此刻比较会把用户刚上屏的中文回灌成拼音。等合并窗口收敛完，
+                    //    onChange 已把最新 doc 顶进 valueRef，比较才会是「零 dispatch」；
+                    //    真有外部改动时，这个延迟也只让补同步晚 170ms，不会丢。
+                    deferred = setTimeout(() => {
+                        deferred = null;
+                        syncRef.current();
+                    }, CHANGE_COALESCE_MS + 20);
+                },
+            }),
+            dispose() {
+                clearWatchdog();
+                clearDeferred();
+            },
         };
     }, []);
 
@@ -504,6 +652,8 @@ export default function NoteEditor({
                 doc: value,
                 extensions: [
                     markdown(), history(), bracketMatching(), focusField,
+                    // IME 组合结束 / 漏事件兜底 → 调 syncFromProp 做一次「最新 prop vs doc」比较
+                    compositionSync.extension,
                     // 编辑器内查找/替换（N2，inkstone 的 mod+f → openSearchPanel）：
                     // `search()` 自带 searchState 字段 + 面板逻辑；`searchKeymap` 提供
                     // Mod-f 开面板 / Mod-g、F3 跳下一个 / Mod-h 替换面板 / Mod-d 选下一个相同词。
@@ -716,6 +866,7 @@ export default function NoteEditor({
             // ⚠️ 卸载前把合并窗口里的内容吐出去 —— 切笔记时最后那 150ms 靠这一下，
             // 否则用户刚敲的字会凭空消失（组件 key 变了就是卸载，没有第二次机会）。
             emit.flush();
+            compositionSync.dispose();
             view.contentDOM.removeEventListener("blur", onBlur);
             view.scrollDOM.removeEventListener("scroll", onScroll);
             view.destroy();
@@ -864,10 +1015,18 @@ export default function NoteEditor({
     useImperativeHandle(editorRef, () => editorHandle(viewRef.current!), []);
     useEffect(() => {
         const view = viewRef.current;
-        if (view && view.state.doc.toString() !== value) {
-            view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value }, annotations: Transaction.addToHistory.of(false) });
+        if (!view) return;
+        // ⚠️ IME：组合期间绝不回写。`value` 是 150ms 合并窗口上抛的旧草稿，
+        //    此刻灌回去会重绘整个 contenteditable、取消浏览器 composition，
+        //    拼音中间态被当普通字符固化（用户报的 sssss / x'x'x'x'x'x）。
+        //    `composing` 与 `compositionStarted` 两个 getter 都要判，见 syncFromProp 注释。
+        //    只记 flag、不存 value 快照 —— 快照极可能就是含拼音的中间态。
+        if (view.composing || view.compositionStarted) {
+            pendingSyncRef.current = true;
+            return;
         }
-    }, [value]);
+        syncFromProp();
+    }, [value, syncFromProp]);
     return (
         <div
             ref={host}

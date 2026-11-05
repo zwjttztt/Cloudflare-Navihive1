@@ -16,7 +16,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseCalloutType, registerCallout } from "../src/utils/markdownCallout";
-import { buildCopyBlockSource } from "../src/utils/noteBlocks";
 
 /** 要连 token 结构一起看时用它（比如「空段落有没有被摘掉」） */
 function parseTokens(src: string) {
@@ -148,60 +147,77 @@ test("守卫：渲染层取内容前必须先前进游标（否则无限递归�
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// COPY（可复制块）
+// COPY（复制块）——语法已**整体移除**，这三条钉的是「移除之后的真实表现」
 //
-// 这块的坑全在「标记独占一行」上：`> [!COPY]` 自己是一个段落，
-// 摘掉标记后剩空串 → 渲染出来块顶部会多一段 MD_GAP 的空白。
-// 工具栏造的源码永远是这种形状（见 buildCopyBlockSource），所以必须钉住。
+// 历史：v31 下线复制能力但保留语法（脏数据无害）；这一版连语法一起删了。
+// 于是 `> [!COPY]` 不再是「会被摘掉标记的 callout」，而是一段**普通引用**，
+// 那行源码会原样显示成 `[!COPY]` 文字 ——
+// 这正是数据迁移 `notes-copy-callout-marker` 存在的唯一理由（见第三条注释）。
+//
+// ⚠️ 这里**不是**在弱化断言，是换了语义：以前钉「标记必须被摘走」，
+//    现在钉「语法认不出来 + 正文不丢 + 残留由迁移负责」。
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("COPY：标记独占一行也认得出，空的首段被整个摘掉", () => {
-    const tokens = parseTokens("> [!COPY]\n> 1. 甲\n> 2. 乙\n");
-    const callout = tokens.find(t => t.type === "callout_open");
-    assert.ok(callout, "标记独占一行时必须仍然认成 callout");
-    assert.equal(callout!.meta?.callout, "COPY");
-    const emptyInline = tokens.filter(t => t.type === "inline" && String(t.content).trim() === "");
-    assert.equal(
-        emptyInline.length,
-        0,
-        "摘完标记留下的空段落必须连 token 一起摘掉，否则块顶部多一口气"
-    );
+test("COPY：语法已移除 —— parseCalloutType 认不出它了", () => {
+    // 大小写都不认：不是「暂时忘了小写」，是这个类型根本不在枚举里了
+    assert.equal(parseCalloutType("[!COPY]"), null, "COPY 必须已经从 CALLOUT_TYPES 里删掉");
+    assert.equal(parseCalloutType("[!copy]"), null);
+    assert.equal(parseCalloutType("[!Copy]"), null);
 });
 
-test("COPY：首行是标题时，标记也摘得掉、标题照常是标题", () => {
-    const tokens = parseTokens("> [!COPY]\n> ## 小节\n> 正文一句\n");
-    const callout = tokens.find(t => t.type === "callout_open");
-    assert.ok(callout, "首行是标题时也必须认成 callout");
-    assert.equal(callout!.meta?.callout, "COPY");
-    assert.ok(tokens.some(t => t.type === "heading_open"), "标题要在块里照常渲染成标题");
-    // 标记没漏进正文（漏了的话正文里会出现 `[!COPY]` 这几个字）
-    const leaked = tokens.some(
-        t => t.type === "inline" && String(t.content).includes("[!COPY]")
-    );
-    assert.equal(leaked, false, "标记不许漏进正文");
-});
-
-test("COPY：工具栏造的源码能被解析成 COPY 块（造与解必须闭环）", () => {
-    const src = buildCopyBlockSource("1. 甲\n2. 乙");
-    assert.equal(parse(src).callouts.join(","), "COPY");
-    // 顺带钉住形状：标记独占一行，正文每行都带 `> `
-    assert.equal(src.startsWith("> [!COPY]\n> "), true, "标记必须独占一行");
-});
-
-// 2026-11-05 方案三：块内每个反引号片段是一个独立的复制单元，所以工具栏包块时
-// **不能**动正文里已有的反引号（剥掉就等于把用户要的复制粒度毁了）。
-test("COPY：包块时原样保留正文里的反引号（它们就是复制粒度）", () => {
-    const body = "数据库连接：`10.0.42.18:5432`  账号：`postgres_ro`";
-    const src = buildCopyBlockSource(body);
-    assert.equal(
-        src,
-        "> [!COPY]\n> 数据库连接：`10.0.42.18:5432`  账号：`postgres_ro`\n",
-        "反引号必须一个不少、位置也不能挪"
-    );
-    // 反引号在解析层仍然被识别成 code_inline（渲染层才据此长出复制单元）
+test("COPY：真解析一遍 —— 不再产出 callout_open，正文与行内代码一字不丢", () => {
+    const src = "> [!COPY]\n> 数据库连接：`10.0.42.18:5432`\n> 账号：`postgres_ro`\n";
     const tokens = parseTokens(src);
-    const codes = tokens.filter(t => t.type === "inline").flatMap(t => t.children ?? [])
-        .filter(t => t.type === "code_inline")
-        .map(t => String(t.content));
-    assert.deepEqual(codes, ["10.0.42.18:5432", "postgres_ro"], "两个反引号片段都要成为 code_inline");
+
+    // ① 不再是内容块：callout_open 一个都不该有（以前这里是 meta.callout === "COPY"）
+    const calloutTokens = tokens.filter(t => t.type === "callout_open");
+    assert.equal(
+        calloutTokens.length,
+        0,
+        "COPY 已从 CALLOUT_TYPES 移除，不该再被识别成内容块"
+    );
+
+    // ② 它退化成一个普通引用：blockquote 结构还在
+    assert.ok(
+        tokens.some(t => t.type === "blockquote_open"),
+        "认不出类型之后必须退回普通引用，而不是整块消失"
+    );
+
+    // ③ **正文一个字都不能丢**（这是删除语法时唯一真正的风险）
+    const children = tokens.filter(t => t.type === "inline").flatMap(t => t.children ?? []);
+    const codes = children.filter(t => t.type === "code_inline").map(t => String(t.content));
+    assert.deepEqual(
+        codes,
+        ["10.0.42.18:5432", "postgres_ro"],
+        "两个反引号必须照常成为 code_inline（渲染层不再给它们套复制单元，但代码本身要留着）"
+    );
+    const text = children.map(c => String(c.content)).join("");
+    assert.ok(text.includes("数据库连接："), "正文文字必须还在");
+    assert.ok(text.includes("账号："), "正文文字必须还在");
+
+    // ④ 代价也明确钉住：标记本身现在会作为**普通文本**留在正文里。
+    //    这条断言看起来像「钉住了 bug」，其实是钉住了**迁移的必要性** ——
+    //    迁移 `notes-copy-callout-marker` 把历史笔记里的标记行删掉之后，
+    //    线上就不会再有笔记走到这一支。断言一旦变红，说明有人又把 COPY
+    //    加回了 CALLOUT_TYPES（那是死灰复燃，不是修复）。
+    assert.ok(
+        text.includes("[!COPY]"),
+        "语法移除后标记会原样显示 —— 这是预期行为，脏数据由迁移负责清"
+    );
+});
+
+test("COPY 走了之后，其余 6 种类型照常解析（别误伤）", () => {
+    for (const type of ["NOTE", "TIP", "IMPORTANT", "WARNING", "QUOTE", "FOLD"]) {
+        assert.equal(parseCalloutType(`[!${type}]`), type, `${type} 必须照常解析`);
+        assert.equal(parseCalloutType(`[!${type.toLowerCase()}]`), type, `${type} 大小写不敏感`);
+    }
+    // 真解析一遍：六种各来一个块，callout_open 必须正好六个
+    const src = ["NOTE", "TIP", "IMPORTANT", "WARNING", "QUOTE", "FOLD"]
+        .map(type => `> [!${type}]\n> 内容\n`)
+        .join("\n");
+    assert.deepEqual(
+        parse(src).callouts,
+        ["NOTE", "TIP", "IMPORTANT", "WARNING", "QUOTE", "FOLD"],
+        "删掉 COPY 时不许误伤其他类型"
+    );
 });

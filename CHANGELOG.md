@@ -12,6 +12,202 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-05 · 重构 + 修复：复制块整体下线并清洗存量数据 + 编辑器中文输入不再吃拼音（32.0.0）
+
+> **关于这个 major**：`script/bump-version.mjs` 按 `git diff --cached` 判的（24 文件 / 3131 行，
+> 文件数和行数**同时**超过 minor 线 20 / 1200）。和 31.0.0 那次「纯行数口径、对外零行为变化」
+> 不同，**这次是真的有不兼容变化**：`> [!COPY]` 语法从解析器里删掉了，旧笔记里的标记由一次
+> 库迁移洗掉，`SCHEMA_VERSION` 从 29 升到 30。混版本跑会看到不同语义，major 名副其实。
+>
+> 行数构成：`src/` 11 文件 1039 行（459 增 / 580 删）、`tests/` 12 文件 2081 行、
+> `script/auditEnv.d.mts` 删除 11 行。其中新增测试 941 行（4 个文件）、删除测试 807 行
+> （3 个文件）—— 复制块的**全部**专属测试被整体替换，不是「跑绿了留着」。
+
+### 用户要的是什么
+
+31.0.0 刚把复制块改成「块内每个反引号片段各自可复制」的方案三，用户看完的反馈是：
+
+> 笔记中跟复制按键有关的内容全删干净
+
+不是再改一版，是**删掉**。此前同一个功能已经改过两轮（常驻胶囊 → 行内虚线段），
+第三轮仍然不满意，结论就是「这个功能不要了」。同时另有一个真 Bug 在等：**中文输入法
+打拼音会把拼音吃掉**（输入 `nihao` 结果正文里是半截 `ni`，甚至整段被替换）。
+
+两条线的边界我在动手前跟用户确认过，不是自己猜的：
+
+1. **只清复制块（`> [!COPY]`）的残留**。笔记里还有一堆**同名但是老功能**的复制入口 ——
+   复制标题、复制直链（`NotesOverlayLayer` 里的 `copy-title` / `copy-link`，`7bab981`
+   起就有）、分享面板的「复制分享链接」、公开笔记页的「复制为 Markdown」、站点卡片的复制 ——
+   **全部保留**。「全删干净」如果按字面执行，会把这些一起带走。
+2. **迁移只删标记行，正文其余一字不动**。不做「把 `> [!COPY]` 块降级成普通引用」这种
+   聪明的改写 —— 那会动用户的缩进和空行，属于替用户重写笔记。
+
+### 改了什么
+
+**一、移除复制块（前端）**
+
+- 工具栏「插入 → 复制块」菜单项、`ContentCopyIcon` 引用、`onInsertCopyBlock` 整条回调链
+  （`markdownToolbar` → `NotesEditorPane` → `NotesSidePanel` → `notesPageCtx` → `useEditorTools`）
+  连根删掉，不留 `@deprecated` 空壳。
+- 渲染层的片段级复制单元、整块复制按钮、悬停气泡、`md-copy-*` 样式全部删除
+  （`index.css` **净删 204 行**，`markdownToReact.tsx` 净删 237 行）。
+- `buildCopyBlockSource()` 从 `noteBlocks.ts` 删掉。
+- **`"COPY"` 从 `CALLOUT_TYPES` 联合类型里移除**，同时删 `CALLOUT_STYLE.COPY`。
+  这两处**必须同改**：只删 `CALLOUT_STYLE.COPY` → `Record<CalloutType, …>` 少一个键，tsc 报错；
+  只删枚举 → 对象字面量多出一个未知属性，tsc 也报错。两边一起改，`tsc` 才会干净。
+- 删掉之后旧笔记里的 `> [!COPY]` 会怎样？`parseCalloutType` 对未知类型**返回 `null`**
+  （`markdownCallout.ts:56-63`），`takeMarker` 于是 `return null`，标记作为普通文字留在正文，
+  那块退化成一条普通 `blockquote`。**这是接受的降级形态**：内容一个字不丢，只是不再特殊渲染。
+  两条测试显式钉住了这个代价（`text.includes("[!COPY]") === true`），防止有人以为它「干净消失」了。
+- 移除枚举后我在 `CALLOUT_TYPES` 上方留了守卫注释：**不要加回 `"COPY"`**，
+  等于把已下线功能死灰复燃；真要加，得连迁移一起反向设计。
+
+**二、清洗存量数据（库迁移）**
+
+新迁移步骤 `notes-copy-callout-marker`（`MIGRATION_STEPS` 第 21 条，排在 `indexes` 之后）：
+
+- `SCHEMA_VERSION` 29 → 30，`STEPS_AT_V30 = 21` / `INDEXES_AT_V30 = 26` 两个锚点同步跟，
+  `SCHEMA_DELTA` 必须为 0。**升号不是仪式**：已部署库里 `configs.schema.version` 存的是 `"29"`，
+  不升号 `migrateIfNeeded` 直接 return，脏数据一条都洗不掉。
+- 判据是纯函数 `stripCopyCalloutMarkers(content: string): string`（逐行、可单测、可复用）。
+  它认两种形态：
+  - **整行只有标记**（`> [!COPY]` 独占一行）→ 整行丢掉；
+  - **前缀形态**（`> [!COPY] 正文`）→ 只摘标记，留下 `> 正文`。
+    第二种 spec 里没写，是实现时发现的必要分支 —— 早期版本允许同行写正文，
+    只处理第一种会把 `[!COPY]` 字样留在行首。
+- 快路径：`if (!/\[!copy\]/i.test(content)) return content;` —— 绝大多数笔记不含标记，
+  一次正则就返回，不进逐行循环。
+- **围栏保护**：以 ``` / ~~~ 开头的行翻转状态，围栏内的"标记行"不动。
+  因为代码块里的 `[!COPY]` 是**示例文本**，删掉就是在改代码示例。
+- `notes` 写回是 `UPDATE notes SET content = ?, rev = rev + 1 WHERE id = ?`：
+  **`rev+1` 必须要有** —— 别的设备手里那份带 `[!COPY]` 的缓存靠 rev 判新旧，
+  不 +1 它永远不会失效，用户会一直看到脏正文，还会用旧 rev 把脏数据写回来。
+  **`updated_at` 一字未动** —— 它决定笔记列表的排序，动它等于替用户重排笔记，纯副作用零收益。
+- **下游两张表必须跟着改**，否则搜索和回收站会各留一处脏数据：
+  - `notes_fts.body` 存的是 `segmentCJK()` 分词后的文本（汉字两侧带空格）+ `FTS_CONTENT_LIMIT`
+    截断。直接塞原文会让中文两字词搜索**静默失效** —— 不报错，就是搜不到。
+    所以走 `DELETE` + `INSERT OR REPLACE`，用同一套分词重新算 title 和 body。
+  - `recycle_bin` 里 `kind='note'` 的 `data` 是删除那刻的 `SELECT * FROM notes` 整行快照
+    （`JSON.stringify({ note, tagIds })`）。不洗这份快照，用户一点「还原」脏正文就回来了。
+    `JSON.parse` 失败或形状不对就 warn 跳过，不碰。
+- 选行用 `WHERE content LIKE '%[!COPY]%'` 只是**预筛**（SQLite 的 LIKE 对 ASCII 大小写不敏感，
+  `[!copy]` 也能选中），真正删不删由纯函数逐行判。宁可多选、不可漏选。
+- 逐行 `try/catch` 隔离：一条笔记写失败只跳过它自己（正文保持原样，至少不丢数据），
+  不让整步挂掉 —— 整步挂掉会被记成「迁移未完成」，于是每次冷启动都重试、
+  每次都在同一行上再失败一遍。
+
+**三、修中文输入吃拼音（`NoteEditor.tsx`）**
+
+根因不是 CodeMirror 本身，是**宿主组件把它按「受控 textarea」用**：
+
+- 老的 `useEffect([value])` 每次都派发 `{from: 0, to: doc.length, insert: value}` ——
+  **整篇替换**。CM6 遇到全文档替换会把 contentDOM 整棵重建，正在进行的 composition
+  随之被取消，拼音就「固化」成半截。
+- 它和一个 `CHANGE_COALESCE_MS = 150` 的合并上抛窗口叠成竞态：IME 每敲一个字母都改 doc，
+  上抛被合并；合并后的 `onChange` 回流到父级再作为 `value` 回来，正好压在 composition 中间。
+- 修法（不是加 `if (composing) return` 那么简单，那样会丢掉组合结束后的必要同步）：
+  - `syncFromProp(force)` **只比不写** —— 先算清「prop 的正文」和「doc 的正文」是否真的不同，
+    相同就什么都不做（回声抑制）。
+  - `applyDocDiff()` 走**前后缀局部 diff**，只替换真正变化的中间段，不再全文档 replace。
+  - `valueRef` 保证定时器 / 事件回调读到的是最新值，不是闭包里的旧值。
+  - `pendingSyncRef` 是**布尔 flag 而不是 value 快照** —— 组合期间只记「有人想同步」，
+    真要同步时现取最新值。
+  - `lastEmittedRef` 记录自己刚上抛的文本，让 `syncFromProp` 认得出「这是我自己发的回声」。
+  - `compositionstart` 起**四轮看门狗**（`COMPOSITION_WATCHDOG_MS = 1200`）：
+    Android / Safari 会漏 `compositionend`（CM 自己在 `dist/index.js:5378` 也只做了 20ms 兜底），
+    漏事件时靠超时兜底，且必须等满四轮才允许 `force` 覆写。
+  - `compositionend` 后的补同步**延后 170ms**：不能立刻比，CM 的 `observer.flush()` 是微任务、
+    Chrome 还会在 `compositionend` 之后再塞几次 input，立刻比会看到半成品。
+
+### 四个如实披露的取舍
+
+1. **纯函数比 spec 多出两种形态**（前缀形态、围栏识别）。spec 只说了「删标记行」，
+   实现时发现「同行带正文」和「代码块里当示例」两种情况必须区分，否则要么留脏字、要么改坏示例。
+   多出来的分支都有独立测试，不是顺手加的。
+2. **`updated_at` 一动不动**。这条写进了注释也写进了测试（禁止
+   `/UPDATE\s+notes\s+SET[^"'`]*updated_at/i`），因为它是**最容易被"顺手"改坏的一列** ——
+   迁移完发现笔记列表顺序变了，用户会以为是另一个 Bug。
+3. **逐行失败隔离的代价是「可能洗不干净」**。坏行被跳过、而整步仍算完成，那条笔记会一直留着
+   `[!COPY]` 字样。相比「整站每次启动都报迁移失败」，这个代价更小；洗不掉的原因已经在上面的
+   warn 日志里点名了。**这不是"已修复"，是"已知残留"**。
+4. **围栏未闭合时会漏洗**。围栏保护是朴素实现：任何以 ``` / ~~~ 开头的行翻转状态。
+   围栏没闭合 → 后面的标记全被当成代码示例漏掉。但方向是安全的（漏洗只是残留可见，
+   误删会吃掉正文），而且**围栏之前的标记照常删**（"半篇生效"），重复跑仍幂等。
+
+### 测试换了语义，不是「跑绿了就算」
+
+- **删** `tests/copyBlockFragments.dom.test.tsx`（522 行）、`copyBlockTokens.test.ts`（195 行）、
+  `helpers/cssRules.ts`（90 行）—— 它们测的是已经不存在的功能，留着只会变成
+  「为了让老测试过而保留死代码」的引力。
+- **新增** `copyBlockRemoved.test.ts`（208 行 / 5 条）：全仓 `COPY` 字样扫描，
+  唯一白名单是 `API/methods/migration.ts`；反转原「`CALLOUT_TYPES` 含 COPY」断言为 `false`；
+  钉住 `MIGRATION_STEPS` 必须含 `notes-copy-callout-marker`、id 不许重复、
+  纯函数签名、写回语句形状、禁止 `updated_at`。**扫描前先剥注释** ——
+  否则守卫会自己红（注释里全是 `COPY`）。白名单做过反向验证：行注释不红、
+  代码行 `const qaCopyProbe = "COPY";` 红 2 条、块注释不红 → **无掩蔽**。
+- **新增** `copyBlockRemoved.dom.test.tsx`（113 行 / 1 条）：渲染 `[!COPY]` 后
+  `[data-callout="COPY"]` 必须是 `null`、任何 `[data-callout]` 都没有、
+  **`blockquote` 必须还在**（退回引用，不是整块消失）；复制控件五连 null
+  （`[role="button"]` / `.md-copy-frag` / `.md-copy-host` / `[data-copy-op]` / `button`）。
+- **新增** `copyCalloutMigrationRealSql.test.ts`（247 行 / 12 条）：7 条纯函数 + 5 条
+  **真 SQLite**（按 `tests/helper/realSqliteD1.ts` 的方式搭 D1 兼容层，
+  `downgradeTo29()` 把 `schema.version` 退回 `"29"` 并删 `schema.steps` 强制重跑）。
+  期望值是**手写字符串常量**，不是被测函数算出来的 —— 否则就是自证循环。
+- **新增** `tests/editorComposition.dom.test.tsx`（373 行 / 7 条）：IME 行为测试。
+  第 7 条「真实短组合：零 onChange 直接 compositionend，父级仍带初始 value，不许回灌」
+  同时守住两个实现细节（补同步延迟、`notify()` 乐观同步），两条都被证伪为**必要**。
+- `tests/vaultSchema.test.ts` 升号断言原本写死 `assert.equal(SCHEMA_VERSION, "29")`，
+  升到 30 后真红（`'30' !== '29'`，`# tests 4029 / pass 4027 / fail 1`）。
+  **不是**改成 `"30"` 了事（那会退化成「某处有个数字」），拆成两条：
+  `Number(SCHEMA_VERSION) >= 29`（保住「只许前进」的原意）+ 字面量 `"30"`（签字位）。
+
+**6 个变异无一全绿，且全部红在预期断言**：`rev+1` 退化成 `rev`（1 红）、
+跳过 FTS 重算（1 红）、纯函数退化成子串替换（11 红，7 条纯函数全红 + 真库 4 条，
+FTS 那条正交不红是对的）、跳过回收站（1 红）、去掉围栏保护（1 红）、
+前缀形态改整行删（1 红）。每轮 sha256 各异、收尾回到原值。
+⚠️ 变异时踩到：`src/` 是 **CRLF**，多行锚点用 `\n` 拼命中 0 次（假绿），必须按 CRLF 拼。
+
+**门禁**：`tsc` 0 error / `eslint` **0 error（26 存量 warning）** /
+单测 **4029 tests / 4028 pass / 0 fail / 1 skipped / 142.3s / exit 0** /
+`build` ✓ 3.08s / **budget 37/37** / `smoke` 46 PASS。
+唯一 skip 是 `uptime-check` 的软链（`EPERM`，Windows 环境限制，CI 上会跑）。
+
+### 这次**没有**解决什么
+
+- **`updated_at` 的禁令只有静态一层**。变异测试暴露：B1/B2/B4 三个变异会先红在
+  「写回语句形状」断言上，`updated_at` 禁令压根没执行到；只有另起一条独立的
+  `UPDATE notes SET updated_at = …` 才红在禁令本身。**运行层（真 SQLite 12 条）零覆盖**。
+  应该补一条「迁移前后 `updated_at` 必须相等」的真库断言 —— 列为下一批。
+- **围栏的两个已知限制没有固化成 fixture**：「围栏未闭合漏洗但幂等」「围栏前标记照常删」
+  现在是实测结论，不是回归测试。应该各补 1 条，用例名标「已知限制的显式化」。
+- **首屏 gzip 余量只有 0.19 KB**（285.52 / 285.71，headroom 4.83%）。这次是**净删**所以没踩线，
+  但下一个前端特性开工前必须先量这条线，别再靠抬预算。
+- `NoteEditorLivePreview` 的 90ms `refreshEffect` **没有加 composition 防护**。
+  如果真机上还有拼音残留，这里是第一嫌疑点（本轮没动它）。
+- dom 测试里仍有 **33 处** `assert.equal(DOM元素, null)` 同型写法散在 13 个文件 ——
+  `node:assert` 失败时 `util.inspect` 会展开 React `__reactFiber$` 整棵树，触发 OOM。
+  技术债，未动。
+
+### 部署
+
+**这次有数据库迁移，升级前必须备份。**
+
+- `SCHEMA_VERSION` 29 → 30，容器启动时 `migrateIfNeeded` 会自动跑
+  `notes-copy-callout-marker`。它是**幂等**的（`configs.schema.steps` 记录已跑的 id），
+  重复启动不会重复洗。
+- **回滚行为是这次特意查过的，不是推测**（读了 `migrateIfNeeded` / `runMigrations`）：
+  回滚到 31.0.0 时那个镜像的 `MIGRATION_VERSION` 是 `"29"`，而库里是 `"30"`，
+  比对用的是 `===` 不是「小于」，所以**会**走进 `runMigrations()` —— 但它的 `done`
+  集合是从 `configs.schema.steps` **读出来的**，只会往里加、不会被覆盖，于是 v31 那 20 步
+  全被判为已完成、全部跳过，`notes-copy-callout-marker` 这个它不认识的 id 也**原样留在集合里**。
+  唯一副作用是 `writeSchemaVersion("29")` 把版本串**写回成 29**（下次升到 32 时再更正回来，
+  步骤集合没丢，所以不会重跑）。结论：**回滚不会崩、不会重复洗、不会丢数据**。
+- **但已经被洗掉的 `[!COPY]` 回不来了** —— 迁移是单向的，没有反向步骤。
+  所以升级前的库备份是唯一的还原路径。
+- 部署前用 `VACUUM INTO` 做一份一致性快照，别直接 `cp`（WAL 模式下 `cp` 可能拿到半写状态）。
+- 纯后端 + 前端改动，**不涉及 `docker-compose.yml` / `deploy/upgrader/`**，
+  30.1.0 那次「`deploy/upgrader/` 必须和 compose 一起同步」的前提本次不适用。
+
 ## 2026-11-05 · 重构 + 工程：笔记 `> [!COPY]` 可复制块改为行内虚线片段复制（31.0.0）
 
 > **关于这个 major**：它由 `script/bump-version.mjs` 按 `git diff --cached` 的规模判定

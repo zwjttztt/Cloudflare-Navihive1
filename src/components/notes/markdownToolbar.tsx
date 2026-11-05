@@ -19,7 +19,6 @@ import Typography from "@mui/material/Typography";
 import DataObjectIcon from "@mui/icons-material/DataObject";
 import AddIcon from "@mui/icons-material/Add";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
-import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import HorizontalRuleIcon from "@mui/icons-material/HorizontalRule";
 import PolylineIcon from "@mui/icons-material/Polyline";
 import TranslateIcon from "@mui/icons-material/Translate";
@@ -424,7 +423,6 @@ export function MarkdownToolbar({
     onInsertTag,
     onInsertWikiLink,
     onInsertHiddenComment,
-    onInsertCopyBlock,
     onNotify,
     activeId,
     onUploadImage,
@@ -474,15 +472,6 @@ export function MarkdownToolbar({
     onInsertHiddenComment: () => void;
     /** 插入折叠块 `> [!FOLD] 标题` */
     onInsertFold: () => void;
-    /**
-     * 把选中内容包成可复制块 `> [!COPY]`。
-     *
-     * 渲染形态（2026-11-05 方案三）：块内**每个反引号片段**是一条虚线下划线的
-     * 独立复制单元（悬停 / 聚焦出「⧉ 点击复制」气泡），整块按钮只在悬停整块时浮现。
-     * 所以选中内容里已有的反引号要**原样保留** —— 它们就是用户要的复制粒度，
-     * 包块时不能剥掉、也不能自己再补一层。
-     */
-    onInsertCopyBlock: () => void;
     /** 插入标签页容器 `:::tabs … :::` */
     onInsertTabs: () => void;
     /** 插入分隔线 `---` */
@@ -1052,7 +1041,6 @@ export function MarkdownToolbar({
                         {insertItem("link-menu", <LinkIcon sx={{ fontSize: 18 }} />, "链接与引用", () => setLinkAnchor(moreAnchor))}
                         {insertItem("note", <SubjectIcon sx={{ fontSize: 18 }} />, "笔记工具", () => setInsertAnchor(moreAnchor))}
                         {insertItem("callout", <ViewStreamIcon sx={{ fontSize: 18 }} />, "内容块", () => setBlockAnchor(moreAnchor))}
-                        {insertItem("copyblock", <ContentCopyIcon sx={{ fontSize: 18 }} />, "复制块", () => onInsertCopyBlock())}
                     </Menu>
                 </>
             )}
@@ -1262,29 +1250,6 @@ export function MarkdownToolbar({
             </Tooltip>
             )}
 
-            {/* 复制块：把选中内容包成 `> [!COPY]`。渲染后块内每个反引号片段都是
-                一个独立复制单元（静止只有一条虚线，悬停出「⧉ 点击复制」气泡）；
-                整块按钮只在**悬停整块**时浮现。
-                ⚠️ 悬停显形这条**只对块级按钮**成立，而且 CSS 里用
-                `@media (hover: hover) and (pointer: fine)` 兜住了触屏反向：
-                没有 hover 的设备上按钮常显可点、片段点击即复制（2026-11-05 方案三）。
-                工具栏这颗按钮本身永远常驻 —— 它是「插入语法」的入口，不是复制动作。
-                为什么不把复制按钮挂在「选中文字右边」：即时渲染是块级的，一行文字在
-                源码里没有自己的 DOM 节点，按钮只能挂在渲染出来的块上。 */}
-            {!narrow && (
-            <Tooltip title='复制块：包成可复制块（块里每个 `代码` 片段都能单独点一下复制）'>
-            <IconButton
-                size='small'
-                aria-label='复制块'
-                data-tool='copyblock'
-                onMouseDown={e => e.preventDefault()}
-                onClick={() => onInsertCopyBlock()}
-                sx={toolBtnSx}
-            >
-                <ContentCopyIcon fontSize='small' />
-            </IconButton>
-            </Tooltip>
-            )}
             <Menu
                 open={Boolean(blockAnchor)}
                 anchorEl={blockAnchor}
