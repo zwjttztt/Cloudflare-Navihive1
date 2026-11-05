@@ -15,6 +15,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderMarkdownToReact } from "../src/utils/markdownToReact";
 import { UIPrefsProvider } from "../src/context/UIPrefsContext";
+import { declOf, indexCssRules, isHoverCapable, isNoHover, opacityOf, stripCssComments } from "./helpers/cssRules";
 
 function findProjectDir(): string {
     for (let dir = dirname(fileURLToPath(import.meta.url)), i = 0; i < 6; i++) {
@@ -437,7 +438,7 @@ test("双链是点状下划线 + 500 字重（和普通链接分开）", async (
 // 可复制块（`> [!COPY]`）：块右上角一颗**绝对定位的图标**按钮（2026-10-28 方案 A）。
 // 这一组盯两件事：① 按钮不再参与正文排版（旧版 float 会挤掉首行 ~70px）；
 // ② 真点一下有没有东西进剪贴板 —— 只断言按钮存在是假通过。
-test("COPY 块：复制胶囊绝对定位（不挤正文）+ 带「复制」两字，点一下把整块纯文本写进剪贴板", async () => {
+test("COPY 块：整块复制按钮绝对定位（不占版面）+ 悬停才显形，点一下把整块纯文本写进剪贴板", async () => {
     const host = await renderToDom("> [!COPY]\n> 第一行\n>\n> 第二行");
 
     const block = host.querySelector('[data-callout="COPY"]');
@@ -457,11 +458,19 @@ test("COPY 块：复制胶囊绝对定位（不挤正文）+ 带「复制」两�
     //    :hover 底色和 [data-copied] 强调色全压掉了（2026-10-28 踩过）。
     assert.equal(btn!.style.getPropertyValue("background"), "", "底色交给 index.css，别写内联值");
     assert.equal(btn!.style.getPropertyValue("color"), "", "颜色交给 index.css，别写内联值");
-    // ④ 按钮浮在块顶部预留的 28px 操作带里 —— 不做这件事，长首行会被胶囊盖住。
+    assert.equal(btn!.style.getPropertyValue("opacity"), "", "显隐交给 index.css，别写内联值（会压掉悬停显形）");
+    // ④ 2026-11-05 方案三：块顶那 28px 操作带**去掉了** —— 它正是「占地方太大」的来源。
+    //    按钮改成悬停整块才浮现（见 index.css 的 @media (hover: hover) 段），
+    //    静止时不占版面、也不需要正文为它让位。
     assert.equal(
         (block as HTMLElement).style.getPropertyValue("padding-top"),
-        "28px",
-        "块顶部必须给胶囊留出操作带，否则它会压在首行文字上"
+        "",
+        "块顶部不许再预留操作带（28px 是用户反馈「占地方」的元凶）"
+    );
+    assert.equal(
+        (block as HTMLElement).style.getPropertyValue("padding"),
+        "",
+        "连 padding 简写也不许写回来"
     );
     // ⑤ 不能丢可访问名。
     assert.ok((btn!.getAttribute("aria-label") ?? "").length > 0, "图标按钮必须有 aria-label");
@@ -503,65 +512,76 @@ test("COPY 块：复制胶囊绝对定位（不挤正文）+ 带「复制」两�
 
 test("普通引用块不冒出复制按钮（别把 `>` 引用当成可复制块）", async () => {
     const host = await renderToDom("> 只是一句引用");
-    assert.equal(host.querySelector('[data-copy-op="copy-block"]'), null);
+    // ⚠️ 比较布尔值，不把 DOM 元素交给 assert.equal：失败时 node:assert 会 inspect
+    //    React 挂了 __reactFiber$ 的 jsdom 节点，展开整棵 fiber 图直接把堆打爆
+    //    （CI 上只会剩一条文件级 not ok，没有断言消息，极难查）。
+    assert.equal(host.querySelector('[data-copy-op="copy-block"]') === null, true);
 });
 
-// 静态守卫（2026-10-28）：复制按钮必须**一眼看得见**。
-// 上一版在 `@media (hover: hover) and (pointer: fine)` 里写了静止 `opacity: 0`，
-// 结果在鼠标环境里它就是隐形的 —— 用户反馈「复制按键看不见」。
-// 这条守卫盯三件事：
-//   ① 任何 .md-copy-btn 规则都不许把它整条藏起来（opacity 精确等于 0）；
-//   ② 静止态要有可见的不透明度；
-//   ③ 悬停 / 聚焦要能更明显（否则等于没有反馈）。
-// 只看源码不渲染 DOM 的原因：jsdom 不跑媒体查询里的层叠，算出来的样式测不到这个坑。
-test("复制按钮的样式：静止态可见、永不被藏成 opacity: 0", () => {
-    const css = readFileSync(join(findProjectDir(), "src", "index.css"), "utf-8")
-        // 只剥 CSS 块注释：注释里写着「静止 opacity: 0」这种说明文字，
-        // 不剥就变成永远红的假警报。
-        .replace(/\/\*[\s\S]*?\*\//g, "");
-
-    // 顶层规则：选择器 + 声明体（嵌套块如 @media 里含花括号，不会被这条匹配到）
-    const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(m => ({
-        selector: m[1].trim(),
-        body: m[2],
-    }));
+// 静态守卫（2026-10-28 立，2026-11-05 按方案三改判据）：复制按钮的「显隐」必须跟着
+// 输入方式走。
+//
+// 意图从来没变过 —— **别做出一个用户根本点不到 / 看不见的按钮**。落点变了：
+//   ① 2026-10-28：整块按钮应该一眼看得见，于是钉「任何规则都不许 opacity: 0」。
+//   ② 2026-11-05：用户第三次反馈「占地方太大」，产品形态改成「悬停整块才浮现」。
+//      此时「静止不可见」是**设计意图**，但必须同时满足三件事，否则就退回隐形机关：
+//        · 藏，只许藏在 `@media (hover: hover)` 里（触屏没有 hover，藏起来＝按不到）；
+//        · 藏了必须有显形出口（`:hover` / `:focus-visible`）；
+//        · 基础规则（触屏那一档）**不许**设 opacity。
+// 只看源码不渲染 DOM：jsdom 不跑媒体查询里的层叠，算出来的样式测不到这个坑。
+test("复制按钮的样式：静止显隐只在 hover-capable 下生效，触屏始终可见", () => {
+    const css = stripCssComments(readFileSync(join(findProjectDir(), "src", "index.css"), "utf-8"));
+    const rules = indexCssRules(css);
     const copyRules = rules.filter(r => r.selector.includes(".md-copy-btn"));
-    assert.ok(copyRules.length >= 2, `index.css 里找不到 .md-copy-btn 的规则（找到 ${copyRules.length} 条）`);
+    assert.ok(copyRules.length >= 3, `index.css 里找不到足够的 .md-copy-btn 规则（找到 ${copyRules.length} 条）`);
 
-    /** 规则体里声明的 opacity 值（没写就是 undefined） */
-    const opacityOf = (body: string): number | undefined => {
-        const hit = /(?:^|;)\s*opacity\s*:\s*([^;]+)/.exec(`;${body}`);
-        return hit ? Number.parseFloat(hit[1]) : undefined;
-    };
-
-    for (const rule of copyRules) {
-        const opacity = opacityOf(rule.body);
-        if (opacity === undefined) continue;
-        assert.notEqual(
-            opacity,
-            0,
-            `${rule.selector} 把复制按钮设成完全透明了 —— 鼠标环境里用户根本看不见这个按钮` +
-                "（2026-10-28 已踩过：静止 opacity: 0 + 悬停才显形 = 隐形机关）"
+    // ① 「藏」只许藏在有 hover 的设备条件下。
+    const hidden = copyRules.filter(r => {
+        const op = opacityOf(r.body);
+        if (op === 0) return true;
+        return declOf(r.body, "visibility") === "hidden";
+    });
+    assert.ok(hidden.length >= 1, "方案三应当有一条「静止隐藏」的规则（否则悬停显形根本没实现）");
+    for (const rule of hidden) {
+        assert.ok(
+            isHoverCapable(rule),
+            `${rule.selector}（媒体条件「${rule.media || "无"}」）把复制按钮藏起来了，` +
+                "但没限定 hover-capable —— 触屏设备上它就是一颗按不到的隐形按钮"
         );
     }
 
-    const rest = copyRules.find(r => r.selector === ".md-copy-btn");
-    assert.ok(rest, "要有一条针对 .md-copy-btn 本体（静止态）的规则");
-    const restOpacity = opacityOf(rest!.body);
+    // ② 藏了必须有显形出口：悬停整块 / 键盘聚焦。
+    const revealed = copyRules.filter(r => opacityOf(r.body) === 1);
     assert.ok(
-        restOpacity === undefined || restOpacity >= 0.4,
-        `复制按钮静止态不透明度只有 ${restOpacity}，太淡了（要 >= 0.4，最好干脆不设）`
+        revealed.some(r => r.selector.includes(":hover")),
+        "必须有「悬停整块 → 按钮显形」的规则（方案三的核心交互）"
     );
-    // 第 ③ 版定稿：它是「浅底 + 描边的胶囊」，靠**形**让人认出是按钮，
-    // 不靠颜色深浅。所以静止态必须同时有底色、描边和明确的文字色 —— 缺一样就退回
-    // 「一颗灰线图标糊在正文里」那种看不清的状态。
+    assert.ok(
+        revealed.some(r => r.selector.includes(":focus-visible") || r.selector.includes(":focus-within")),
+        "必须有「键盘聚焦 → 按钮显形」的规则，否则 Tab 到一个透明按钮等于没有"
+    );
+
+    // ③ 触屏那一档必须**显式**写回可见（不靠「基础规则碰巧没设 opacity」）。
+    assert.ok(
+        copyRules.some(r => isNoHover(r) && (opacityOf(r.body) === 1 || declOf(r.body, "visibility") === "visible")),
+        "必须有 @media (hover: none) 规则把复制按钮显式写回可见（触屏没有 hover）"
+    );
+
+    const rest = copyRules.find(r => r.selector === ".md-copy-btn" && r.media === "");
+    assert.ok(rest, "要有一条针对 .md-copy-btn 本体（顶层 = 触屏那一档）的规则");
+    assert.equal(
+        opacityOf(rest!.body),
+        undefined,
+        "基础规则（触屏那一档）不许设 opacity：没有 hover 的设备必须常显"
+    );
+    // 胶囊的「形」：浅底 + 描边 + 明确的文字色 + 固定字号。缺一样就退回
+    // 「一颗灰线图标糊在正文里」那种看不清的状态（第 ② 版踩过）。
     assert.match(rest!.body, /border\s*:\s*1px\s+solid/, "胶囊要有 1px 描边（否则在正文里没有边界）");
     assert.match(rest!.body, /background\s*:/, "胶囊要有浅底");
     assert.match(rest!.body, /color\s*:/, "文字色要显式给（别让 <button> 的默认色盖上来）");
     assert.match(rest!.body, /font-size\s*:/, "12px 的字号要写死在这里，否则胶囊会跟正文字号走");
 
-    // 悬停要有可见变化：第 ③ 版不再用 opacity，改成换底色 / 描边 / 文字色，
-    // 所以这里只要求「改了其中至少一样」，不钉具体属性。
+    // 悬停要有可见变化：换底色 / 描边 / 文字色至少一样。
     const hover = copyRules.find(r => r.selector.includes(":hover"));
     assert.ok(hover, "必须有 :hover 规则（点了才知道能点）");
     assert.match(

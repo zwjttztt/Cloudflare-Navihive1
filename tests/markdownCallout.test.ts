@@ -187,3 +187,21 @@ test("COPY：工具栏造的源码能被解析成 COPY 块（造与解必须闭�
     // 顺带钉住形状：标记独占一行，正文每行都带 `> `
     assert.equal(src.startsWith("> [!COPY]\n> "), true, "标记必须独占一行");
 });
+
+// 2026-11-05 方案三：块内每个反引号片段是一个独立的复制单元，所以工具栏包块时
+// **不能**动正文里已有的反引号（剥掉就等于把用户要的复制粒度毁了）。
+test("COPY：包块时原样保留正文里的反引号（它们就是复制粒度）", () => {
+    const body = "数据库连接：`10.0.42.18:5432`  账号：`postgres_ro`";
+    const src = buildCopyBlockSource(body);
+    assert.equal(
+        src,
+        "> [!COPY]\n> 数据库连接：`10.0.42.18:5432`  账号：`postgres_ro`\n",
+        "反引号必须一个不少、位置也不能挪"
+    );
+    // 反引号在解析层仍然被识别成 code_inline（渲染层才据此长出复制单元）
+    const tokens = parseTokens(src);
+    const codes = tokens.filter(t => t.type === "inline").flatMap(t => t.children ?? [])
+        .filter(t => t.type === "code_inline")
+        .map(t => String(t.content));
+    assert.deepEqual(codes, ["10.0.42.18:5432", "postgres_ro"], "两个反引号片段都要成为 code_inline");
+});

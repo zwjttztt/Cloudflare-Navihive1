@@ -361,6 +361,19 @@
     --md-highlight-bg: rgba(250, 204, 21, 0.38);
     --md-mark-bg: rgba(250, 204, 21, 0.35);
 
+    /* ===== 可复制块（方案三：虚线下划线 + 悬停显形，2026-11-05）=====
+       静止态只有一条 1px 虚线；悬停 / 聚焦才浮浅蓝底 + 气泡。
+       ⚠️ 只新增**必要**的变量：悬停蓝 / 已复制绿 / 整块按钮底都直接复用既有的
+       --callout-note-* / --callout-tip-* / --surface-raised，不另立一套同色 token ——
+       首屏 CSS 预算已经贴线（见 tests/bundleBudget.test.ts），多一组变量就是多一份字节。
+       ⚠️ 虚线是**唯一**的静止线索，别把 alpha 调到 0.12 以下 —— 那样在暖白纸面上
+       等于没有（正文里看不出哪一段能点），用户反馈的「看不出复制哪一段」会原样回来。
+       ⚠️ 气泡要深底白字（亮暗反相）：它是浮层，不跟纸面走。实测
+       #1f2937 上的 #ffffff = 14.7:1、暗色 #e5e7eb 上的 #0f172a = 15.3:1，都远超 AA。 */
+    --md-copy-frag-rule: rgba(15, 23, 42, 0.28);
+    --md-copy-tip-bg: #1f2937;
+    --md-copy-tip-fg: #ffffff;
+
     /* ===== 标签自动配色（用户没给标签手设颜色时按名称取一档）=====
        ⚠️ 亮态取的是 900 档，不是「压白底够用」的 700 档 —— 2026-10-25 实测：
        标签会落在**灰底行**上（选中 / 勾选 / hover 后的行底约 rgb(200,199,196)），
@@ -553,6 +566,12 @@
     --callout-fold-bg: transparent;
     --md-highlight-bg: rgba(250, 204, 21, 0.38);
     --md-mark-bg: rgba(250, 204, 21, 0.35);
+
+    /* 可复制块（暗色）：虚线要比亮色更亮才看得见（深底上 0.28 黑几乎归零）；
+       气泡反相成浅底深字（深底上再放深色浮层会糊成一片，见 :root 段注释的实测值）。 */
+    --md-copy-frag-rule: rgba(255, 255, 255, 0.34);
+    --md-copy-tip-bg: #e5e7eb;
+    --md-copy-tip-fg: #0f172a;
 
     /* 标签自动配色（暗色档）：300 档，压深底 8:1 以上 */
     --tag-1-fg: #93c5fd;
@@ -1888,16 +1907,122 @@ html.dark .cm-editor .cm-content {
     }
 }
 
-/* 可复制块右上角的复制胶囊（2026-10-28 第三版，方案 A）。
-   演进史：`float: right` 挤掉首行 70px（用户报「影响文字排序」）→ 绝对定位 + 只留
-   图标 + 半透明（用户两次报「看不见 / 看不清」）→ 现在这颗「图标 + 复制」浅底胶囊。
-   🔴 两个都别再回头：① 不要再用 float 参与行内排版；② 不要再做成图标-only 或
-      靠 opacity 淡化 —— 13px 的灰线图标在中文正文里根本不像个按钮，问题不在深浅。
-   ⚠️ 颜色 / 底色 / 边框 / 尺寸只能写在这里：组件内联只留 position / top / right。
+/* ===========================================================================
+   可复制块（`> [!COPY]`）：方案三「极简虚线下划线 + 悬停显形」（2026-11-05）
+   ---------------------------------------------------------------------------
+   用户第 3 次反馈后的定稿形态：
+     ① 「占地方太大」 → 常驻胶囊 + 块顶 28px 操作带全部去掉，版面与纯文本一样紧；
+     ② 「看不出复制哪一段」 → 块内**每个**反引号片段自带一条 1px 虚线，
+        悬停 / 聚焦时浮浅蓝底 + 一枚微型气泡。
+   本段三组规则：.md-copy-frag*（片段）、.md-copy-frag-tip（气泡）、
+   .md-copy-btn（整块按钮，悬停整块才显形）。
+
+   ⚠️ 片段里的文字颜色一律 inherit：它坐在正文里，换色就等于换正文字色，
+      浅蓝底 + 近黑的对比度是 15:1 级别，绝不能为了「好看」把字调蓝。
+   ⚠️ 气泡文字写在这里的 ::before 里，DOM 里**没有**文本节点 ——
+      渲染层的 blockTextOf 在 jsdom 下回落到 textContent，气泡里放字就会让
+      「整块复制」的产物在单测与真机之间不一致（详见 markdownToReact.tsx）。
+   =========================================================================== */
+
+/* 片段本体：静止只有一条虚线，不加 padding / 背景，行高与纯文本完全一致。
+   ⚠️ display 必须是 inline：inline 元素的 border **不参与行盒高度计算**，
+      所以那条虚线是零占地的；改成 inline-block 会让长 URL 整块不换行、撑破版面。 */
+.md-copy-frag {
+    position: relative;
+    display: inline;
+    cursor: copy;
+    background: transparent;
+    border-bottom: 1px dashed var(--md-copy-frag-rule);
+    border-radius: 3px;
+    transition:
+        background-color var(--dur-fast) ease,
+        border-color var(--dur-fast) ease;
+}
+
+/* 片段里的 <code>：去掉行内代码的灰底胶囊（那是块**外**的形态），只保留等宽字形 */
+.md-copy-frag-code {
+    font-family: ui-monospace, monospace;
+    background: transparent;
+    padding: 0;
+}
+
+/* 悬停 / 聚焦：浅蓝底 + 蓝虚线。蓝色直接复用内容块的 NOTE 语义色，
+   不另立一套同色 token（首屏 CSS 预算贴线，见 tests/bundleBudget.test.ts） */
+.md-copy-frag:hover,
+.md-copy-frag:focus-visible {
+    background: var(--callout-note-bg);
+    border-bottom-color: var(--callout-note-border);
+}
+
+.md-copy-frag:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+/* 复制成功的 1.2 秒：换绿色底 + 绿虚线（片段自己的状态机，与整块按钮互不干扰）。
+   绿色复用内容块的 TIP 语义色，理由同上。 */
+.md-copy-frag[data-copied="1"] {
+    background: var(--callout-tip-bg);
+    border-bottom-color: var(--callout-tip-border);
+}
+
+/* 微型气泡「⧉ 点击复制」。opacity: 0 + pointer-events: none：
+   不可见、且不吃鼠标（否则它会盖住旁边文字，或自己 hover 自己造成抖动）。
+   读屏那边由 aria-hidden 兜住，不需要 visibility: hidden。 */
+.md-copy-frag-tip {
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 5px);
+    z-index: 3;
+    padding: 2px 7px;
+    border-radius: 5px;
+    background: var(--md-copy-tip-bg);
+    color: var(--md-copy-tip-fg);
+    font-size: 11px;
+    /* 片段可能被 `**粗体**` / `*斜体*` 包住：气泡是独立的浮层，字形要复位，
+       否则提示文字会跟着正文一起变粗 / 变斜（视觉上像另一段正文而不是提示）。 */
+    font-weight: 400;
+    font-style: normal;
+    line-height: 1.5;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateX(-50%) translateY(2px);
+    transition:
+        opacity var(--dur-fast) ease,
+        transform var(--dur-fast) ease;
+}
+
+.md-copy-frag-tip::before {
+    content: "⧉ 点击复制";
+}
+
+/* 复制成功后气泡文字就地变「已复制」—— 不弹全局 toast，也不动整块按钮的状态 */
+.md-copy-frag[data-copied="1"] .md-copy-frag-tip::before {
+    content: "已复制";
+}
+
+/* 悬停 / 键盘聚焦 / 刚复制完：气泡显形。
+   第三条是**触屏唯一的反馈通道** —— 没有 hover 可依赖，复制成功后让气泡自己出来 1.2 秒。 */
+.md-copy-frag:hover .md-copy-frag-tip,
+.md-copy-frag:focus-visible .md-copy-frag-tip,
+.md-copy-frag[data-copied="1"] .md-copy-frag-tip {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+/* ---------------- 整块复制按钮 ---------------- */
+
+/* 演进史：`float: right` 挤掉首行 70px（用户报「影响文字排序」）→ 绝对定位 + 只留
+   图标 + 半透明（用户两次报「看不见 / 看不清」）→ 图标 + 「复制」浅底胶囊常驻 +
+   块顶 28px 操作带（用户第三次报「占地方太大」）→ **现在：悬停整块才浮现**。
+   🔴 三个都别再回头：① 不要用 float 参与行内排版；② 不要做成图标-only；
+      ③ 不要为它在块顶预留 paddingTop —— 那 28px 正是「占地方」的来源。
+   ⚠️ 颜色 / 底色 / 边框 / 尺寸 / 显隐只能写在这里：组件内联只留 position / top / right。
       内联样式优先级高于样式表，写同名属性会把 :hover 与 [data-copied] 的配色压掉
       （第一版就是这么「改了没反应」的）。
-   ⚠️ 按钮浮在正文上方 28px 的操作带里（组件用 paddingTop 让位），不参与行内排版，
-      所以长首行也不会被它盖住。 */
+   ⚠️ 静止态虽然不可见，但**仍在 Tab 顺序里**（见下面的 @media 段）：
+      用 opacity 而不是 visibility / display，键盘用户才能聚焦后让它显形。 */
 .md-copy-btn {
     display: inline-flex;
     align-items: center;
@@ -1906,13 +2031,16 @@ html.dark .cm-editor .cm-content {
     padding: 0 9px;
     border: 1px solid var(--neutral-hairline);
     border-radius: 12px;
-    background: var(--md-inline-code-bg);
+    /* 近乎不透明的底（--surface-raised 是已有 token，暗色自带一套）：
+       它悬停时浮在正文上方，半透明会让底下的字透上来 */
+    background: var(--surface-raised, var(--md-inline-code-bg));
     color: var(--text-secondary);
     font-family: inherit;
     font-size: 12px;
     line-height: 1;
     cursor: pointer;
     transition:
+        opacity var(--dur-fast) ease,
         color var(--dur-fast) ease,
         background-color var(--dur-fast) ease,
         border-color var(--dur-fast) ease;
@@ -1934,4 +2062,31 @@ html.dark .cm-editor .cm-content {
 .md-copy-btn:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+}
+
+/* 有 hover 的设备：静止隐藏，悬停整块（或块内任何元素获得焦点）才浮现。
+   ⚠️ 只藏 opacity，绝不藏 visibility / display —— 那样会把它从 Tab 顺序里摘掉，
+      键盘用户就永远够不到「整块复制」，只剩片段复制可用（功能残缺）。
+   ⚠️ 必须先判 (hover: hover)：手机浏览器常常「声明支持 hover 但不能悬停」，
+      所以再加 (pointer: fine) 一档，把触屏设备彻底排除在这条规则之外。 */
+@media (hover: hover) and (pointer: fine) {
+    .md-copy-btn {
+        opacity: 0;
+    }
+
+    .md-copy-host:hover .md-copy-btn,
+    .md-copy-host:focus-within .md-copy-btn,
+    .md-copy-btn:focus-visible,
+    .md-copy-btn[data-copied="1"] {
+        opacity: 1;
+    }
+}
+
+/* 无 hover 的设备（触屏 / 手写笔 / 电视遥控）：整块按钮**常显**。
+   显式写在这里而不是「靠基础规则碰巧也可见」：将来谁给 .md-copy-btn 加一条
+   opacity，触屏这条路就静默断掉，而这一档没有任何自动化能发现「手机上按不到」。 */
+@media (hover: none) {
+    .md-copy-btn {
+        opacity: 1;
+    }
 }
