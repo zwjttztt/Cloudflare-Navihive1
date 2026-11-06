@@ -71,6 +71,10 @@ export function htmlToMarkdown(html: string): string {
         if (node.nodeType !== 1) return "";
         const el = node as HTMLElement;
         const tag = el.tagName.toLowerCase();
+        // 行内复制胶囊尾部的字形（⧉ / ✓）是**装饰**：渲染层用 user-select:none 把它
+        // 挡在选区之外，但走 HTML 剪贴板粘贴这条路时选区规则不生效（这里是按节点遍历），
+        // 所以在这里显式丢掉 —— 否则用户粘贴出来会多出一堆 ⧉。
+        if (el.classList && el.classList.contains("md-clip-glyph")) return "";
         const children = () => Array.from(el.childNodes, child => walk(child, indent)).join("");
         if (/^h[1-6]$/.test(tag)) return `\n\n${"#".repeat(Number(tag[1]))} ${children().trim()}\n\n`;
         switch (tag) {

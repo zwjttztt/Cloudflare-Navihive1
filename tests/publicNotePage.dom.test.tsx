@@ -274,6 +274,29 @@ test("「复制为 Markdown」：把原始源码写进剪贴板，并播报结�
     }
 });
 
+test("「复制为 Markdown」：行内复制胶囊只复制内容，定界符不带出去", async () => {
+    const clip = stubClipboard();
+    try {
+        // ⚠️ QA 变异 G1 的缺口：把 copyToClipboard(clipChipsToPlainText(rawContent))
+        //    改回 copyToClipboard(rawContent) 时，旧用例的夹具里没有胶囊 → 0 红。
+        const content = "分享正文 前{{clip:甲}}后 收尾";
+        stubFetch([okNote({ content })]);
+        mount();
+        await waitFor("正文出现", () => pageText().includes("收尾"));
+        const btn = document.querySelector<HTMLButtonElement>("[data-tool='copy-markdown']");
+        assert.equal(btn === null, false, "要有「复制为 Markdown」按钮");
+        await act(async () => { btn!.click(); await Promise.resolve(); });
+        assert.equal(clip.written.length, 1, "要写一次剪贴板");
+        const copied = clip.written[0];
+        assert.equal(copied.includes("{{clip"), false, `复制出去的 Markdown 不该带定界符：${copied}`);
+        assert.equal(copied.includes("}}"), false, "闭合标记也不该带出去");
+        assert.equal(copied.includes("甲"), true, "胶囊的内容必须还在");
+        assert.equal(copied, "分享正文 前甲后 收尾", "其余正文一个字节不丢");
+    } finally {
+        clip.restore();
+    }
+});
+
 test("复制失败（剪贴板被拒）：提示手动复制，不静默", async () => {
     Object.defineProperty(navigator, "clipboard", {
         configurable: true,

@@ -27,6 +27,7 @@ import FormatColorTextIcon from "@mui/icons-material/FormatColorText";
 import FormatListBulletedIcon from "@mui/icons-material/FormatListBulleted";
 import FormatListNumberedIcon from "@mui/icons-material/FormatListNumbered";
 import SubjectIcon from "@mui/icons-material/Subject";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ViewHeadlineIcon from "@mui/icons-material/ViewHeadline";
 import ViewStreamIcon from "@mui/icons-material/ViewStream";
 import type { NoteEmbedTarget } from "../NoteEmbedNode";
@@ -423,6 +424,7 @@ export function MarkdownToolbar({
     onInsertTag,
     onInsertWikiLink,
     onInsertHiddenComment,
+    onInsertCopyChip,
     onNotify,
     activeId,
     onUploadImage,
@@ -470,6 +472,12 @@ export function MarkdownToolbar({
     onInsertWikiLink: () => void;
     /** 插入隐藏注释 `%%…%%`（预览不显示） */
     onInsertHiddenComment: () => void;
+    /**
+     * 行内复制胶囊 `{{clip:内容}}`：把选中的文字包成胶囊，预览里点一下就复制。
+     * ⚠️ 与已下线的「复制块」是两回事：这里只做**行内**一段，没有块级结构、
+     * 没有片段自动识别、没有整块复制按钮。
+     */
+    onInsertCopyChip: () => void;
     /** 插入折叠块 `> [!FOLD] 标题` */
     onInsertFold: () => void;
     /** 插入标签页容器 `:::tabs … :::` */
@@ -1023,6 +1031,7 @@ export function MarkdownToolbar({
                         {/* 行内：写字时顺手会用，但比「加粗 / 列表」低频一档 */}
                         {insertItem("code", <CodeIcon sx={{ fontSize: 18 }} />, "行内代码", () => onInsert("`", "`", "code"))}
                         {insertItem("highlight", <FormatColorTextIcon sx={{ fontSize: 18 }} />, "高亮", () => onInsert("==", "==", "高亮"))}
+                        {insertItem("clip-chip", <ContentCopyIcon sx={{ fontSize: 18 }} />, "复制胶囊", () => onInsertCopyChip())}
                         {insertItem("quote", <FormatQuoteIcon sx={{ fontSize: 18 }} />, "引用", () => onLinePrefix("> "))}
                         <Divider />
                         {/* 块级：插的是一段结构 */}
@@ -1181,6 +1190,19 @@ export function MarkdownToolbar({
                     }}
                 >
                     <span>插入标签</span>
+                </MenuItem>
+                </Tooltip>
+                {/* 行内复制胶囊：放在「插入标签」旁边 —— 两者都是「给一段行内文字加个标记」 */}
+                <Tooltip title='把选中的文字包成胶囊，预览里点一下即可复制'>
+                <MenuItem
+                    data-insert-op='clip-chip'
+                    sx={menuRowSx}
+                    onClick={() => {
+                        onInsertCopyChip();
+                        setInsertAnchor(null);
+                    }}
+                >
+                    <span>复制胶囊</span>
                 </MenuItem>
                 </Tooltip>
                 <Tooltip title='给这一段加个锚点（^标识），别处能引用它'>

@@ -29,6 +29,13 @@ import { MermaidNode } from "./MermaidNode";
 import AttachmentLink from "./AttachmentLink";
 import { registerMath } from "./markdownMath";
 import { registerMark } from "./markdownMark";
+// 行内复制胶囊 `{{clip:内容}}`：语法与纯文本降级在 markdownClipChip.ts，
+// 渲染体在 ClipChipNode.tsx —— 三处调用方（编辑器实时预览 / 阅读态 / 公开分享页）
+// 共用同一份渲染，所以它不能依赖任何页面注入的上下文。
+import { CLIP_CHIP_TOKEN, registerClipChip } from "./markdownClipChip";
+// 胶囊的渲染体单独一个文件：本文件是纯函数模块，塞组件会触发
+// react-refresh/only-export-components 警告（与 AttachmentLink.tsx 同款理由）
+import { ClipChipNode } from "./ClipChipNode";
 import footnote from "markdown-it-footnote";
 import { registerNoteTags } from "./markdownNoteTags";
 import { registerWikiLink } from "./noteWikiLink";
@@ -124,6 +131,7 @@ function loadParser(): Promise<MarkdownIt> {
             // 插入的 `==…==` 在预览里原样显示成那四个字符，看着像按钮坏了 ——
             // 其实插入是对的，只是没有规则把它变成 <mark>。
             registerMark(md);
+            registerClipChip(md);
             registerNoteTags(md);
             // `[[双链]]` → 可点链接。inkstone 的核心卖点之一，
             // 解析规则在 utils/noteWikiLink.ts（反向链接面板复用同一套判据）。
@@ -596,6 +604,10 @@ function renderLeaf(tok: Token, c: Cursor): ReactNode {
             const { id, subId } = tok.meta as { id: number; subId: number };
             return <a key={key} href={`#note-fnref-${id}-${subId}`} aria-label={`返回脚注 ${id + 1} 引用`}> ↩</a>;
         }
+        // 行内复制胶囊：内容按**纯文本**渲染（不做嵌套解析，理由见 markdownClipChip.ts），
+        // 所以渲染出来的字面量与「复制出去的东西」完全一致。
+        case CLIP_CHIP_TOKEN:
+            return <ClipChipNode key={key} text={tok.content} />;
         case "text":
             return <span key={key}>{tok.content}</span>;
         case "code_inline":

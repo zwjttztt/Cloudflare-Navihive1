@@ -3,6 +3,7 @@ import { renderMarkdownToReact } from "../utils/markdownToReact";
 import { Button, TextField, Typography } from "@mui/material";
 import { parseApiError } from "../API/apiError";
 import { copyToClipboard } from "../utils/clipboard";
+import { clipChipsToPlainText } from "../utils/markdownClipChip";
 import { BrandMark } from "./BrandMark";
 import { BRAND } from "../brand";
 
@@ -115,7 +116,10 @@ export default function PublicNotePage({ token }: { token: string }) {
             setCopyHint("这条笔记是空的，没什么可复制");
             return;
         }
-        const ok = await copyToClipboard(rawContent);
+        // ⚠️ 复制出去的是「用户要的东西」而不是源码：行内复制胶囊的定界符
+        //    （clip 那对花括号）在纯文本里没有意义，抄走的人只会一脸问号。
+        //    这里做一次降级 —— 胶囊留下**内容**，定界符一个不带。
+        const ok = await copyToClipboard(clipChipsToPlainText(rawContent));
         setCopyHint(ok ? "已复制 Markdown 原文" : "复制失败，请手动选择正文复制");
     };
 

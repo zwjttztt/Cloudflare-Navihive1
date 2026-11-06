@@ -50,3 +50,13 @@ test("导出内容：无标题时只给正文", () => {
     assert.equal(buildNoteMarkdown("", "只有正文"), "只有正文");
     assert.equal(buildNoteMarkdown("   ", "只有正文"), "只有正文");
 });
+
+test("导出内容：行内复制胶囊只留内容，定界符不带出去，其余字节不丢", () => {
+    const out = buildNoteMarkdown("", "前{{clip:甲}}后");
+    // ⚠️ QA 变异 G2 的缺口：去掉 buildNoteMarkdown 里的纯文本降级，
+    //    导出的 .md / 导出 HTML 会把 `{{clip:` 这一对只在站内有效的花括号带给别人。
+    assert.equal(out.includes("{{clip"), false, `导出里还带着定界符：${out}`);
+    assert.equal(out.includes("}}"), false, "闭合标记也不该留着");
+    assert.equal(out.includes("甲"), true, "胶囊的内容必须留下");
+    assert.equal(out, "前甲后", "正文其余字节一个不丢、位置也不变");
+});

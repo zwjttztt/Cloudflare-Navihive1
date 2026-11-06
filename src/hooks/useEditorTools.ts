@@ -26,6 +26,11 @@ import {
     removeColumn,
     removeRow,
 } from "../utils/markdownTable";
+import {
+    CLIP_CHIP_CLOSE,
+    CLIP_CHIP_OPEN,
+    CLIP_CHIP_PLACEHOLDER,
+} from "../utils/markdownClipChip";
 
 /** 草稿形状（与 NotesPage 的 draft / sideDraft 一致） */
 export interface EditorDraft {
@@ -620,6 +625,18 @@ export function useEditorTools(
         insertAtCursor("%%", "%%", "隐藏注释");
     }, [insertAtCursor]);
 
+    /**
+     * 行内复制胶囊 `{{clip:内容}}`：把**选中的文字**包成胶囊（预览里点一下即可复制）。
+     *
+     * 复用 insertAtCursor 那套「before/after 包裹 + 再点一次摘掉 + lastInsertRef 记忆」，
+     * 不另发明机制 —— 加粗 / 斜体 / ==高亮== / 行内公式都走同一条路，
+     * 胶囊只是换了一对定界符，撤销与「选区已带标记就摘掉」的语义自动继承。
+     * 没有选区时落占位符（和「标签 / 双链 / 隐藏注释」一致）。
+     */
+    const onInsertCopyChip = useCallback(() => {
+        insertAtCursor(CLIP_CHIP_OPEN, CLIP_CHIP_CLOSE, CLIP_CHIP_PLACEHOLDER);
+    }, [insertAtCursor]);
+
     /** 插入折叠块 `> [!FOLD] 标题` */
     const onInsertFold = useCallback(() => {
         insertBlock("fold", buildFoldSource(""));
@@ -668,6 +685,7 @@ export function useEditorTools(
         onInsertTag,
         onInsertWikiLink,
         onInsertHiddenComment,
+        onInsertCopyChip,
         onInsertFold,
         onInsertTabs,
         onInsertDivider,

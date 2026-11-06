@@ -10,6 +10,8 @@
 //   - 结尾不能是空格或点（Windows 会自动截掉，用户以为导出了个空文件）；
 //   - `.` 开头的名字在某些系统上是隐藏文件。
 
+import { clipChipsToPlainText } from "./markdownClipChip";
+
 /** Windows 禁止的字符。
  *
  * ⚠️ 只列**可见**的非法字符，不写控制字符区间（\x00-\x1f）：
@@ -38,7 +40,10 @@ export function safeFileName(title: string, fallback = "未命名笔记"): strin
  * 都有个标题，而不只是正文（列表里的标题和内容是分开存的）。
  */
 export function buildNoteMarkdown(title: string, content: string): string {
-    const body = content || "";
+    // 导出走**纯文本降级**：行内复制胶囊只留内容，不留定界符。
+    // 导出产物是给人看 / 给别的编辑器用的，一对只在 NaviHive 里有意义的花括号
+    // 只会变成噪音（导出 HTML 也吃这份正文，所以两条导出路径一并覆盖）。
+    const body = clipChipsToPlainText(content || "");
     const t = (title || "").trim();
     if (!t) return body;
     // 已经有 ATX 开头的一级标题就不重复加
