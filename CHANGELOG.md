@@ -16,20 +16,29 @@
 
 > 同一天的第四更，紧接 32.3.0。上一版把启动占位换成了 40px 圆环，但 React 侧那三处整页加载态
 > 用的还是 MUI 的 `<CircularProgress>` —— 那是 SVG 弧线，**转的同时弧长还在伸缩**，
-> 和 CSS border 环完全是两种观感。两屏一前一后出现，用户看到的是「同一个等待被换了个动画」。
+> 和启动占位那个静态 border 环完全是两种观感。两屏一前一后出现，用户看到的是「同一个等待被换了个动画」。
 > 原话：**「两个转圈不一样统一一下」**。
+>
+> ⚠️ 这一版上线途中被 CI 的 `audit:perf` 拦下过一次，根因不是视觉而是**度量**：
+> 第一版把环画成 CSS `border`，而 Chrome **不把纯 border 算作内容绘制** —— 于是 FCP 的锚点
+> 没了，回访 FCP 从 148ms 跳到 504ms（超预算 4ms），冷启动 FCP 从 1904ms 跳到 3084ms。
+> 最终改成**内联 `<svg>`**（SVG 算内容），FCP 锚点回到 JS 到达之前。详见下面「为什么是 SVG 不是 border」。
 
 ### 改了什么
 
 - **全站只剩一处转圈规格**：`index.html` 文档头的 `.bs-spinner`
-  （`40px` / `3.5px` / 轨道 `22%` 混色 / `0.9s linear infinite`）。
+  （`40px` 外径 / `stroke-width: 3.5` / 轨道 `stroke-opacity: 0.22` / `0.9s linear infinite`）。
   关键在于它**故意不带作用域** —— 原来写的是 `#boot-skeleton .bs-spinner`，那样只有启动占位用得上，
-  React 侧就必然得再写一份。现在启动占位的 `<div class="bs-spinner">` 与 React 侧的
-  `<span class="bs-spinner" data-mode=…>` 是**同一个类名、同一份定义**，
+  React 侧就必然得再写一份。现在启动占位的 `<svg class="bs-spinner">` 与 React 侧的
+  `<svg class="bs-spinner" data-mode=…>` 是**同一个类名、同一份标记**，
   「两边数值漂开」在结构上不可能发生 —— 不再靠「两份规格 + 一条深层比对守卫」那种只能事后发现漂移的做法。
-- **新增 `src/components/Spinner.tsx`**（72 行）：只干两件事 —— 给 `role='progressbar'` 让读屏知道在等，
-  用 `data-mode={theme.palette.mode}` 告诉 CSS「当前是亮档还是暗档」。**它自己不带任何样式**，
-  也没有 `aria-label`（调用方外层已有 `role=status` + 名字，两个可访问名会被读屏连念两遍）。
+  两个 `<circle>`（`r=18.25`）+ 一个 `<g transform="rotate(-135 20 20)">`：`18.25×2 + 3.5 = 40`
+  保证外径正好 40，转 -135° 让那 90° 的亮弧居中在 12 点钟、与旧 `border-top-color` 位置一致
+  （减少动效时是静态帧，位置不同看得出来）。
+- **新增 `src/components/Spinner.tsx`**：只干两件事 —— 给 `role='progressbar'` 让读屏知道在等，
+  用 `data-mode={theme.palette.mode}` 告诉 CSS「当前是亮档还是暗档」。**它自己不带任何样式**
+  （尺寸/颜色/边框/动画全在 `index.html` 那一条规则里），也没有 `aria-label`
+  （调用方外层已有 `role=status` + 名字，两个可访问名会被读屏连念两遍）。
 - **三处整页加载态换成 `<Spinner />`**：
   - `LoginScreen.tsx` 的 `isAuthChecking` 检查态（原 `size={60} thickness={4}`）
   - 同文件里登录页 lazy chunk 的 `Suspense` 兜底（原同样 60px）
@@ -53,45 +62,81 @@
 
 ### 真 Chrome 量化：逐项同值，不是「看起来一样」
 
-用 `script/auditEnv.mjs` 的静态产物 + 只读 API 桩 + CDP。尺寸一律取 `offsetWidth/Height`
-（**别用 `getBoundingClientRect()`** —— 旋转元素会随角度在 40→56.6 之间抖）。
+用 `script/auditEnv.mjs` 的静态产物 + 只读 API 桩 + CDP。
+⚠️ **`offsetWidth/offsetHeight` 在 `SVGElement` 上不存在**（Chrome 返回 `undefined`，这个属性只属于 `HTMLElement`）。
+所以尺寸用两把尺子：`getComputedStyle(svg).width/height` + **`prefers-reduced-motion` 停转后的外接框**
+（转着的时候 `getBoundingClientRect()` 量到的是旋转后的外接框，正方形转 θ = `40×(|cosθ|+|sinθ|)`，
+实测会跳到 46.316 / 42.264，随采样相位变 —— 不是尺寸变了）。
 
 | 属性 | 占位(亮) | React(亮) | 占位(暗) | React(暗) |
 |---|---|---|---|---|
-| `offsetWidth×Height` | `40×40` | `40×40` | `40×40` | `40×40` |
-| `border-top-color` | `rgb(25, 118, 210)` | 同值 | `rgb(144, 202, 249)` | 同值 |
-| 轨道色（非 top 边） | `color(srgb 0.098 0.463 0.824 / 0.22)` | 同值 | `color(srgb 0.565 0.792 0.976 / 0.22)` | 同值 |
+| `computed width×height` | `40px×40px`（停转外接框 40×40） | 同值 | 同值 | 同值 |
+| `stroke`（亮那 90° 弧） | `rgb(25, 118, 210)` | 同值 | `rgb(144, 202, 249)` | 同值 |
+| `stroke-opacity`（轨道） | `0.22` | 同值 | 同值 | 同值 |
+| `stroke-width` / `stroke-dasharray` | `3.5px` / `28.67px, 86px` | 同值 | 同值 | 同值 |
+| `r` / 弧偏移 | `18.25` / `rotate(-135 20 20)` | 同值 | 同值 | 同值 |
 | `animation` | `bs-spin 0.9s linear infinite` | 同值 | 同值 | 同值 |
-| `display` / `border-radius` / `box-sizing` | `block` / `50%` / `border-box` | 同值 | 同值 | 同值 |
-| 环中心坐标 | `702,397` | `702,397` | `702,397` | `702,397` |
+| 底色 | `rgb(255, 255, 255)` | — | `rgb(18, 18, 18)` | — |
 
 **负向对照（决定这张表还算不算数）**：把构建产物里的选择器改回 `#boot-skeleton .bs-spinner`，
 同一段探针再量 —— 占位环仍是 `40×40`（它本来就该有），但注入到 `#boot-skeleton` 之外的环
-双双塌成 **`0×0`**（`display:inline`、`border-top-style:none`、`animation-name:none`）。
+双双塌成 **`0×0`**（拿不到 `width/height`、`stroke-width` 回落 `1px`、`animation-name` 变 `none`）。
 测量有区分力，上面那张表不是自我安慰。
 
 登录检查态另外拿到了**端到端像素证据**：容器盒 `682..722`、容器中心 `702`、环中心 `702`，精确居中。
 
-### 一个反直觉的实测：`3.5px` 在 Chrome 里 computed 是 `3px`
+### ⭐ 为什么是 SVG 不是 border：一条只有引擎才告诉你的规则
 
-DSF=1 与 DSF=2 都是 `3px`（subpixel 边框取整），两侧一致，不影响一致性结论。
-但将来任何人用 DevTools 量到 3px 会怀疑规格漂了，所以 `index.html` 的注释里写明了这句：
-判断规格有没有被改，看的是源码里的 `3.5px` 与 `spinnerUnified` 的断言，不是 computed 值。
+第一版把环画成 CSS `border`（`border: 3.5px solid color-mix(…)` + `border-top-color`），
+视觉上和 SVG 一模一样，但 CI 的 `audit:perf` 当场截住了：
+
+| 版本 | 回访 FCP | 回访 LCP | 冷启动 FCP |
+|---|---|---|---|
+| 32.2.0 | 144 ms | 472 ms | 1876 ms |
+| 32.3.0 | 148 ms | 520 ms | 1904 ms |
+| 第一版（border） | **504 ms ✖**（预算 500） | 504 ms | **3084 ms** |
+| **这一版（SVG）** | **120 ms**（本地实测） | 740 ms | **688 ms**（本地实测） |
+
+**FCP 变差而 LCP 几乎不动**，这个组合的含义是「更早那次绘制不再被算作内容」。
+两个受控实验（**都禁用脚本**，保证 React 永不挂载，页面上只剩启动占位）：
+
+1. 直接跑真实构建产物：`performance.getEntriesByType("paint")` **只有 `first-paint`（44ms），
+   没有 `first-contentful-paint`**。满屏底色和 border 环都画出来了，但都不算内容。
+2. 三个 `data:` URL 页面做 A/B：**CSS border 环 → 只有 `first-paint`；内联 `<svg><circle>` →
+   `first-paint` + `first-contentful-paint`；纯文本 → 两者都有**（对照组，证明测量环境没坏）。
+
+结论：**Chrome 不把纯 CSS `border` 当成内容绘制，内联 SVG 算。**
+32.3.0 的 FCP 锚点其实是 `LoginScreen` 那枚 MUI `CircularProgress`（它渲染的就是内联 `<svg>`）——
+这一轮换成 border 环，锚点就消失了，FCP 只能干等真文本出现，于是与 LCP 重合。
+**用户实际看到东西的时刻一点没变**，但冷启动回访两个 FCP 余量同时被吃掉。
+
+顺带排掉两个错误假设（都用实验证伪了，记在这里免得下次再猜）：
+- 不是底色：把 `--bs-bg` 从 `#ffffff` 改回 `#f7f8fa` 做相对 A/B，**820ms vs 840ms，没有区别**。
+  底色对齐 MUI `background.default`（`#ffffff` / `#121212`，避免 React 接管那一帧跳浅一档）的改动因此保留。
+- 不是载荷：冷启动传输 334 KB / 回访 4 KB，两版逐字节相同。
+
+处理方式选的是**修因、不放宽门禁**：回访 FCP 预算仍是 500ms（按 `max(实测×1.7, 实测+300)` 定出来的），
+没有为了变绿而放水。
+
+> 附带收益：改成 SVG 之后 `stroke-width: 3.5` 在用户单位里就是 3.5，**不会再被 subpixel 取整成 3px**
+> （旧 border 版本用 DevTools 量到的是 3px，得在注释里专门解释一句才不至于被当成漂移），
+> 而且任意 DSF 下都抗锯齿渲染。
 
 ### 测试：先证明守卫抓得住，再说全绿
 
-新增 `tests/spinnerUnified.test.ts`（6 条）、`tests/spinnerMode.dom.test.tsx`（2 条），
+新增 `tests/spinnerUnified.test.ts`（8 条）、`tests/spinnerMode.dom.test.tsx`（2 条），
 `tests/bootPlaceholder.test.ts` 与 `tests/appLoadingState.dom.test.tsx` 跟着改口径。
-**变异测试跑了 16 条（M1~M16）+ 7 条补洞验证（V1~V7）**，其中三条一开始是**全绿的** ——
-也就是「看起来守住了其实没有」，一并补掉：
+**变异测试跑了 16 条（M1~M16）+ 7 条补洞验证（V1~V7）+ 4 条 SVG 改造后的复验**，
+其中四条一开始是**全绿的** —— 也就是「看起来守住了其实没有」，一并补掉：
 
 | 洞 | 哪种回归会漏过去 | 补法 |
 |---|---|---|
-| **M13** | 往 `index.html` 尾部再写一条 `.bs-spinner{width:60px}`。层叠「后写的赢」，两枚环都变 60px，而「定义恰好一条」那条只数带 `width:40px` 的 | 改成**按规则头计数**，允许恰好 2 条（规格 1 + reduce-motion 1） |
+| **M13** | 往 `index.html` 尾部再写一条 `.bs-spinner{width:60px}`。层叠「后写的赢」，两枚环都变 60px，而「定义恰好一条」那条只数带 `width:40px` 的 | 改成**按规则头计数**（当时）；SVG 化之后选择器变多，再改为**数声明**：`stroke-width` / `stroke-opacity` / 作用于 `.bs-spinner` 的 `width` / `animation` 各恰好 1 次 |
 | **M15** | 把登录检查态那枚 `<Spinner />` 整个删掉（整屏变成空白）—— 原来只断言「至少一处」 | **钉死处数**：LoginScreen 2 / App 1 |
 | **M16** | 把 `data-boot-theme="light"` 档的 `--bs-brand` 改成任意色。旧断言只查「集合里出现过 `#1976d2`」，默认档给了就绿 —— 而占位已变黑环、React 侧还是蓝环，「两个转圈不一样」原样复活 | 四个档位（默认 / 存过亮色 / 系统深色 / 存过深色）**逐档与 React 侧的两个值对齐** |
 | **V1~V5** | `Spinner.tsx` 里加回内联样式：`color:` / `backgroundColor:` / `borderTopColor:` / `borderRadius:` / `width:` —— 旧黑名单只有裸子串 `["width:","border:"]`，JSX 对象字面量是大驼峰，**全都漏网** | 换成按**属性名位置**匹配的前缀正则（`(?<![-\w])['"]?(color\|background\w*\|border\w*\|width\|…)\s*['"]?\s*:`），先剥注释再扫 |
 | **V6** | 调用点给 `<Spinner />` 传 `sx={{ width: 60 }}` —— 处数正则确实会判红，但文案是「少了一处转圈」，会把人误导到错方向 | 补一条独立断言，文案点明「整页级转圈不许按屏定制尺寸/颜色」 |
+| **S1** | `bootStyleBlock()` 原来只取**第一段** `<style>`。另起一段 `<style>.bs-spinner{width:60px}</style>` 是**会生效**的（层叠后写赢，两枚环当场变 60px），而八条断言全绿放过 | 改成**拼接全部 `<style>` 块**；无效变异（写在 `</style>` 之后的纯文本）仍然正确地保持绿 |
 
 `V7` 是**反向验证**：往 `Spinner.tsx` 注释里塞 `color:` / `borderTopColor:` / `sx={{ width: 60 }}` 字样，
 必须仍然全绿 —— 用来证明「剥注释」真的生效、黑名单不误伤说明性文字。实测 0 红。
@@ -108,21 +153,24 @@ DSF=1 与 DSF=2 都是 `3px`（subpixel 边框取整），两侧一致，不影�
 
 | | HEAD (32.3.0) | 这一版 (32.4.0) |
 |---|---|---|
-| 真实首屏 gzip | 285.56 KB | **285.60 KB** |
-| 余量（预算 300 KB，5% 线 285.714 KB） | 5.05% | **5.04%**（距线 0.11 KB） |
+| 真实首屏 gzip | 285.56 KB | **285.69 KB** |
+| 余量（预算 300 KB，5% 线 285.714 KB） | 5.05% | **5.009%** |
 | `index.css` 产物 | `24.90 / 6.00`（文件名 `index-CoLXDYiS.css`） | **同文件名同哈希**（与 HEAD 零 diff） |
 
-+0.04 KB 全在 index chunk，就是 `Spinner` 组件本体（常量 + 三元拼接 + `useTheme` + `data-mode`）
-的压缩后成本 —— 「有个组件在渲染这枚环」这件事的最小代价。raw 侧 `866.80 KB` 与 index chunk
-`256.77 KB` 与 32.3.0 逐字节相同，只有版本号字符串的内容变了导致 gzip 抖了 ~10 字节。
-（数字是 bump 到 32.4.0 之后重新 build 量的 —— `__NAVIHIVE_APP_VERSION__` 会烘进产物，
-所以 bump 前后的构建数字不可混用。）
+⚠️ **余量已经很脆**，而且这条线自己在抖：连跑 5 次 `npm run build`，入口 chunk 每次哈希都不同
+（`DqEBsuBi → YoKSSq4S → B-hOk-IF → C4kG4Arx → 7o1H-26u`，gzip 在 285.6885~285.7051 之间），
+余量 5.003%~5.009%。`mui-core` 与 `index-*.css` 五次 md5 完全一致，所以抖的是入口 ——
+字节级 diff 定位到 `__vite__mapDeps` 里内联了某个懒块的**文件名**，而那个懒块
+（`NavigationCenterDialog`）自身每次构建哈希不同。**这是既有账、与本次无关，但它意味着
+再往首屏加任何一个字节都可能直接踩线。**
 
-> 顺带查清一笔旧账：删掉 `App.tsx` / `LoginScreen.tsx` 的 `CircularProgress` 静态 import
-> **不会**让那坨代码离开首屏包。`mui-core` 三次构建都是同一个哈希 `mui-core-DUmDI99K.js`，
-> `MuiCircularProgress` 仍在里面 —— 因为 `vite.config.ts` 的 `scanFirstScreenMui()` 按「首屏闭包」
-> 归桶，而 `LoginForm.tsx` 还有三处行内 `size={24}` 的按钮 loading。
-> 这是**既有账、不是本次引入**（HEAD 的产物哈希就一样），要退得单独动闭包口径。
+> 顺带查清两笔旧账：
+> 1. 删掉 `App.tsx` / `LoginScreen.tsx` 的 `CircularProgress` 静态 import **不会**让那坨代码
+>    离开首屏包。`mui-core` 三次构建同哈希，`MuiCircularProgress` 仍在里面 ——
+>    因为 `vite.config.ts` 的 `scanFirstScreenMui()` 按「首屏闭包」归桶，而 `LoginForm.tsx`
+>    还有三处行内 `size={24}` 的按钮 loading。要退得单独动闭包口径。
+> 2. 上面那条哈希抖动同样得动 `vite.config.ts`。两件事本轮都没做 —— 它们跟「统一转圈」无关，
+>    硬塞进来只会把回归面糊成一片。
 
 ## 2026-11-06 · 修复：弱网启动不再先闪一屏假卡片骨架，全程只留一个转圈（32.3.0）
 

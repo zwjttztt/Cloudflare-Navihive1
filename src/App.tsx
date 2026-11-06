@@ -176,8 +176,10 @@ import {
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 // Material UI 导入
 import { Container, Box, ThemeProvider, CssBaseline } from "@mui/material";
-// 整页级转圈：全站只有一个实现（40px border 环，规格是 index.html 文档头那条
+// 整页级转圈：全站只有一个实现（40px 内联 SVG 环，规格是 index.html 文档头那条
 // `.bs-spinner` —— 全站唯一一处定义，React 侧靠同一个类名复用它）。
+// 是 SVG 描边环、不是 CSS border 环：border 环不被 Chrome 算作内容绘制，会让首屏
+// FCP 失去锚点（32.4.0 CI 红过一次，理由记在 index.html 的注释里）。
 // 2026-11-06 之前这里用的是 MUI 的
 // <CircularProgress>（SVG 弧线），跟启动占位那个环是两种观感 ——
 // 用户的原话是「两个转圈不一样统一一下」，别再把 CircularProgress 用回整页加载态。

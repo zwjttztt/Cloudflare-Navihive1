@@ -6,9 +6,11 @@
 // 「已经快好了」其实没到。改法定为**全程只留转圈**：启动占位换成静态圆环，
 // 这里的 loading 分支从 SiteListSkeleton 换成转圈，两侧视觉一致。
 // （2026-11-06 当天第二次改：转圈本体从 MUI 的 CircularProgress 换成
-//  components/Spinner —— 它和启动占位是同一个 40px border 环，规格唯一一份写在
-//  index.html 的文档头里（.bs-spinner）；本用例只看「有没有 role=progressbar」，
-//  两者都满足。）
+//  components/Spinner —— 它和启动占位是**同一枚 40px 内联 <svg> 环**（同一份几何、
+//  同一个 .bs-spinner 类名），规格唯一一份写在 index.html 的文档头里；
+//  ⚠️ 是 SVG 描边环，不是 CSS border 环 —— 后者不被 Chrome 算作内容绘制，
+//  会让首屏 FCP 失去锚点（32.4.0 CI 就是这么红的，理由记在 index.html 的注释里）。
+//  本用例只看「有没有 role=progressbar」，两者都满足。）
 //
 // 守三件事：
 //   1. loading 期间有一个 role="status"、可访问名是「正在加载站点」的节点
@@ -181,8 +183,8 @@ test("loading：只有一个 role=status 的转圈，不画假卡片；数据到
         0,
         "⛔ 加载态不许再画 MUI Skeleton（2026-11-06 起全程只留转圈，假卡片会让用户以为内容在加载）"
     );
-    // 转圈本体是 components/Spinner（一个带 role=progressbar 的 span），
-    // 语义上就是 progressbar —— 顺带钉住「真的是转圈」。
+    // 转圈本体是 components/Spinner（一个 <svg role="progressbar">，svg 上挂
+    // role=progressbar 是合法的），语义上就是 progressbar —— 顺带钉住「真的是转圈」。
     // ⚠️ 别改成断言 .MuiCircularProgress-root：整页级转圈已经统一成 Spinner，
     //    那个类名在这里**不会**再出现（见 tests/spinnerUnified.test.ts）。
     assert.ok(

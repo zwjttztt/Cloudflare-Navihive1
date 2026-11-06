@@ -78,11 +78,24 @@ test("不再有假卡片骨架（2026-11-06 用户反馈：弱网下先看到假
     }
 });
 
-test("启动占位是一个居中、indeterminate 旋转的圆环", () => {
+test("启动占位是一个居中、indeterminate 旋转的 SVG 圆环", () => {
     const css = styleBlock();
-    assert.ok(
-        /<div id="boot-skeleton" aria-hidden="true">\s*<div class="bs-spinner"><\/div>\s*<\/div>/u.test(HTML),
-        "body 里应当只有「占位容器 + 一个 .bs-spinner」这层结构"
+    // ⚠️ 2026-11-06（32.4.0）起占位是**内联 SVG**，不是 CSS border 环。
+    //    原因不是审美：禁 JS 的受控实验里，border 环只产生 first-paint、**没有
+    //    first-contentful-paint**，内联 <svg><circle> 才有 —— 首屏 FCP 的锚点就在这儿，
+    //    CI 的「首屏体感审计」实测 border 版把回访 FCP 从 148ms 打到 504ms。
+    //    所以这条断言盯的是「结构里真的有两个 circle + 一段 rotate」，
+    //    把环改回 border（或删掉 circle）都会红。
+    assert.match(
+        HTML,
+        /<div id="boot-skeleton" aria-hidden="true">\s*<svg class="bs-spinner"[^>]*viewBox="0 0 40 40"[^>]*>/u,
+        "body 里应当是「占位容器 + 一个 <svg class=\"bs-spinner\">」，且 viewBox 为 0 0 40 40"
+    );
+    assert.match(HTML, /<circle class="bs-spinner-track"[^>]*\br="18\.25"/u, "缺轨道圆（r=18.25）");
+    assert.match(
+        HTML,
+        /<g transform="rotate\(-135 20 20\)">\s*<circle class="bs-spinner-arc"[^>]*\br="18\.25"\s*\/>\s*<\/g>/u,
+        "缺弧圆，或少了 rotate(-135 20 20)（不转的话那 90° 弧会停在 3 点钟，和原来顶部的位置不同）"
     );
     // ⚠️ 2026-11-06 起这条规则是**不带作用域的**裸 `.bs-spinner`：
     //    React 侧的整页加载态（components/Spinner.tsx）复用同一个类名与同一份定义，
@@ -102,11 +115,14 @@ test("启动占位是一个居中、indeterminate 旋转的圆环", () => {
         "⛔ .bs-spinner 又带作用域了 —— 那样 React 渲染出来的环拿不到样式（它们不在 #boot-skeleton 里）"
     );
     assert.match(css, /@keyframes bs-spin\s*\{/u, "缺 bs-spin 关键帧，转圈不会转");
-    // 尺寸/节奏：40px / 3.5px 环 / 0.9s 线性无限。这套数是全站转圈的唯一规格，
+    // 尺寸/节奏：40px 外径 / 3.5 描边 / 0.22 轨道 / 0.9s 线性无限。这套数是全站转圈的唯一规格，
     // 启动占位与 React 侧都靠它，改一项就等于换了另一种转圈。
     // ⚠️ 用剥过注释的 `bare`：`[^}]*` 会跨过注释，注释里一旦写到同样的声明，
     //    这条断言就会假绿（注释说「宽度写 40px」而代码里已经改成 44px 那种）。
-    assert.match(bare, /\.bs-spinner[^}]*width:\s*40px/u, "直径要 40px");
+    assert.match(bare, /\.bs-spinner\s*\{[^}]*width:\s*40px/u, "外径要 40px");
+    assert.match(bare, /\.bs-spinner\s*\{[^}]*height:\s*40px/u, "外径要 40px（height 也得是）");
+    assert.match(bare, /\.bs-spinner circle\s*\{[^}]*stroke-width:\s*3\.5/u, "描边要 3.5（SVG 用户单位，不会再被取整）");
+    assert.match(bare, /\.bs-spinner \.bs-spinner-track\s*\{[^}]*stroke-opacity:\s*0\.22/u, "轨道要 22% 不透明度");
     assert.match(bare, /\.bs-spinner[^}]*animation:\s*bs-spin\s+0\.9s\s+linear\s+infinite/u, "0.9s 线性无限旋转");
     // 居中：容器自己就是居中盒，别指望内层元素自己定位
     assert.match(css, /#boot-skeleton\s*\{[^}]*display:\s*flex/u, "占位容器要是 flex 容器");

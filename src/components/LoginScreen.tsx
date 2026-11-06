@@ -12,8 +12,10 @@ import CssBaseline from "@mui/material/CssBaseline";
 import { ThemeProvider, alpha, type Theme } from "@mui/material/styles";
 import { lazy, Suspense } from "react";
 
-// 整页级转圈统一走 components/Spinner（40px 的 border 环，规格就是 index.html
+// 整页级转圈统一走 components/Spinner（40px 内联 SVG 环，规格就是 index.html
 // 文档头那条 `.bs-spinner` —— 全站唯一一处定义，这里靠同一个类名复用）。
+// ⚠️ 是 SVG 描边环（两个 <circle>：轨道 + 弧），不是 CSS border 环 —— 后者不被
+// Chrome 算作内容绘制，会让首屏 FCP 失去锚点（32.4.0 CI 红过一次）。
 // 2026-11-06 之前这两处用的是 MUI 的 <CircularProgress size={60} thickness={4}> ——
 // SVG 弧线、转起来弧长还会伸缩，和启动占位那个环是两种观感，
 // 用户的原话就是「两个转圈不一样统一一下」。
