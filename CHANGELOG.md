@@ -12,6 +12,62 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-07 · 修复：对比度审计补等颜色过渡，避免量到补间帧（32.4.1）
+
+> 紧接 32.4.0 的次日修复。**产品代码零改动**：改的是审计脚本自己的采样判据 ——
+> 它漏等了按钮文字色的 CSS 过渡，把补间中间帧当成终值量，于是 CI 报出一条本来
+> 不该存在的对比度不合格。另一半是把上一版留下的 dash 周期注释口径写准
+> （QA 逐度采样实测：`28.67 18.7` 是 2 段，不是手算的 3 段）。
+>
+> 32.4.1 首次推送时 CI 在「对比度审计」失败，**从未发布成功**：没有 tag、没有镜像、
+> 没有部署。本轮有实质代码改动后由修复提交沿用该版本号（沿用 32.1.0 的先例），
+> **不回退到 32.4.0** —— 那会覆盖已发布的 `v32.4.0` 镜像 tag；也不再 bump、
+> 不跑 `script/bump-version.mjs`（会把版本顶到 32.4.2 / 32.5.0）。这是一次有意的例外。
+
+### 改了什么
+
+- **只改审计等待判据，产品代码零改动**：`script/contrast-audit.mjs` 的
+  `waitAnimationsSettled()` 旧写法对 `CSSTransition` 判
+  `transitionProperty === 'opacity'`，`color` / `background-color` / 边框色过渡
+  一条都不等；现在**有限时长的过渡一律等**（`iterations === Infinity` 的装饰性
+  无限动画仍排除），关键帧分支除 opacity 外也认颜色属性。改一处覆盖全部调用点，
+  没有逐个打补丁。另外要求**连续两次**查到「没有在跑的动画」才返回，
+  关掉「过渡晚一帧才起步」的竞态。
+- **修因，不放宽门禁**：`ATTACHMENTS_CONTRAST_BUDGET = 0` 不动、4.5 的 AA 线不动、
+  `src/index.css` 与 `src/components/AttachmentManager.tsx` 的配色不动、
+  `script/auditEnv.mjs` 的测量数学与 `groupAlpha` 不动。
+- **防回归守卫**：`tests/contrastScanner.test.ts` 新增一条（剥注释后）静态断言，
+  钉住等待逻辑不能退化成「只认 opacity」；`tests/scriptSyntax.test.ts` 的用例数
+  保持 35（本轮没新增 `script/*.mjs`）。
+- **两处注释口径修正，产物零变更**：`index.html` 的 `.bs-spinner .bs-spinner-arc`
+  与 `tests/spinnerUnified.test.ts` 补上 QA 的三臂实测（`28.67 86` → 1 段、
+  `28.67 18.7` → 实测 2 段、`10 18.7` → 4 段）与「`ceil(周长/周期)` 只会多数、
+  段数只能实测」的方法论；CSS 注释在构建时被剥掉，构建产物字节不变。
+
+### 证据
+
+- CI 失败样本：`4.46 / 需 4.5  13px  rgba(25, 117, 208, 0.973) on rgb(255,255,255)
+  「清理」`（亮色·附件抽屉·无命中）。QA 在真 Chrome 逐帧抓到与日志逐字段一致的
+  **t=64ms** 那一帧：`[data-attachment-action="prune"]` 的 computed color。
+  终态 `rgb(25, 118, 210)` = **4.60**（达标）。
+- 过渡来源 `src/index.css:1259-1262` 的 `.MuiButtonBase-root`：
+  `color var(--dur-base) ease`，`--dur-base: 220ms`。逐帧：
+  `14ms rgba(24,112,199,0.875)/4.02` → `31ms 0.918/4.23` → `48ms 0.95/4.35`
+  → **`64ms 0.973/4.46`** → `113ms rgb(25,118,210)/4.60`。
+- alpha 是 `s.color` **自身**带的（`script/auditEnv.mjs:866` 的 `fgA` 混白），
+  祖先 opacity 乘积全程 = 1，`groupAlpha`（`:813`）没参与 —— 不是整组淡化误算。
+- 受控实验：注入一条纯 `color` 600ms 过渡且没有 opacity 动画在跑，43 帧里
+  `waitCount` 取值集合 = `{0}`，等待函数完全无感。
+
+### 为什么本地绿、CI 红
+
+**本地 `audit:contrast` 串行 10 次全绿不是「没问题」**：`DIV.MuiBackdrop-root` 的
+opacity 淡入比 color 过渡晚停几十毫秒，恰好把等待撑过了危险窗口，是约 **34ms 的竞态**；
+CI 上先后顺序一反转就扫到中间帧。无命中态是唯一「`b.click()` → 轮询
+`[data-att-state="none-match"]`（150ms）→ `waitAnimationsSettled()` → `SCAN`」的路径，
+缺 `scanHover` 那种 320ms 兜底；其余 17 面都经过 `openAttachmentsAndWait()`（200ms 轮询）
+顺带把过渡跑完。所以验收标准是「0.973 帧不再被扫到」，不是「重跑一次 CI 变绿」。
+
 ## 2026-11-06 · 修复：把「两个转圈」统一成同一个环，全站只剩一份规格（32.4.0）
 
 > 同一天的第四更，紧接 32.3.0。上一版把启动占位换成了 40px 圆环，但 React 侧那三处整页加载态

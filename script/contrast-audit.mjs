@@ -293,33 +293,70 @@ async function openCenterAndWait() {
  * 旧扫描器不混 opacity，所以这些「半透明中途」的帧被当完全不透明量了 —— 一直是绿的，
  * 也一直没意义。判据用 `document.getAnimations()`（CSS animation 与 transition 都会
  * 出现在里面），比「轮询某个数字」准，也不会被常驻的 0.7 之类卡住。
+ *
+ * ⚠️ 2026-11-06 第二次修正：**颜色过渡也要等**。
+ *    CI 的「亮色·附件抽屉·无命中」报 `4.46 / 需 4.5  rgba(25, 117, 208, 0.973)`；
+ *    静态 `--accent: #1976d2` 压白底本该是 4.60，0.973 是补间中间帧（alpha 丢 1.4%
+ *    就翻面）。根因不是配色，是 `.MuiButtonBase-root` 的 `color var(--dur-base)` 过渡
+ *    （src/index.css:1259-1262，--dur-base: 220ms）被这函数漏掉了：旧写法对
+ *    CSSTransition 只放行 `transitionProperty === 'opacity'`，于是 color /
+ *    background-color / transform 过渡一条都不等；点「文档」筛选后按钮颜色还在补间，
+ *    SCAN 就把中间帧当终值量了。QA 在真 Chrome 逐帧复现到同一帧，并做了受控实验
+ *    （纯 color 600ms 过渡全程 waitCount=0）。所以这里改成：
+ *      · 有限时长的 CSSTransition **一律等**（装饰性无限动画已在下面排除）；
+ *      · 关键帧动画除 opacity 外，也认 color / background-color / 边框色 / fill / stroke。
+ *    ⚠️ 光扩白名单还不够：过渡可能在我们第一次查询之后一帧才开始。所以要求
+ *      **连续两次**查到「没有在跑的动画」才返回（同 setNotesLivePreview() 的
+ *      「连续两次命中」写法），把起步滞后的竞态也关掉 —— 只重跑 CI 不算修好。
+ *    ⚠️ 为什么「本地 audit:contrast 串行 10 次全绿」是假安心：
+ *      `DIV.MuiBackdrop-root` 的 opacity 淡入比 color 过渡晚停约 **34ms**，
+ *      恰好把等待撑过了危险窗口 —— 是竞态，不是没有洞；CI 上先后顺序一反转就红。
+ *      逐帧与完整证据见 CHANGELOG 32.4.1 一节。
+ *    ⚠️ **修因，不放宽预算**：`ATTACHMENTS_CONTRAST_BUDGET = 0`、4.5 的 AA 线、
+ *      产品配色（`index.css` / `AttachmentManager.tsx`）与 `auditEnv.mjs` 的
+ *      测量数学 / groupAlpha 一个字节都没动。
  */
 async function waitAnimationsSettled(limitMs = 6000) {
     const deadline = Date.now() + limitMs;
+    let quiet = 0;
     while (Date.now() < deadline) {
         const running = await evaluate(`(() => {
             try {
-                // 只算「会改变 opacity 且会结束」的动画：
-                //   - 装饰性动画（首页 .nav-aurora 的 navAurora 26s 无限循环，只动 transform）
-                //     跟对比度无关，等它等于白等 6 秒 × 5 段 × 2 态；
-                //   - 无限循环（spinner/呼吸灯）永远「没停」，等不出结果。
+                // 关键帧动画里会改观感的属性（CSSTransition 不走这条分支）。
+                // 边框色写成四个方向，是因为 Chrome 的 getKeyframes() 会把
+                // border-color 拆成 border-*-color 返回。
+                const watched = new Set([
+                    'opacity', 'filter', 'color', 'background-color', 'border-color',
+                    'border-top-color', 'border-right-color', 'border-bottom-color',
+                    'border-left-color', 'fill', 'stroke',
+                ]);
                 return document.getAnimations().filter(a => {
                     if (a.playState !== 'running') return false;
                     const t = a.effect && a.effect.getTiming ? a.effect.getTiming() : {};
+                    // 装饰性动画（首页 .nav-aurora 的 navAurora 26s 无限循环）与
+                    // spinner/呼吸灯永远「没停」，等不出结果 —— 只等有限时长的。
                     if (t.iterations === Infinity) return false;
-                    if (a.transitionProperty) return a.transitionProperty === 'opacity';
+                    // CSSTransition：有限时长的过渡一律等。旧实现只放行 opacity，
+                    // 把 color / background-color 全漏了（见上方 2026-11-06 注释）。
+                    // 万一浏览器没给 transitionProperty，下面的关键帧分支还能兜住颜色。
+                    if (a.transitionProperty) return true;
                     const kf = a.effect && a.effect.getKeyframes ? a.effect.getKeyframes() : [];
-                    return kf.some(k => Object.prototype.hasOwnProperty.call(k, 'opacity'));
+                    return kf.some(k => Object.keys(k).some(p => watched.has(p)));
                 }).length;
             } catch {
                 return 0; // 老浏览器没有 getAnimations：退化成「不等」
             }
         })()`);
-        if (!running) return;
+        if (running === 0) {
+            // 连续两次安静才返回：过渡可能在第一次查询之后一帧才开始。
+            if (++quiet >= 2) return;
+        } else {
+            quiet = 0;
+        }
         await sleep(100);
     }
     // 超时不抛错，但要**说出来**：静默等满 6 秒会被误当成「等过了」。
-    console.warn(`⚠️ 有透明度动画 ${limitMs / 1000}s 内没停，按当前状态量`);
+    console.warn(`⚠️ 有动画（过渡/关键帧）${limitMs / 1000}s 内没停，按当前状态量`);
 }
 
 /**
@@ -520,10 +557,14 @@ async function parkMouse() {
  * 扫一遍悬停态。
  *
  * 每个目标：移过去 → **等过渡跑完** → 量。等待用固定的 320ms 而不是
- * `waitAnimationsSettled()`：后者只认「会改 opacity」的动画，而悬停改的多半是
- * color / background-color（那些过渡它一条都不会等）；同时 320ms 也盖住了
- * 「悬停才浮现」的 opacity 过渡（项目里最长的是 220ms）。
+ * `waitAnimationsSettled()`：悬停要的是「每个目标一个可重复的采样点」，
+ * 而全局 `getAnimations()` 会被别的元素牵动；320ms 也盖住了悬停改的
+ * color / background-color 过渡与「悬停才浮现」的 opacity 过渡
+ * （src/index.css:1259-1262 的 --dur-base: 220ms / --dur-slow: 320ms）。
  * 量早了会把中间帧当成终值 —— 24.4.0 那轮就是被半截动画喂出 24 条假红。
+ *
+ * 注：`waitAnimationsSettled()` 2026-11-06 起**也会**等这些颜色过渡，
+ * 但这里仍保留固定等待 —— 两段判据不同，别顺手把这里改成轮询。
  */
 async function scanHover(label) {
     const targets = await evaluate(HOVER_TARGETS);

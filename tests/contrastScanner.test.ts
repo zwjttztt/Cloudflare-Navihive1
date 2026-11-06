@@ -46,6 +46,13 @@ const mathCode = math
     .map(line => line.replace(/(^|[^:\\])\/\/.*$/, "$1"))
     .join("\n");
 
+/** 剥注释后的遍历/等待源码：注释里会抄旧判据的表达式原文，不剥会把守卫自己判红 */
+const scanCode = scan
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .map(line => line.replace(/(^|[^:\\])\/\/.*$/, "$1"))
+    .join("\n");
+
 test("对比度扫描器：数学核心只有一份（审计脚本引用 auditEnv 的 CONTRAST_CORE）", () => {
     assert.match(
         scan,
@@ -169,5 +176,24 @@ test("对比度扫描器：filter 里的 opacity() 也必须混算（与 opacity
         math,
         /Number\(cs\.opacity\) \* filterOpacity\(cs\.filter\)/,
         "refresh 里没有把 cs.opacity 与 filterOpacity(cs.filter) 相乘：两者应当叠乘，不是取其中一个"
+    );
+});
+
+// ---------------- 动画等待判据（2026-11-07）----------------
+//
+// CI 的「亮色·附件抽屉·无命中」报 4.46，真因是 waitAnimationsSettled() 只等 opacity，
+// 把 .MuiButtonBase-root 的 color 220ms 过渡中间帧当终值量了（详见 CHANGELOG 32.4.1）。
+// 这条守卫钉的是「等待逻辑不能退化回去」：QA 会做反向变异（把 :310 改回只认 opacity）
+// 验证能复现 4.46，那条变异同时也会让本用例红。
+
+test("对比度扫描器：动画等待判据不能退化成「只认 opacity」", () => {
+    assert.ok(
+        !/transitionProperty\s*===\s*['"]opacity['"]/.test(scanCode) &&
+            /if \(a\.transitionProperty\)\s*return true;/.test(scanCode) &&
+            /iterations === Infinity/.test(scanCode) &&
+            /watched\.has\(p\)/.test(scanCode),
+        "⛔ 等待判据退化成只认 opacity（或丢掉了无限动画排除 / 关键帧颜色分支）—— " +
+            "纯 color 过渡会完全不被等，按钮文字色的补间帧会被当终值量出 4.46 假红。" +
+            "这是 CI 已经红过一次的洞，别把 :310 改回去"
     );
 });
