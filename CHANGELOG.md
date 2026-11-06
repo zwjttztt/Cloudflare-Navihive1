@@ -12,6 +12,118 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-06 · 修复：把「两个转圈」统一成同一个环，全站只剩一份规格（32.4.0）
+
+> 同一天的第四更，紧接 32.3.0。上一版把启动占位换成了 40px 圆环，但 React 侧那三处整页加载态
+> 用的还是 MUI 的 `<CircularProgress>` —— 那是 SVG 弧线，**转的同时弧长还在伸缩**，
+> 和 CSS border 环完全是两种观感。两屏一前一后出现，用户看到的是「同一个等待被换了个动画」。
+> 原话：**「两个转圈不一样统一一下」**。
+
+### 改了什么
+
+- **全站只剩一处转圈规格**：`index.html` 文档头的 `.bs-spinner`
+  （`40px` / `3.5px` / 轨道 `22%` 混色 / `0.9s linear infinite`）。
+  关键在于它**故意不带作用域** —— 原来写的是 `#boot-skeleton .bs-spinner`，那样只有启动占位用得上，
+  React 侧就必然得再写一份。现在启动占位的 `<div class="bs-spinner">` 与 React 侧的
+  `<span class="bs-spinner" data-mode=…>` 是**同一个类名、同一份定义**，
+  「两边数值漂开」在结构上不可能发生 —— 不再靠「两份规格 + 一条深层比对守卫」那种只能事后发现漂移的做法。
+- **新增 `src/components/Spinner.tsx`**（72 行）：只干两件事 —— 给 `role='progressbar'` 让读屏知道在等，
+  用 `data-mode={theme.palette.mode}` 告诉 CSS「当前是亮档还是暗档」。**它自己不带任何样式**，
+  也没有 `aria-label`（调用方外层已有 `role=status` + 名字，两个可访问名会被读屏连念两遍）。
+- **三处整页加载态换成 `<Spinner />`**：
+  - `LoginScreen.tsx` 的 `isAuthChecking` 检查态（原 `size={60} thickness={4}`）
+  - 同文件里登录页 lazy chunk 的 `Suspense` 兜底（原同样 60px）
+  - `App.tsx` 的站点列表 loading（原默认 40px `CircularProgress`）
+
+  前两处从 60px 收到 40px 是**有意的**：它要和启动占位接得上，两屏之间不能有大小跳变。
+  已确认真 Chrome 里精确居中（容器中心 702、环中心 702），没有因尺寸变化塌陷。
+- **`src/index.css` 与 HEAD 零 diff**：第一版曾把规格放进 CSS 包的 `.nh-spinner`，
+  等于给同一件事写了第二份定义。现在整段删除 —— 规格只留在 `index.html`，
+  因为那才是「HTML 一到就有东西可画」的位置（首帧不许等 JS，也不许等 CSS 包）。
+  删掉那段还顺带把上一版多花的 0.15 KB gzip 全额还了回去。
+
+### 颜色为什么不跟 `primary.main`（虽然那是最省事的写法）
+
+`primary` 会被用户在「外观 → 强调色」里挑的颜色覆盖（`useThemeController.ts` 的 `primary:{main:accent}`），
+而那个选择存在 `configs` 表里、**不在 localStorage** —— `index.html` 那枚环根本读不到。
+一旦组件跟着 `primary` 走，用户换个主色，两边**又会不一样**，正是这次要治的病。
+所以两档色值写死在 CSS 里：亮档 `#1976d2`（`var(--bs-brand, …)` 的兜底值）、
+暗档 `#90caf9`（组件打 `data-mode="dark"` 现场覆盖）。启动占位在 `#boot-skeleton` 里继承那边的
+`--bs-brand`，本来就不需要 `data-mode` 这条路。
+
+### 真 Chrome 量化：逐项同值，不是「看起来一样」
+
+用 `script/auditEnv.mjs` 的静态产物 + 只读 API 桩 + CDP。尺寸一律取 `offsetWidth/Height`
+（**别用 `getBoundingClientRect()`** —— 旋转元素会随角度在 40→56.6 之间抖）。
+
+| 属性 | 占位(亮) | React(亮) | 占位(暗) | React(暗) |
+|---|---|---|---|---|
+| `offsetWidth×Height` | `40×40` | `40×40` | `40×40` | `40×40` |
+| `border-top-color` | `rgb(25, 118, 210)` | 同值 | `rgb(144, 202, 249)` | 同值 |
+| 轨道色（非 top 边） | `color(srgb 0.098 0.463 0.824 / 0.22)` | 同值 | `color(srgb 0.565 0.792 0.976 / 0.22)` | 同值 |
+| `animation` | `bs-spin 0.9s linear infinite` | 同值 | 同值 | 同值 |
+| `display` / `border-radius` / `box-sizing` | `block` / `50%` / `border-box` | 同值 | 同值 | 同值 |
+| 环中心坐标 | `702,397` | `702,397` | `702,397` | `702,397` |
+
+**负向对照（决定这张表还算不算数）**：把构建产物里的选择器改回 `#boot-skeleton .bs-spinner`，
+同一段探针再量 —— 占位环仍是 `40×40`（它本来就该有），但注入到 `#boot-skeleton` 之外的环
+双双塌成 **`0×0`**（`display:inline`、`border-top-style:none`、`animation-name:none`）。
+测量有区分力，上面那张表不是自我安慰。
+
+登录检查态另外拿到了**端到端像素证据**：容器盒 `682..722`、容器中心 `702`、环中心 `702`，精确居中。
+
+### 一个反直觉的实测：`3.5px` 在 Chrome 里 computed 是 `3px`
+
+DSF=1 与 DSF=2 都是 `3px`（subpixel 边框取整），两侧一致，不影响一致性结论。
+但将来任何人用 DevTools 量到 3px 会怀疑规格漂了，所以 `index.html` 的注释里写明了这句：
+判断规格有没有被改，看的是源码里的 `3.5px` 与 `spinnerUnified` 的断言，不是 computed 值。
+
+### 测试：先证明守卫抓得住，再说全绿
+
+新增 `tests/spinnerUnified.test.ts`（6 条）、`tests/spinnerMode.dom.test.tsx`（2 条），
+`tests/bootPlaceholder.test.ts` 与 `tests/appLoadingState.dom.test.tsx` 跟着改口径。
+**变异测试跑了 16 条（M1~M16）+ 7 条补洞验证（V1~V7）**，其中三条一开始是**全绿的** ——
+也就是「看起来守住了其实没有」，一并补掉：
+
+| 洞 | 哪种回归会漏过去 | 补法 |
+|---|---|---|
+| **M13** | 往 `index.html` 尾部再写一条 `.bs-spinner{width:60px}`。层叠「后写的赢」，两枚环都变 60px，而「定义恰好一条」那条只数带 `width:40px` 的 | 改成**按规则头计数**，允许恰好 2 条（规格 1 + reduce-motion 1） |
+| **M15** | 把登录检查态那枚 `<Spinner />` 整个删掉（整屏变成空白）—— 原来只断言「至少一处」 | **钉死处数**：LoginScreen 2 / App 1 |
+| **M16** | 把 `data-boot-theme="light"` 档的 `--bs-brand` 改成任意色。旧断言只查「集合里出现过 `#1976d2`」，默认档给了就绿 —— 而占位已变黑环、React 侧还是蓝环，「两个转圈不一样」原样复活 | 四个档位（默认 / 存过亮色 / 系统深色 / 存过深色）**逐档与 React 侧的两个值对齐** |
+| **V1~V5** | `Spinner.tsx` 里加回内联样式：`color:` / `backgroundColor:` / `borderTopColor:` / `borderRadius:` / `width:` —— 旧黑名单只有裸子串 `["width:","border:"]`，JSX 对象字面量是大驼峰，**全都漏网** | 换成按**属性名位置**匹配的前缀正则（`(?<![-\w])['"]?(color\|background\w*\|border\w*\|width\|…)\s*['"]?\s*:`），先剥注释再扫 |
+| **V6** | 调用点给 `<Spinner />` 传 `sx={{ width: 60 }}` —— 处数正则确实会判红，但文案是「少了一处转圈」，会把人误导到错方向 | 补一条独立断言，文案点明「整页级转圈不许按屏定制尺寸/颜色」 |
+
+`V7` 是**反向验证**：往 `Spinner.tsx` 注释里塞 `color:` / `borderTopColor:` / `sx={{ width: 60 }}` 字样，
+必须仍然全绿 —— 用来证明「剥注释」真的生效、黑名单不误伤说明性文字。实测 0 红。
+另外单独验了正则本身的命中口径：该命中的 10 条全命中、不该命中的 11 条全不命中
+（`prefers-color-scheme`、`--bs-brand: #1976d2`、`className?: string;`、`border 环` 这类都不撞）。
+
+> 一处**测不到**的地方如实标注：`App.tsx` 列表 loading 那枚环拿不到端到端像素证据。
+> 原因是 `useAccountSession` 与 `useSites.fetchData` 用的是同一个 `api.bootstrap()`，
+> 扣住它只会停在 `isAuthChecking`（登录页那一屏），「已认证 + 站点还在飞」这个中间态在桩服务下不存在。
+> 硬造就是假登录态，没做。它靠「同一组件的真机 40×40 + 注入测量」做几何代理，
+> 加 jsdom 的 `appLoadingState.dom.test.tsx` 兜行为。
+
+### 首屏预算
+
+| | HEAD (32.3.0) | 这一版 (32.4.0) |
+|---|---|---|
+| 真实首屏 gzip | 285.56 KB | **285.60 KB** |
+| 余量（预算 300 KB，5% 线 285.714 KB） | 5.05% | **5.04%**（距线 0.11 KB） |
+| `index.css` 产物 | `24.90 / 6.00`（文件名 `index-CoLXDYiS.css`） | **同文件名同哈希**（与 HEAD 零 diff） |
+
++0.04 KB 全在 index chunk，就是 `Spinner` 组件本体（常量 + 三元拼接 + `useTheme` + `data-mode`）
+的压缩后成本 —— 「有个组件在渲染这枚环」这件事的最小代价。raw 侧 `866.80 KB` 与 index chunk
+`256.77 KB` 与 32.3.0 逐字节相同，只有版本号字符串的内容变了导致 gzip 抖了 ~10 字节。
+（数字是 bump 到 32.4.0 之后重新 build 量的 —— `__NAVIHIVE_APP_VERSION__` 会烘进产物，
+所以 bump 前后的构建数字不可混用。）
+
+> 顺带查清一笔旧账：删掉 `App.tsx` / `LoginScreen.tsx` 的 `CircularProgress` 静态 import
+> **不会**让那坨代码离开首屏包。`mui-core` 三次构建都是同一个哈希 `mui-core-DUmDI99K.js`，
+> `MuiCircularProgress` 仍在里面 —— 因为 `vite.config.ts` 的 `scanFirstScreenMui()` 按「首屏闭包」
+> 归桶，而 `LoginForm.tsx` 还有三处行内 `size={24}` 的按钮 loading。
+> 这是**既有账、不是本次引入**（HEAD 的产物哈希就一样），要退得单独动闭包口径。
+
 ## 2026-11-06 · 修复：弱网启动不再先闪一屏假卡片骨架，全程只留一个转圈（32.3.0）
 
 > 同一天的第三更。用户弱网打开站点，先看到一整屏**假卡片**（`index.html` 里那段纯 CSS

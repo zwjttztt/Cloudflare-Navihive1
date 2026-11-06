@@ -8,10 +8,16 @@
 // 主题壳本来就该跟着这一屏走，没必要让 App 在两处重复搭一遍。
 
 import Box from "@mui/material/Box";
-import CircularProgress from "@mui/material/CircularProgress";
 import CssBaseline from "@mui/material/CssBaseline";
 import { ThemeProvider, alpha, type Theme } from "@mui/material/styles";
 import { lazy, Suspense } from "react";
+
+// 整页级转圈统一走 components/Spinner（40px 的 border 环，规格就是 index.html
+// 文档头那条 `.bs-spinner` —— 全站唯一一处定义，这里靠同一个类名复用）。
+// 2026-11-06 之前这两处用的是 MUI 的 <CircularProgress size={60} thickness={4}> ——
+// SVG 弧线、转起来弧长还会伸缩，和启动占位那个环是两种观感，
+// 用户的原话就是「两个转圈不一样统一一下」。
+import Spinner from "./Spinner";
 
 // 登录页必须 lazy：它是首屏唯一的大组件（732 行），同步引入会把它整份拖进首屏包
 // （实测 index chunk 227 KB → 237 KB，直接顶到预算边上）。
@@ -84,7 +90,7 @@ export default function LoginScreen({
                         bgcolor: "background.default",
                     }}
                 >
-                    <CircularProgress size={60} thickness={4} />
+                    <Spinner />
                 </Box>
             ) : (
                 <Box
@@ -103,7 +109,7 @@ export default function LoginScreen({
                     }}
                 >
                     {/* 登录页是 lazy chunk：没登录的人不该为主界面的代码付流量 */}
-                    <Suspense fallback={<CircularProgress size={60} thickness={4} />}>
+                    <Suspense fallback={<Spinner />}>
                         <LoginForm
                             brandName={brandName}
                             brandTagline={brandTagline}

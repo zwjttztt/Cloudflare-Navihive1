@@ -64,8 +64,20 @@
       ⚠️ 2026-11-06 用户反馈：原来这里画的是「顶栏 + 两组卡片占位」的**假骨架**。
       弱网下用户先看到一整屏假卡片、几百毫秒后才跳成真实的加载态转圈 ——
       观感像「内容已经在加载了其实没有」，前半屏的等待全白费，还得再跳一次形态。
-      所以改成只给一个转圈：React 侧的加载态（App.tsx 的 loading 分支）也是同一个
-      40px 转圈，两侧视觉一致，从打开到内容出现是「转圈 → 内容」，中间不再有形态跳变。
+      所以改成只给一个转圈：React 侧的两处整页加载态（LoginScreen 的 checking 态、
+      App.tsx 的列表 loading 分支）用的是同一个 40px 环（components/Spinner.tsx，
+      规格就是本文件下面 `.bs-spinner` 那一条），两侧视觉一致，从打开到内容出现是
+      「转圈 → 内容」，中间不再有形态跳变。
+
+      ⚠️ 2026-11-06 用户第二次提「两个转圈不一样统一一下」：当时这里是自己画的
+      border 环，React 侧却是 MUI 的 <CircularProgress>（SVG 弧线、弧长还会伸缩），
+      同一段等待换了两种观感。现在两边共用**同一份定义** —— 就是本文件下面那一条
+      `.bs-spinner`（40px / 3.5px / 22% / 0.9s，由 tests/spinnerUnified.test.ts
+      逐项钉住）。
+      ⚠️ 所以「改一处要记得同步另一处」这件事**已经不存在了**：改下面这一条就是改
+      全站唯一的规格，React 侧靠同一个类名复用它 —— 不存在第二份要同步，去别处
+      找第二份规格才是错的（尤其不要再往 src/index.css 写：spinnerUnified 第 2 条
+      明令禁止那里出现同名规则）。
 
       元素 id 仍沿用 boot-skeleton（boot-guard.js 的 SKELETON_ID 与 main.tsx 的
       requestAnimationFrame 都按这个 id 找活：前者判「React 到底挂没挂载」，
@@ -77,7 +89,11 @@
     -->
     <style>
       #boot-skeleton {
-        --bs-bg: #f7f8fa;
+        /* 两档底色 = MUI 默认的 background.default（本项目没覆盖 background）：
+           亮 #fff / 暗 #121212。原来是 #f7f8fa / #12161c，React 接管的那一瞬间
+           底色会浅一档（弱网下尤其明显：占位停得越久，那一下跳越扎眼），
+           所以这里直接用 MUI 的取值，从占位到首帧连底色都不再变。 */
+        --bs-bg: #ffffff;
         --bs-brand: #1976d2;
         position: fixed;
         inset: 0;
@@ -93,37 +109,72 @@
       }
       @media (prefers-color-scheme: dark) {
         #boot-skeleton {
-          --bs-bg: #12161c;
+          --bs-bg: #121212;
           --bs-brand: #90caf9;
         }
       }
       /* 用户存过 light/dark 时以它为准：这两条选择器比上面的 #boot-skeleton 具体，
          会盖过 @media 那条（存的是 system 时 head 里那段脚本不写属性，继续跟系统）。 */
       html[data-boot-theme="dark"] #boot-skeleton {
-        --bs-bg: #12161c;
+        --bs-bg: #121212;
         --bs-brand: #90caf9;
       }
       html[data-boot-theme="light"] #boot-skeleton {
-        --bs-bg: #f7f8fa;
+        --bs-bg: #ffffff;
         --bs-brand: #1976d2;
       }
-      /* 与 MUI CircularProgress 的默认外观对齐：40px、primary 色、0.9s 线性旋转。
-         尺寸/节奏一致，React 接管的瞬间看不出换了执行者。 */
-      #boot-skeleton .bs-spinner {
+      /* ============================================================
+         全站唯一一处「转圈」规格：.bs-spinner（40px / 3.5px / 22% / 0.9s 匀速）
+         ------------------------------------------------------------
+         ⚠️ 它必须待在文档头，而不是 src/index.css 那个 CSS 包：这段存在的全部
+            理由就是「HTML 一到就有东西可画」—— 首帧不许等 JS，也不许等 CSS 包。
+         谁在用它（同一个类名、同一份定义）：
+           · 本页的启动占位：`#boot-skeleton` 里的 `<div class="bs-spinner">`
+           · React 侧的整页加载态：`components/Spinner.tsx`（登录检查态 /
+             站点列表 loading）渲染的 `<span class="bs-spinner" data-mode=…>`
+         所以这条规则**故意不带作用域**（原来写的是 `#boot-skeleton .bs-spinner`）。
+         一个类名、一处定义 = 两边漂移在结构上不可能发生，不需要「两份规格 +
+         一条 deepEqual 守卫」那种只能事后发现漂移的做法
+         （tests/spinnerUnified.test.ts 现在断言的是「真的只有一份」）。
+
+         颜色走 --bs-brand：占位在 `#boot-skeleton` 里，继承那边按主题设的值；
+         React 渲染在别处、继承不到，就落到兜底值 #1976d2（亮色档）。
+         暗色档由组件按 theme.palette.mode 打的 data-mode="dark" 现场覆盖，
+         见下面紧跟的那条规则 —— 占位不需要它（它有自己的 --bs-brand）。
+
+         display: block 是给 React 那个 span 写的（span 默认 inline，
+         width/height 在 inline 元素上不生效，环会变成一个点）；
+         div 本来就是 block，对占位无影响。
+
+         ⚠️ `3.5px` 在 Chrome 里 computed 会显示成 `3px`（subpixel 边框取整，
+            DSF=1 / DSF=2 都是 3px）—— 看到 3px **不是规格漂移**，两侧一致。
+            要判断「规格有没有被改」看的是源码里的 3.5px（以及 spinnerUnified
+            的断言），不是 DevTools 的 computed 值。
+         ============================================================ */
+      .bs-spinner {
+        display: block;
         width: 40px;
         height: 40px;
         border-radius: 50%;
         box-sizing: border-box;
-        border: 3.5px solid color-mix(in srgb, var(--bs-brand) 22%, transparent);
-        border-top-color: var(--bs-brand);
+        border: 3.5px solid color-mix(in srgb, var(--bs-brand, #1976d2) 22%, transparent);
+        border-top-color: var(--bs-brand, #1976d2);
         animation: bs-spin 0.9s linear infinite;
+      }
+      /* 暗色档：只给 React 侧用（它打 data-mode）。启动占位走的是 #boot-skeleton
+         那套 --bs-brand，不需要这条 —— 更不能给它也打属性，否则两份来源又开始打架。 */
+      .bs-spinner[data-mode="dark"] {
+        --bs-brand: #90caf9;
       }
       @keyframes bs-spin {
         to { transform: rotate(360deg); }
       }
-      /* 尊重系统的「减少动效」：只留静态圆环，旋转会让人分心（前庭敏感） */
+      /* 尊重系统的「减少动效」：只留静态圆环，旋转会让人分心（前庭敏感）。
+         这条也不带作用域 —— 启动占位与 React 侧**同时**停转是结构保证，
+         不再需要在两个文件里各写一遍（那种写法一旦漏一处，就是「启动环停着、
+         React 环还在转」的不对称）。 */
       @media (prefers-reduced-motion: reduce) {
-        #boot-skeleton .bs-spinner { animation: none; }
+        .bs-spinner { animation: none; }
       }
     </style>
   </head>

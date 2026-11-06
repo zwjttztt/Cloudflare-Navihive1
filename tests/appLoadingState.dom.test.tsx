@@ -4,7 +4,11 @@
 // 2026-11-06 用户反馈（弱网打开网站）：先看到一整屏假卡片（index.html 里那段纯 CSS
 // 启动占位画的）、跳一下变成骨架、再跳一下才出现真卡片 —— 三次形态跳变，每次都像
 // 「已经快好了」其实没到。改法定为**全程只留转圈**：启动占位换成静态圆环，
-// 这里的 loading 分支从 SiteListSkeleton 换成 CircularProgress，两侧视觉一致。
+// 这里的 loading 分支从 SiteListSkeleton 换成转圈，两侧视觉一致。
+// （2026-11-06 当天第二次改：转圈本体从 MUI 的 CircularProgress 换成
+//  components/Spinner —— 它和启动占位是同一个 40px border 环，规格唯一一份写在
+//  index.html 的文档头里（.bs-spinner）；本用例只看「有没有 role=progressbar」，
+//  两者都满足。）
 //
 // 守三件事：
 //   1. loading 期间有一个 role="status"、可访问名是「正在加载站点」的节点
@@ -177,10 +181,13 @@ test("loading：只有一个 role=status 的转圈，不画假卡片；数据到
         0,
         "⛔ 加载态不许再画 MUI Skeleton（2026-11-06 起全程只留转圈，假卡片会让用户以为内容在加载）"
     );
-    // 转圈本体是 MUI CircularProgress，语义上是 progressbar —— 顺带钉住「真的是转圈」
+    // 转圈本体是 components/Spinner（一个带 role=progressbar 的 span），
+    // 语义上就是 progressbar —— 顺带钉住「真的是转圈」。
+    // ⚠️ 别改成断言 .MuiCircularProgress-root：整页级转圈已经统一成 Spinner，
+    //    那个类名在这里**不会**再出现（见 tests/spinnerUnified.test.ts）。
     assert.ok(
         node!.querySelector('[role="progressbar"]') !== null,
-        "role=status 里面应当是一个 CircularProgress"
+        "role=status 里面应当是一个 role=progressbar 的转圈（components/Spinner）"
     );
     assert.ok(!bodyText().includes("加载态分组"), "数据还没回来，不该已经有分组内容");
     assert.equal(retryButton(), null, "重试已经点下去了，错误面板不该还挂着（那份错误已被清掉）");

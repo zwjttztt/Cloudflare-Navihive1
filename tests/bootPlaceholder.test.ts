@@ -84,22 +84,67 @@ test("启动占位是一个居中、indeterminate 旋转的圆环", () => {
         /<div id="boot-skeleton" aria-hidden="true">\s*<div class="bs-spinner"><\/div>\s*<\/div>/u.test(HTML),
         "body 里应当只有「占位容器 + 一个 .bs-spinner」这层结构"
     );
-    assert.match(css, /#boot-skeleton \.bs-spinner\s*\{/u, "缺 .bs-spinner 的样式");
+    // ⚠️ 2026-11-06 起这条规则是**不带作用域的**裸 `.bs-spinner`：
+    //    React 侧的整页加载态（components/Spinner.tsx）复用同一个类名与同一份定义，
+    //    全站只有这一处规格（tests/spinnerUnified.test.ts 钉着「只有一条」）。
+    //    所以这里断言裸选择器存在，同时禁止它又退回带作用域的写法。
+    //    选择器断言一律先剥注释：注释里写着「原来写的是 `#boot-skeleton .bs-spinner`」，
+    //    不剥的话守卫会被自己的说明判红。
+    const bare = css.replace(/\/\*[\s\S]*?\*\//gu, "");
+    assert.match(
+        bare,
+        /(?:^|\})\s*\.bs-spinner\s*\{/u,
+        "缺（不带作用域的）.bs-spinner 样式 —— React 侧要复用它，别写回 #boot-skeleton .bs-spinner"
+    );
+    assert.equal(
+        /#boot-skeleton \.bs-spinner\s*\{/u.test(bare),
+        false,
+        "⛔ .bs-spinner 又带作用域了 —— 那样 React 渲染出来的环拿不到样式（它们不在 #boot-skeleton 里）"
+    );
     assert.match(css, /@keyframes bs-spin\s*\{/u, "缺 bs-spin 关键帧，转圈不会转");
-    // 尺寸/节奏与 MUI CircularProgress 默认值对齐（40px / 0.9s 线性）：
-    // 两边一致才不会在 React 接管的瞬间跳一下
-    assert.match(css, /\.bs-spinner[^}]*width:\s*40px/u, "直径要 40px，与 CircularProgress 默认值一致");
-    assert.match(css, /\.bs-spinner[^}]*animation:\s*bs-spin\s+0\.9s\s+linear\s+infinite/u, "0.9s 线性无限旋转，对齐 MUI 默认节奏");
+    // 尺寸/节奏：40px / 3.5px 环 / 0.9s 线性无限。这套数是全站转圈的唯一规格，
+    // 启动占位与 React 侧都靠它，改一项就等于换了另一种转圈。
+    // ⚠️ 用剥过注释的 `bare`：`[^}]*` 会跨过注释，注释里一旦写到同样的声明，
+    //    这条断言就会假绿（注释说「宽度写 40px」而代码里已经改成 44px 那种）。
+    assert.match(bare, /\.bs-spinner[^}]*width:\s*40px/u, "直径要 40px");
+    assert.match(bare, /\.bs-spinner[^}]*animation:\s*bs-spin\s+0\.9s\s+linear\s+infinite/u, "0.9s 线性无限旋转");
     // 居中：容器自己就是居中盒，别指望内层元素自己定位
     assert.match(css, /#boot-skeleton\s*\{[^}]*display:\s*flex/u, "占位容器要是 flex 容器");
     assert.match(css, /#boot-skeleton\s*\{[^}]*justify-content:\s*center/u, "转圈要水平居中");
     assert.match(css, /#boot-skeleton\s*\{[^}]*align-items:\s*center/u, "转圈要垂直居中");
     // 「避免白屏」仍是这段存在的唯一理由：底色必须在
     assert.match(css, /#boot-skeleton\s*\{[^}]*background:\s*var\(--bs-bg\)/u, "占位必须自带底色，否则白屏照旧");
+    // 底色两档要与 MUI 默认的 background.default 完全一致（亮 #ffffff / 暗 #121212）：
+    // 2026-11-06 之前是 #f7f8fa / #12161c，React 接管的那一瞬间底色会浅一档 ——
+    // 弱网下占位停得越久，那一下越扎眼。两边同值，从占位到首帧连底色都不再变。
+    assert.match(
+        css,
+        /#boot-skeleton\s*\{\s*(?:\/\*[\s\S]*?\*\/\s*)?--bs-bg:\s*#ffffff/u,
+        "亮色底色要 #ffffff（= MUI background.default），别再用 #f7f8fa"
+    );
+    assert.match(
+        css,
+        /html\[data-boot-theme="light"\] #boot-skeleton\s*\{\s*--bs-bg:\s*#ffffff/u,
+        "存过亮色的用户同样要拿到 #ffffff"
+    );
+    // 暗色档在两处（系统深色 + 用户存过深色），都必须与 MUI 的 #121212 对齐
+    const darkBgs = Array.from(css.matchAll(/--bs-bg:\s*(#[0-9a-fA-F]{6})/gu), m => m[1].toLowerCase());
+    assert.equal(
+        darkBgs.filter(bg => bg === "#121212").length,
+        2,
+        `暗色底色 #121212 应当出现两次（@media 深色 + data-boot-theme="dark"），实际取到的：${darkBgs.join("、")}`
+    );
+    assert.equal(
+        darkBgs.includes("#12161c"),
+        false,
+        "⛔ 还有 #12161c —— 它和 MUI 的 background.default（#121212）差一档，接续时会跳"
+    );
 });
 
 test("主题跟随与「减少动效」都还在（存过主题时以用户存的为准）", () => {
     const css = styleBlock();
+    // 选择器断言一律先剥注释（同上面那条用例的理由：注释里写着旧写法的原文）
+    const bare = css.replace(/\/\*[\s\S]*?\*\//gu, "");
     assert.match(css, /@media \(prefers-color-scheme: dark\)/u, "系统深色下要换成深底+浅色圆环");
     assert.match(
         css,
@@ -113,9 +158,18 @@ test("主题跟随与「减少动效」都还在（存过主题时以用户存�
     );
     // 晕动症：系统要求减少动效时不能还在转
     assert.match(css, /@media \(prefers-reduced-motion: reduce\)/u, "缺 prefers-reduced-motion 分支");
+    // 同样是不带作用域的裸选择器：这条一停，React 侧那枚环也一起停（结构保证），
+    // 不会再出现「启动环停着、React 环还在转」那种不对称。
     assert.match(
-        css,
-        /@media \(prefers-reduced-motion: reduce\)\s*\{\s*#boot-skeleton \.bs-spinner\s*\{\s*animation:\s*none;?\s*\}\s*\}/u,
-        "减少动效时要停掉旋转，只留静态圆环"
+        bare,
+        /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.bs-spinner\s*\{\s*animation:\s*none;?\s*\}\s*\}/u,
+        "减少动效时要停掉旋转，只留静态圆环（且要不带作用域，让 React 侧一起停）"
+    );
+    // 反向再钉一次：不接受「带作用域」的写法 —— 那种写法只有启动占位会停，
+    // React 侧照样在转，等于把「同时停转」的结构保证退回成「两处各写一遍」。
+    assert.equal(
+        /@media \(prefers-reduced-motion: reduce\)\s*\{\s*#boot-skeleton \.bs-spinner/u.test(bare),
+        false,
+        "⛔ 减少动效那条又按作用域写了 —— React 渲染的环在这个偏好下会继续转"
     );
 });

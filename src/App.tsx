@@ -156,7 +156,7 @@ import SiteListErrorState from "./components/SiteListErrorState";
 // 标签筛选栏只在「有用过的标签 / 检出失效链接 / 正在按星标筛」时才出现，
 // 首屏绝大多数时候渲染它也是白占体积 —— 走 lazy，块按需下载。
 const TagBar = lazy(() => import("./components/TagBar"));
-// 加载态直接用 MUI 的 CircularProgress（首屏已有），不再单独 lazy 一个骨架屏组件：
+// 加载态直接用 components/Spinner（自带样式，首屏已有），不再单独 lazy 一个骨架屏组件：
 // 那张「假卡片骨架」2026-11-06 按用户反馈退场了，见下面 loading 分支的注释。
 // 断网提示 / 维护横幅 / 提示条 / 限流条的懒加载与常驻决定，都跟着挂载点搬到了
 // components/app/AppOverlays.tsx（每条为什么 lazy、为什么常驻，注释一起搬过去了）。
@@ -175,13 +175,13 @@ import {
 } from "@dnd-kit/core";
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 // Material UI 导入
-import {
-    Container,
-    Box,
-    CircularProgress,
-    ThemeProvider,
-    CssBaseline,
-} from "@mui/material";
+import { Container, Box, ThemeProvider, CssBaseline } from "@mui/material";
+// 整页级转圈：全站只有一个实现（40px border 环，规格是 index.html 文档头那条
+// `.bs-spinner` —— 全站唯一一处定义，React 侧靠同一个类名复用它）。
+// 2026-11-06 之前这里用的是 MUI 的
+// <CircularProgress>（SVG 弧线），跟启动占位那个环是两种观感 ——
+// 用户的原话是「两个转圈不一样统一一下」，别再把 CircularProgress 用回整页加载态。
+import Spinner from "./components/Spinner";
 import ChunkBoundary from "./components/ChunkBoundary";
 // 记事本加载骨架：做成**懒块**（动态 import），不写进 index.html 的 preload，
 // 因此不计入首屏预算（那条 5% 余量红线盯的是首屏字节，骨架只在打开记事本时才按需下载）。
@@ -1879,8 +1879,8 @@ function App() {
                         // 也是同一套假骨架 —— 弱网下用户先看几秒假卡片、再跳成骨架、
                         // 数据到位后再跳成真卡片，三次形态跳变，每次都像「快好了」其实没到。
                         // 现在从 HTML 到这批列表之间**全程只有一个转圈**：index.html 的
-                        // 静态圆环（.bs-spinner）→ 这里的 CircularProgress，两者尺寸/节奏
-                        // 对齐（40px / 0.9s 线性，即 MUI 默认值），接续处没有跳变。
+                        // 静态圆环（.bs-spinner）→ 这里的 <Spinner>（同一个类名、同一份
+                        // 定义，都在 index.html 文档头那条规则里），接续处没有跳变。
                         // role=status + aria-label 给读屏一句话；转圈常驻会让人误以为
                         // 一直在加载，所以只在 loading 期间挂载（error 分支在上面）。
                         <Box
@@ -1892,7 +1892,7 @@ function App() {
                                 py: 10,
                             }}
                         >
-                            <CircularProgress />
+                            <Spinner />
                         </Box>
                     ) : (
                         // ⚠️ 必须常驻（不能传 when 之类的条件）：它得在**卡片渲染崩掉的那一刻**
