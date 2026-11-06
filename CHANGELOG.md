@@ -12,6 +12,113 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-06 · 修复：弱网启动不再先闪一屏假卡片骨架，全程只留一个转圈（32.3.0）
+
+> 同一天的第三更。用户弱网打开站点，先看到一整屏**假卡片**（`index.html` 里那段纯 CSS
+> 启动骨架画的）、再跳成转圈、再跳成真卡片 —— 三次形态跳变，每次都像「已经快好了」其实没到。
+> 原话：**「网络不好时打开网站先显示这个界面再显示转圈，不要显示这个界面」**。
+
+### 改了什么
+
+- **`index.html` 的启动占位**：从「顶栏 + 两组各 5 张卡片占位 + 扫光动画」换成**居中 40px 圆环**
+  （`.bs-spinner`，`border-top-color` 上色 + `0.9s linear infinite` 旋转）。
+  一次性删掉 `.bs-bar / .bs-dot / .bs-search / .bs-title / .bs-grid / .bs-card / .bs-shimmer`
+  与 `bs-sweep` 关键帧，`--bs-surface` / `--bs-line` 两个只被骨架用到的变量一起删。
+  保留的部分一个没少：底色 `--bs-bg`（避免白屏是它存在的唯一理由）、
+  `prefers-color-scheme` + `html[data-boot-theme]` 两套主题覆盖、`prefers-reduced-motion` 停转。
+- **`src/App.tsx` 的列表加载态**：`<ChunkBoundary><SiteListSkeleton /></ChunkBoundary>`
+  → `<Box role='status' aria-label='正在加载站点'><CircularProgress /></Box>`。
+  `error → loading → 列表` 的优先级没动（error 仍排最前，理由写在原地）。
+- **删掉 `src/components/SiteListSkeleton.tsx`** 及其 `lazy()` 声明、`dialogChunks.siteSkeleton`
+  预取条目、`tests/lazyPrefetch` 里的 key —— 它已经没人渲染了，留着就是死代码。
+- 两侧尺寸/节奏对齐（40px / 0.9s 线性 = MUI `CircularProgress` 默认值），
+  所以「HTML 圆环 → React 圆环」接续处看不出换了执行者。
+
+### ⚠️ 一个 id 的坑：名字还叫 `boot-skeleton`，但它已经不是骨架
+
+`public/boot-guard.js` 的 `SKELETON_ID = "boot-skeleton"` 靠这个 id 判「React 到底挂没挂载」
+（15 秒后还能 `getElementById` 到它 = 主模块没执行 → 清 Cache Storage + 注销 SW + 刷新一次），
+`src/main.tsx:145` 的 `requestAnimationFrame` 也按同一个 id 删节点。**改名会同时打断这两条自救链路**，
+所以 id 原样保留，只在注释里写清「别按字面理解」。`tests/bootPlaceholder.test.ts` 第 1 条钉着
+这层三方一致（HTML 的 id ↔ boot-guard 的常量 ↔ main.tsx 的 getElementById）。
+
+### 真 Chrome 弱网实测（不是单测，也不是推算）
+
+用 `script/auditEnv.mjs` 的静态产物 + 只读 API 桩 + CDP，`Fetch.enable` 精确按住
+`*assets/index-*.js` 与 `*api/bootstrap*`（**必须先 `Network.setBypassServiceWorker(true)` +
+`setCacheDisabled(true)`**，否则第二次导航命中内存缓存 / SW，请求根本拦不到 —— 第一版探针就是这么假失败的）。
+
+| 采样 | 假卡片节点数 | `#boot-skeleton` | `.bs-spinner` | 底色 |
+|---|---|---|---|---|
+| 566ms | **0** | 在 | 40×40 | `rgb(247,248,250)` |
+| 1567ms | **0** | 在 | 40×40 | 同上 |
+| 3077ms | **0** | 在 | 40×40 | 同上 |
+
+暗色（`Emulation.setEmulatedMedia`）底色 `rgb(18,22,28)`、环 `#90caf9`；
+`prefers-reduced-motion: reduce` 下 `animationName = none`（静止圆环）。
+`document.elementFromPoint(视口中心)` 命中的是 `.bs-spinner` —— 转圈在最上层，没有别的东西挡着。
+
+**注水后的真实形态链**（每 ~100ms 采样）：`40px 静态环 → 60px MUI 环（登录页 checking 态）→ 内容`，
+全程假卡片恒 0，也没有出现「既无转圈又无内容」的帧（占位在 `#root` 内，`createRoot` 首次提交
+清空容器与插入 LoginScreen 是同一次提交）。
+
+> 顺带纠正一个容易看错的地方：冷启动时**列表的 loading 分支其实永远看不到** ——
+> `App.tsx` 的 `isAuthChecking` 门控会先渲染登录页的 checking 转圈，bootstrap 回来后才轮到列表区。
+> 它只在「重试 / 刷新 / 缓存已垫底后的静默刷新」出现，新 dom 用例正是走「错误面板 → 重试」这条真实可达路径。
+
+### 顺手修掉的一处像素缺陷
+
+旧骨架的 `padding: 20px 20px 40px`（给卡片网格留底部空隙）在换成 flex 居中后把圆环顶高了
+`(40−20)/2 = 10px`。真 Chrome 实测 `dy = −10.00`，改成 `padding: 20px` 后 `dy = 0.00`。
+（横向那个 `dx = −5` 是假象：`position:fixed;inset:0` 的参照盒宽 1404 而非 1414，
+隐藏滚动条留了 10px 槽，以真实包含块为准横向正好 0。）
+
+### 测试：先证明它抓得住，再说全绿
+
+- 新增 `tests/bootPlaceholder.test.ts`（4 条，静态读 `index.html`）：钉 id + `aria-hidden` +
+  `main.tsx` 的 `getElementById`；钉 `.bs-card/.bs-bar/.bs-title/.bs-shimmer/…` **不许回潮**；
+  钉 `.bs-spinner` + `bs-spin` + 40px + `0.9s linear infinite` + flex 居中 + `--bs-bg` 底色；
+  钉主题与减动效四条覆盖。
+- 新增 `tests/appLoadingState.dom.test.tsx`（1 条，**真渲染 App**）：bootstrap 先 500 → 错误面板 →
+  点重试让 bootstrap 挂住 → 断言 `[role=status][aria-label=正在加载站点]` 在、`.MuiSkeleton-root` 为 **0**、
+  里面真的是 `[role=progressbar]` → 放行 → 断言转圈退场且分组与站点都渲染出来。
+- QA 5 处变异：M1 塞回假卡片 → 红 2 条；M2 改 id → `bootPlaceholder` 3/4 红；
+  M3 整段回退成 `SiteListSkeleton` → 红（在 `pollUntil` 超时）；**M3b** 保留 `role=status` 但里面画骨架
+  → 精确红在骨架那条（`12 !== 0`，12 = 2 组 ×（1 标题 + 5 卡片）），证明那条断言是活的；
+  M4 删 `aria-label` / M5 删 `role` → 各红 1 条。
+- **挖出一个真缺口（已知、暂不修）**：`tests/bootGuard.test.ts` **抓不到** `index.html` 的 id 改名 ——
+  它用 `vm` 把 `boot-guard.js` 跑在假 DOM 上，`getElementById` 只在 `id === "boot-skeleton"` 时返回对象，
+  依赖的是**脚本里的常量**而不是 HTML。目前由 `bootPlaceholder.test.ts` 顶着，两边一致有守卫。
+
+### 门禁
+
+`typecheck` 0 error / `eslint` **0 error（26 存量 warning，无新增）** /
+全量单测 **4075 tests / 4074 pass / 0 fail / 1 skipped**（skip 是 Windows 软链 `EPERM` 的老问题）/
+`build` ✓ / **首屏 gzip 285.56 KB（预算 300，余量 5.06%）** / 首屏 raw 866.68 KB（预算 920）/
+index chunk raw 256.65 KB（预算 270）/ smoke ✓ /
+`audit:a11y` 0 项不合格（新增的 `role=status` 既没被算成未命名元素，也不在可点判据里）/
+`audit:contrast` 亮暗各 0 处 / `check:strict-idx` 366 处 62 文件、豁免 62（两个新测试在 `tests/` 下，
+不在严格层范围，守卫范围没变）/ `check:brand` 三处一致。
+
+**首屏反而小了 0.08 KB**：`CircularProgress` 本来就在首屏的 `mui-core` 块里
+（产物里 `MuiCircularProgress` 在 index 块 0 次、mui-core 块 7 次，而 mui-core 是 `index.html`
+里 `modulepreload` 的首屏块），所以新增 import 不把 MUI 拉进 index、也不新增请求；
+同时删掉骨架组件的 lazy 声明与预取条目又省了一点，净下来是负的。
+
+`audit:visual` 本轮**没跑**（观察期、CI 上也是 `continue-on-error`），**未**执行 `--update`：
+启动占位从骨架换成圆环、加载态从骨架换成转圈，像素差异是预期的。
+
+### 已知可接受（如实记）
+
+1. **40px → 60px 的尺寸跳变**：`LoginScreen.tsx:87` 的 checking 态是 `CircularProgress size={60}`，
+   弱网下会停留在 60px 数秒。要彻底不跳就得改那一处，本次没动（登录页的 60px 是既有设计）。
+2. **底色微跳**：占位 `#f7f8fa` → React 亮色 `background.default` = `#ffffff`（7/255 的差，肉眼几乎看不出）；
+   暗色 `#12161c` vs `#121212` 同理。
+3. **首屏 gzip 距 5% 余量线只剩 0.15 KB**：这是门禁设计意图，下次任何首屏新增都会红 ——
+   **别去抬预算**，走「合并两个 ErrorBoundary / 拆 clientMethods」那两条旧账。
+4. `boot-guard.js` 的 15 秒自救**没有**在真浏览器里跑过（要挂 15s+ 且要可控的 chunk 404）：
+   本次只换了占位内容、id 未变，机制不依赖内容，单测覆盖 6 条分支。
+
 ## 2026-11-06 · 修复：复制胶囊的入口从下拉里提出来、直接摆在工具栏上（32.2.0）
 
 > 同一天的第二更，只改**入口位置**，语法与渲染一个字没动。上一版（32.1.0）为了省宽度，

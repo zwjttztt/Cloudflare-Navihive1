@@ -64,5 +64,4 @@ export const dialogChunks = {
     // 注销确认弹窗：只对普通账号渲染（站点所有者没有入口），块照旧备着
     deleteAccount: () => import("../components/DeleteAccountDialog"),
     tagBar: () => import("../components/TagBar"),
-    siteSkeleton: () => import("../components/SiteListSkeleton"),
 };

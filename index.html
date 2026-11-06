@@ -54,39 +54,46 @@
     <script src="/boot-guard.js" defer></script>
 
     <!--
-      启动骨架（纯 CSS，无 JS / 无外链）。
+      启动占位（纯 CSS，无 JS / 无外链）：居中一个转圈。
 
-      为什么必须有这一段：`<div id="root">` 原本是空的，而真正的骨架屏
-      `SiteListSkeleton` 自己也是 lazy 组件 —— 它要等首屏那批 JS（gzip 约 282 KB）
-      下载完才会渲染。也就是说从 HTML 到达到 React 挂载之间是**纯白屏**，弱网下能白几秒。
+      为什么必须有这一段：`<div id="root">` 原本是空的，而 React 侧的加载态也要等
+      首屏那批 JS（gzip 约 285 KB）下载完才会渲染。也就是说从 HTML 到达到 React 挂载
+      之间是**纯白屏**，弱网下能白几秒。这段内联 CSS 在 HTML 到达的同一帧就把转圈画
+      出来，这段等待才有反馈。内联是刻意的：外链 CSS 又是一次往返。
 
-      这里用几十行内联 CSS 在 HTML 里先画出结构（顶栏 + 两组卡片占位），
-      React 一挂载就把它整块清掉，视觉上「结构先出现、内容后填充」，不再有白屏。
-      内联是刻意的：外链 CSS 又是一次往返，而这段必须在 HTML 到达的同一帧就能画出来。
+      ⚠️ 2026-11-06 用户反馈：原来这里画的是「顶栏 + 两组卡片占位」的**假骨架**。
+      弱网下用户先看到一整屏假卡片、几百毫秒后才跳成真实的加载态转圈 ——
+      观感像「内容已经在加载了其实没有」，前半屏的等待全白费，还得再跳一次形态。
+      所以改成只给一个转圈：React 侧的加载态（App.tsx 的 loading 分支）也是同一个
+      40px 转圈，两侧视觉一致，从打开到内容出现是「转圈 → 内容」，中间不再有形态跳变。
+
+      元素 id 仍沿用 boot-skeleton（boot-guard.js 的 SKELETON_ID 与 main.tsx 的
+      requestAnimationFrame 都按这个 id 找活：前者判「React 到底挂没挂载」，
+      后者负责删节点），但内容已经不是一个骨架了 —— 别按 id 的字面意思理解。
+      ⚠️ 改名会同时打断那两条链路，别改。
 
       CSP 允许 `style-src 'self' 'unsafe-inline'`（MUI/emotion 运行时插样式需要），
-      所以这里不需要 nonce。骨架本身无任何文本，不参与对比度/焦点审计。
+      所以这里不需要 nonce。转圈本身无任何文本，不参与对比度/焦点审计。
     -->
     <style>
       #boot-skeleton {
         --bs-bg: #f7f8fa;
-        --bs-surface: #ffffff;
-        --bs-line: #e8ecf1;
         --bs-brand: #1976d2;
         position: fixed;
         inset: 0;
         z-index: 0;
         background: var(--bs-bg);
-        padding: 20px 20px 40px;
+        padding: 20px;
         box-sizing: border-box;
         overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         font-family: Inter, "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
       }
       @media (prefers-color-scheme: dark) {
         #boot-skeleton {
           --bs-bg: #12161c;
-          --bs-surface: #1b212a;
-          --bs-line: #262e39;
           --bs-brand: #90caf9;
         }
       }
@@ -94,92 +101,29 @@
          会盖过 @media 那条（存的是 system 时 head 里那段脚本不写属性，继续跟系统）。 */
       html[data-boot-theme="dark"] #boot-skeleton {
         --bs-bg: #12161c;
-        --bs-surface: #1b212a;
-        --bs-line: #262e39;
         --bs-brand: #90caf9;
       }
       html[data-boot-theme="light"] #boot-skeleton {
         --bs-bg: #f7f8fa;
-        --bs-surface: #ffffff;
-        --bs-line: #e8ecf1;
         --bs-brand: #1976d2;
       }
-      #boot-skeleton .bs-bar {
-        height: 56px;
-        border-radius: 14px;
-        background: var(--bs-surface);
-        margin-bottom: 28px;
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 0 16px;
-      }
-      #boot-skeleton .bs-dot {
-        width: 22px;
-        height: 22px;
-        border-radius: 7px;
-        background: var(--bs-brand);
-        flex: none;
-      }
-      #boot-skeleton .bs-search {
-        height: 30px;
-        flex: 1;
-        max-width: 320px;
-        border-radius: 15px;
-        background: var(--bs-line);
-      }
-      #boot-skeleton .bs-title {
-        width: 150px;
-        height: 26px;
-        border-radius: 8px;
-        background: var(--bs-line);
-        margin: 0 0 16px 4px;
-      }
-      #boot-skeleton .bs-grid {
-        display: flex;
-        flex-wrap: wrap;
-        margin: -8px;
-      }
-      #boot-skeleton .bs-card {
+      /* 与 MUI CircularProgress 的默认外观对齐：40px、primary 色、0.9s 线性旋转。
+         尺寸/节奏一致，React 接管的瞬间看不出换了执行者。 */
+      #boot-skeleton .bs-spinner {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
         box-sizing: border-box;
-        padding: 8px;
-        width: 50%;
+        border: 3.5px solid color-mix(in srgb, var(--bs-brand) 22%, transparent);
+        border-top-color: var(--bs-brand);
+        animation: bs-spin 0.9s linear infinite;
       }
-      @media (min-width: 600px) {
-        #boot-skeleton .bs-card { width: 33.33%; }
+      @keyframes bs-spin {
+        to { transform: rotate(360deg); }
       }
-      @media (min-width: 900px) {
-        #boot-skeleton .bs-card { width: 25%; }
-      }
-      @media (min-width: 1536px) {
-        #boot-skeleton .bs-card { width: 20%; }
-      }
-      #boot-skeleton .bs-card > i {
-        display: block;
-        height: 104px;
-        /* 跟真实卡片同一个变量（head 里的 boot-theme.js 会先把用户存的圆角档位
-           种到 <html> 上），兜底 22px 与默认「圆润」档一致 ——
-           写死 12px 时 React 挂载瞬间整屏「圆角张开」。 */
-        border-radius: var(--card-radius, 22px);
-        background: var(--bs-surface);
-      }
-      #boot-skeleton .bs-shimmer {
-        background-image: linear-gradient(
-          90deg,
-          transparent 0%,
-          color-mix(in srgb, var(--bs-brand) 10%, transparent) 50%,
-          transparent 100%
-        );
-        background-size: 200% 100%;
-        animation: bs-sweep 1.4s ease-in-out infinite;
-      }
-      @keyframes bs-sweep {
-        from { background-position: 150% 0; }
-        to { background-position: -50% 0; }
-      }
-      /* 尊重系统的「减少动效」：只留静态色块，呼吸灯会让人分心 */
+      /* 尊重系统的「减少动效」：只留静态圆环，旋转会让人分心（前庭敏感） */
       @media (prefers-reduced-motion: reduce) {
-        #boot-skeleton .bs-shimmer { animation: none; }
+        #boot-skeleton .bs-spinner { animation: none; }
       }
     </style>
   </head>
@@ -187,23 +131,7 @@
     <div id="root">
       <!-- 与上面的 #boot-skeleton 样式配套；React 挂载后由 main.tsx 兜底移除 -->
       <div id="boot-skeleton" aria-hidden="true">
-        <div class="bs-bar bs-shimmer"><span class="bs-dot"></span><span class="bs-search"></span></div>
-        <div class="bs-title bs-shimmer"></div>
-        <div class="bs-grid">
-          <div class="bs-card"><i class="bs-shimmer"></i></div>
-          <div class="bs-card"><i class="bs-shimmer"></i></div>
-          <div class="bs-card"><i class="bs-shimmer"></i></div>
-          <div class="bs-card"><i class="bs-shimmer"></i></div>
-          <div class="bs-card"><i class="bs-shimmer"></i></div>
-        </div>
-        <div class="bs-title bs-shimmer" style="margin-top: 28px"></div>
-        <div class="bs-grid">
-          <div class="bs-card"><i class="bs-shimmer"></i></div>
-          <div class="bs-card"><i class="bs-shimmer"></i></div>
-          <div class="bs-card"><i class="bs-shimmer"></i></div>
-          <div class="bs-card"><i class="bs-shimmer"></i></div>
-          <div class="bs-card"><i class="bs-shimmer"></i></div>
-        </div>
+        <div class="bs-spinner"></div>
       </div>
     </div>
     <script type="module" src="/src/main.tsx"></script>

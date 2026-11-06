@@ -156,8 +156,8 @@ import SiteListErrorState from "./components/SiteListErrorState";
 // 标签筛选栏只在「有用过的标签 / 检出失效链接 / 正在按星标筛」时才出现，
 // 首屏绝大多数时候渲染它也是白占体积 —— 走 lazy，块按需下载。
 const TagBar = lazy(() => import("./components/TagBar"));
-// 骨架屏只在 loading 时挂上，同理。
-const SiteListSkeleton = lazy(() => import("./components/SiteListSkeleton"));
+// 加载态直接用 MUI 的 CircularProgress（首屏已有），不再单独 lazy 一个骨架屏组件：
+// 那张「假卡片骨架」2026-11-06 按用户反馈退场了，见下面 loading 分支的注释。
 // 断网提示 / 维护横幅 / 提示条 / 限流条的懒加载与常驻决定，都跟着挂载点搬到了
 // components/app/AppOverlays.tsx（每条为什么 lazy、为什么常驻，注释一起搬过去了）。
 // ⚠️ 维护横幅那条「别改回 lazy」的结论仍然有效，只是现在写在那边。
@@ -178,6 +178,7 @@ import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import {
     Container,
     Box,
+    CircularProgress,
     ThemeProvider,
     CssBaseline,
 } from "@mui/material";
@@ -333,9 +334,8 @@ function App() {
             ["aiSuggest", dialogChunks.aiSuggest],
             ["deleteAccount", dialogChunks.deleteAccount],
             ["tagBar", dialogChunks.tagBar],
-            ["siteSkeleton", dialogChunks.siteSkeleton],
             // 记事本整块最贵（357KB + 编辑器 + markdown），刻意排最尾：
-            // 只在前面 23 个常用小件都备齐、且浏览器确实闲下来之后才取，不跟首屏抢带宽；
+            // 只在前面那些常用小件都备齐、且浏览器确实闲下来之后才取，不跟首屏抢带宽；
             // 桌面 hover 笔记按钮已能提前取，这里兜底「开了页面没碰过按钮」的路径。
             ["notesOverlay", dialogChunks.notesOverlay],
         ]);
@@ -1868,15 +1868,32 @@ function App() {
                     {/* 三态，顺序是 error → loading → 列表。
                         ⚠️ error 必须排在最前面：它是「真的加载失败」的唯一信号
                         （见 useSites 的 catch）。排在 loading 之后的话，重试时
-                        loading 与 error 会同时为真，错误面板和骨架屏一起画出来。
+                        loading 与 error 会同时为真，错误面板和加载态一起画出来。
                         以前这里是 `!loading && !error`，而 error 恒为 null ——
                         失败后 groups 为空，用户看到的是「还没有任何分组」。 */}
                     {error ? (
                         <SiteListErrorState message={error} onRetry={handleRetryLoad} />
                     ) : loading ? (
-                        <ChunkBoundary>
-                            <SiteListSkeleton />
-                        </ChunkBoundary>
+                        // 加载态只给一个转圈（2026-11-06 用户反馈）：原来这里画的是
+                        // SiteListSkeleton 那张「假卡片骨架」，而 index.html 的启动占位
+                        // 也是同一套假骨架 —— 弱网下用户先看几秒假卡片、再跳成骨架、
+                        // 数据到位后再跳成真卡片，三次形态跳变，每次都像「快好了」其实没到。
+                        // 现在从 HTML 到这批列表之间**全程只有一个转圈**：index.html 的
+                        // 静态圆环（.bs-spinner）→ 这里的 CircularProgress，两者尺寸/节奏
+                        // 对齐（40px / 0.9s 线性，即 MUI 默认值），接续处没有跳变。
+                        // role=status + aria-label 给读屏一句话；转圈常驻会让人误以为
+                        // 一直在加载，所以只在 loading 期间挂载（error 分支在上面）。
+                        <Box
+                            role='status'
+                            aria-label='正在加载站点'
+                            sx={{
+                                display: "flex",
+                                justifyContent: "center",
+                                py: 10,
+                            }}
+                        >
+                            <CircularProgress />
+                        </Box>
                     ) : (
                         // ⚠️ 必须常驻（不能传 when 之类的条件）：它得在**卡片渲染崩掉的那一刻**
                         // 已经在树上，才接得住异常。包在这一层而不是更外层，是因为外层还有

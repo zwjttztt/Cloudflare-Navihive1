@@ -79,7 +79,7 @@ test("App：登录后有空闲预取，且覆盖「设置」菜单与常用弹�
     for (const key of [
         "navigationCenter", "siteCardContextMenu", "addSite", "siteSettings", "settings", "stats",
         "backup", "recycle", "confirm", "snackbar", "bulk", "aiSuggest", "deleteAccount",
-        "tagBar", "siteSkeleton",
+        "tagBar",
     ]) {
         assert.match(code, new RegExp(`\\["${key}", dialogChunks\\.${key}\\]`), `空闲预取清单缺 ${key}`);
     }
