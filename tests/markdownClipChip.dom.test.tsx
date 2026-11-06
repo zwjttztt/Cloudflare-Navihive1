@@ -257,10 +257,29 @@ function mountPanel(notes: Note[], handlers: Record<string, unknown> = {}) {
     });
 }
 
-/** 打开工具栏「笔记工具」下拉 */
-async function openNoteToolsMenu() {
+/**
+ * 工具栏根容器。
+ * ⚠️ 一律用它 `querySelector`，不用 `document.querySelector` —— 断言本身就顺带证明了
+ *    「按钮真的长在工具栏里」，而不是某个 portal 出来的下拉菜单里。
+ */
+function toolbarBar(): HTMLElement {
+    const found = document.querySelector<HTMLElement>('[aria-label="Markdown 格式"]');
+    if (!found) throw new Error("没找到工具栏根容器");
+    return found;
+}
+
+/** 工具栏上那颗「复制胶囊」图标按钮（2026-11-06 起直接摆在工具栏上，不在任何下拉里） */
+function clipChipButton(): HTMLElement {
+    const btn = toolbarBar().querySelector<HTMLElement>('button[data-tool="clip-chip"]');
+    if (!btn) throw new Error("工具栏上没找到「复制胶囊」按钮");
+    return btn;
+}
+
+/** 点一次工具栏「复制胶囊」（替代原来的「先开笔记工具下拉、再点菜单项」） */
+async function clickClipChip() {
+    const btn = clipChipButton();
     await act(async () => {
-        (document.querySelector('button[aria-label="笔记工具"]') as HTMLElement).click();
+        btn.click();
     });
 }
 
@@ -269,18 +288,12 @@ test("工具栏「复制胶囊」：选中文字包成语法，再点一次摘�
     const editor = getEditor();
     act(() => editor.setSelectionRange(3, 6)); // 选中「第二段」
 
-    await openNoteToolsMenu();
-    await act(async () => {
-        (document.querySelector('[data-insert-op="clip-chip"]') as HTMLElement).click();
-    });
+    await clickClipChip();
     // ① 选区被包成新语法
     assert.equal(editor.value, "第一段{{clip:第二段}}", "选中的文字要被包成复制胶囊");
 
     // ② 同一颗按钮的第二下要摘掉标记（insertAtCursor 的「再点一次取消」语义）
-    await openNoteToolsMenu();
-    await act(async () => {
-        (document.querySelector('[data-insert-op="clip-chip"]') as HTMLElement).click();
-    });
+    await clickClipChip();
     const afterUndo: string = editor.value;
     assert.equal(afterUndo, "第一段第二段", "再点一次应当只摘掉标记、正文原样留下");
 });
@@ -289,12 +302,135 @@ test("工具栏「复制胶囊」：没有选区时插入占位符", async () =>
     mountPanel([note({ content: "正文" })]);
     const editor = getEditor();
     act(() => editor.setSelectionRange(1, 1)); // 光标落在「文」后面，没有选区
-    await openNoteToolsMenu();
-    await act(async () => {
-        (document.querySelector('[data-insert-op="clip-chip"]') as HTMLElement).click();
-    });
+    await clickClipChip();
     const inserted: string = editor.value;
     assert.equal(inserted.includes("{{clip:要复制的内容}}"), true, `没选中时该插占位符，实际：${inserted}`);
+});
+
+test("复制胶囊是工具栏上的独立按钮（单入口：不打开任何菜单就能点到）", async () => {
+    mountPanel([note({ content: "第一段第二段" })]);
+    const editor = getEditor();
+    act(() => editor.setSelectionRange(3, 6)); // 选中「第二段」
+
+    const bar = toolbarBar();
+    // ① 不打开任何菜单，工具栏上就该有一颗（收进下拉时这里是 0；两处都留时是 2）
+    const buttons = bar.querySelectorAll<HTMLElement>('button[data-tool="clip-chip"]');
+    assert.equal(buttons.length, 1, `工具栏上的「复制胶囊」按钮必须正好一颗，实际 ${buttons.length} 颗`);
+    // ② 可访问名（audit:a11y 按 aria-label 判）
+    assert.equal(
+        bar.querySelector('button[aria-label="复制胶囊"]') !== null,
+        true,
+        "工具栏上要有一颗 aria-label='复制胶囊' 的按钮"
+    );
+    // ③ 下拉里的那一份必须已经删掉
+    assert.equal(
+        document.querySelector('[data-insert-op="clip-chip"]') === null,
+        true,
+        "「笔记工具」下拉里还留着复制胶囊项"
+    );
+
+    // ④ 点它就能把选中文字包成语法 —— 全程没有打开过任何菜单
+    await clickClipChip();
+    assert.equal(editor.value, "第一段{{clip:第二段}}", "点工具栏按钮要把选中文字包成复制胶囊");
+
+    // ⑤ 把「笔记工具」下拉真的打开来看一眼：里面也不许有复制胶囊
+    //    （不打开的话 MUI 根本不渲染菜单子树，上面那条 ③ 就成了空断言）
+    await act(async () => {
+        (document.querySelector('button[aria-label="笔记工具"]') as HTMLElement).click();
+    });
+    assert.equal(
+        document.querySelector('[data-insert-op="clip-chip"]') === null,
+        true,
+        "「笔记工具」下拉里被补了一份复制胶囊 —— 两个同名入口读屏会念两遍"
+    );
+});
+
+test("工具栏「复制胶囊」按下鼠标不抢选区（mousedown 必须 preventDefault）2026-11-06", async () => {
+    // ⚠️ 这条是变异测试（M1）暴露的真实覆盖漏洞：`.click()` **不派发 mousedown**，
+    //    所以把那行 `onMouseDown={e => e.preventDefault()}` 删掉，原来所有的用例照样全绿。
+    //    而真机上少了它，按下去的瞬间编辑器就失焦、选区被清掉，insertAtCursor 拿不到
+    //    要包的那段文字 —— 功能直接废掉，且没有任何测试会红。
+    mountPanel([note({ content: "第一段第二段" })]);
+    const editor = getEditor();
+    act(() => editor.setSelectionRange(3, 6)); // 选中「第二段」
+    const btn = clipChipButton();
+
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
+    act(() => {
+        btn.dispatchEvent(down);
+    });
+    assert.equal(
+        down.defaultPrevented,
+        true,
+        "mousedown 没被 preventDefault —— 真机上按下就丢编辑器选区，插不进胶囊"
+    );
+    // jsdom 没有真正的选区行为（不派发 mousedown 也不会挪选区），所以「选区还在」
+    // 这一半只能由真浏览器验收；这里退一步钉住「按下之后点一下仍然包的是同一段」。
+    assert.equal(editor.value, "第一段第二段", "按下鼠标不该改动正文");
+    await clickClipChip();
+    assert.equal(editor.value, "第一段{{clip:第二段}}", "按下再点击，包起来的仍要是原来那段选区");
+});
+
+test("窄屏「插入」下拉里也没有第二份复制胶囊（两个下拉都要真的删干净）2026-11-06", async () => {
+    // ⚠️ 上面那条「单入口」用例只覆盖了桌面「笔记工具」下拉（data-insert-op）。
+    //    窄屏的那一份是 `insertItem("clip-chip", …)` 渲染的 MenuItem，挂的是
+    //    **data-tool**（不是 data-insert-op），而且窄屏菜单是 portal 出去的、不在工具栏里 ——
+    //    所以「删干净」这条需求当时其实只验了一半：谁把它加回「插入」下拉，测试依然全绿。
+    const prevWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true, writable: true });
+    try {
+        act(() => {
+            window.dispatchEvent(new Event("resize"));
+        });
+        mountPanel([note({ content: "第一段第二段" })]);
+        // 窄屏（<768）先只渲染列表屏，点开一条笔记才有工具栏
+        await act(async () => {
+            (document.querySelector('[data-note-list] [role="button"]') as HTMLElement).click();
+        });
+
+        const bars = [...document.querySelectorAll<HTMLElement>('[aria-label="Markdown 格式"]')];
+        assert.equal(bars.length > 0, true, "窄屏下没有渲染出工具栏");
+        // 每份工具栏各有一颗常驻按钮，不多不少
+        for (const bar of bars) {
+            assert.equal(
+                bar.querySelectorAll('button[data-tool="clip-chip"]').length,
+                1,
+                "窄屏工具栏上的「复制胶囊」按钮必须正好一颗"
+            );
+        }
+        assert.equal(
+            document.querySelectorAll('[data-tool="clip-chip"]').length,
+            bars.length,
+            `开菜单之前，全页 [data-tool="clip-chip"] 应当只有工具栏上那 ${bars.length} 颗`
+        );
+
+        // 把窄屏「插入」下拉真的打开：里面不许再有第二份
+        const insertBtn = document.querySelector<HTMLElement>('button[aria-label="插入"]');
+        assert.equal(insertBtn === null, false, "窄屏工具栏要有「插入」下拉按钮");
+        await act(async () => {
+            insertBtn!.click();
+        });
+        // 菜单确实开了（否则下面那条又是空断言）
+        assert.equal(
+            document.querySelector('[data-tool="table"]') !== null,
+            true,
+            "「插入」下拉没打开 —— 这样断言「里面没有复制胶囊」等于什么都没测"
+        );
+        assert.equal(
+            document.querySelectorAll('[data-tool="clip-chip"]').length,
+            bars.length,
+            "窄屏「插入」下拉里被补了一份复制胶囊 —— 同一功能两个入口，读屏会念两遍"
+        );
+    } finally {
+        Object.defineProperty(window, "innerWidth", {
+            value: prevWidth,
+            configurable: true,
+            writable: true,
+        });
+        act(() => {
+            window.dispatchEvent(new Event("resize"));
+        });
+    }
 });
 
 test("点胶囊只复制，笔记正文一个字都没变", async () => {

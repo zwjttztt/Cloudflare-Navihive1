@@ -749,8 +749,10 @@ export function MarkdownToolbar({
                 // 工具栏还会盖住标题。改成**换行铺开**：窄栏下自动折成两三行，
                 // 高度自适应（编辑器是 flex:1 会自己让空间），永远不出现滚动条。
                 // 2026-10-26（P2-1）：手机端不再靠这条兜底 —— `narrow` 下第一行只留
-                // 8 个高频入口（约 317px），压根到不了换行那一步；flexWrap 留着是给
-                // **宽屏分屏**（半屏仍要能折行）用的，别当成「手机端问题已解决」。
+                // 8 个高频入口 + 「插入 / 复制胶囊」两颗，**实测 398px**（2026-11-06 起
+                // 「复制胶囊」也直接摆在工具栏上，明细见下面「宽度账」那段）。
+                // ⚠️ 所以 390 宽下**会折 2 行**（真 Chrome 量：高 79px），不是「到不了换行」；
+                // flexWrap 因此仍是手机端的第一道保险，不只是给宽屏分屏用的。
                 // ⚠️ 2026-10-27：高度改吃 --notes-toolbar-h —— 编辑区 / 侧栏的标题行高度
                 // 是 calc(头部总高 − 这个值)，两边必须同一个数，否则工具栏底边会脱离
                 // 三栏共同那条线。左栏搜索框的下边也落在同一条线上（用户画线指定）。
@@ -998,14 +1000,26 @@ export function MarkdownToolbar({
                 （`setTableAnchor(moreAnchor)`），原来的菜单就原地开出来。
                 菜单内容永远只有一份，不会出现「手机上一套、桌面上另一套」。
 
-                宽度账（390 宽的屏，工具栏左右各 px:1 = 16）：
-                  标题层级 28 │ 分隔线 1+8 │ 强调 3×28 │ 组内分隔线 1+8 │ 列表 3×28
-                  │ 链接 28 │ 分隔线 1+8 │ 插入 28
-                合计 28+9+84+9+84+28+9+28 = 279，加组内 6 个 gap(2px) = 12 → 291，
-                再加根容器 5 个 gap(2px) = 10 → 301，加左右内边距 16 = **317px**。
-                390 宽下 1 行、余量 73px；分屏到 320 也仍是 1 行（余量 3px）。
-                再窄会折成 2 行 —— 验收要的就是 ≤2 行，可以接受，但**不要**为此
-                退回 overflowX:auto（见根容器那段注释：会连带出竖向滚动条）。 */}
+                宽度账（2026-11-06 按**真机实测**重写，不再是纸面推算）：
+                ⚠️ 前提：<600px 时每颗 IconButton 是 **36×36**，不是 toolBtnSx 里写的
+                  28 —— `src/hooks/useThemeController.ts` 的 `MuiIconButton.styleOverrides.root`
+                  （199~207 行）在 `MQ_BELOW_600` 下强制 `padding:6 / minWidth:36 /
+                  minHeight:36`，把 `width:28` 抬上去了。标题层级那颗是 `Button`
+                  不是 `IconButton`，不吃这条规则，仍是 28。
+                  标题层级 28 │ 分隔线 1+8 │ 强调 3×36 │ 组内分隔线 1+8 │ 列表 3×36
+                  │ 链接 36 │ 分隔线 1+8 │ 插入 36 │ 复制胶囊 36
+                逐项相加 28+9+108+9+108+36+9+36+36 = 379，加根容器 8 个 gap(2px) = 16
+                → 内容宽 395；实测一行要 **约 398px**（同量级，差的那 3px 是分隔线的
+                1px 与 mx 取整）。390 的屏去掉左右内边距 16 只剩 374 可用 → **直接折行**。
+                结论（改造后 vs 改造前，真 Chrome + CDP 量，改造前 = 把新按钮 display:none）：
+                  390  → 2 行、高 **79px**（改造前 1 行 41px，多占 38px 编辑区）
+                  320  → 2 行、高 79px（但**改造前就已经是 2 行**，不是本次引入的）
+                  1440 → 1 行、高 36px（28px 口径、23 颗，改造前后无变化）
+                验收口径是「≤2 行」，所以本次**通过**；但这条预算**已经用满** ——
+                再往窄屏加任何一颗按钮就折 3 行，要加必须先减。
+                **不要**为此退回 overflowX:auto（见根容器那段注释：会连带出竖向滚动条）。
+                ※ 最后一个 36 是「复制胶囊」：2026-11-06 用户要求把它从下拉里提出来、
+                  直接摆在工具栏上，所以这里比原来多了一颗按钮 + 一个根 gap。 */}
             {narrow && (
                 <>
                     <Divider orientation='vertical' flexItem sx={{ mx: 0.5, my: 0.5 }} />
@@ -1031,7 +1045,6 @@ export function MarkdownToolbar({
                         {/* 行内：写字时顺手会用，但比「加粗 / 列表」低频一档 */}
                         {insertItem("code", <CodeIcon sx={{ fontSize: 18 }} />, "行内代码", () => onInsert("`", "`", "code"))}
                         {insertItem("highlight", <FormatColorTextIcon sx={{ fontSize: 18 }} />, "高亮", () => onInsert("==", "==", "高亮"))}
-                        {insertItem("clip-chip", <ContentCopyIcon sx={{ fontSize: 18 }} />, "复制胶囊", () => onInsertCopyChip())}
                         {insertItem("quote", <FormatQuoteIcon sx={{ fontSize: 18 }} />, "引用", () => onLinePrefix("> "))}
                         <Divider />
                         {/* 块级：插的是一段结构 */}
@@ -1175,6 +1188,23 @@ export function MarkdownToolbar({
             </Button>
             </Tooltip>
             )}
+            {/* 行内复制胶囊：用户 2026-11-06 明确要求「做成图标直接放在工具栏，不要放下拉菜单」。
+                ⚠️ 入口只有这一处 —— 别再往「笔记工具」/「插入」菜单里补一份：
+                同名两个按钮干同一件事，读屏会念两遍（见 tests/notesBatch10.dom.test.tsx 的教训）。 */}
+            <Tooltip title='把选中的文字包成胶囊，预览里点一下就能复制'>
+                <IconButton
+                    size='small'
+                    aria-label='复制胶囊'
+                    data-tool='clip-chip'
+                    // ⚠️ 这行不能省：省了按下鼠标就丢了编辑器选区，
+                    // insertAtCursor 拿不到要包的那段文字，功能直接废。
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => onInsertCopyChip()}
+                    sx={toolBtnSx}
+                >
+                    <ContentCopyIcon fontSize='small' />
+                </IconButton>
+            </Tooltip>
             <Menu
                 open={Boolean(insertAnchor)}
                 anchorEl={insertAnchor}
@@ -1190,19 +1220,6 @@ export function MarkdownToolbar({
                     }}
                 >
                     <span>插入标签</span>
-                </MenuItem>
-                </Tooltip>
-                {/* 行内复制胶囊：放在「插入标签」旁边 —— 两者都是「给一段行内文字加个标记」 */}
-                <Tooltip title='把选中的文字包成胶囊，预览里点一下即可复制'>
-                <MenuItem
-                    data-insert-op='clip-chip'
-                    sx={menuRowSx}
-                    onClick={() => {
-                        onInsertCopyChip();
-                        setInsertAnchor(null);
-                    }}
-                >
-                    <span>复制胶囊</span>
                 </MenuItem>
                 </Tooltip>
                 <Tooltip title='给这一段加个锚点（^标识），别处能引用它'>
