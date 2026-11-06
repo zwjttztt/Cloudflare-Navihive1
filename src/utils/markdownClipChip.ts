@@ -179,19 +179,25 @@ export function clipChipsToPlainText(markdown: string): string {
     let fence: string | null = null;
     for (const line of markdown.split("\n")) {
         const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+        // ⚠️ 严格下标层（noUncheckedIndexedAccess）下 `fenceMatch?.[1]` 是
+        //    `string | undefined`，而 `fence` 是 `string | null` —— 直接写
+        //    `fence = fenceMatch[1]` 会同时报「可能 undefined」和赋值不兼容。
+        //    提到一个判过空的局部变量，首字符用 charAt(0)（不碰下标），
+        //    围栏的闭合判据与下面三个分支的行为一字不变。
+        const marker: string | null = fenceMatch?.[1] ?? null;
         if (fence) {
             if (
-                fenceMatch &&
-                fenceMatch[1][0] === fence[0] &&
-                fenceMatch[1].length >= fence.length
+                marker !== null &&
+                marker.charAt(0) === fence.charAt(0) &&
+                marker.length >= fence.length
             ) {
                 fence = null; // 闭合围栏
             }
             out.push(line);
             continue;
         }
-        if (fenceMatch) {
-            fence = fenceMatch[1];
+        if (marker !== null) {
+            fence = marker;
             out.push(line);
             continue;
         }

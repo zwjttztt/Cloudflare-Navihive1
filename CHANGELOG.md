@@ -119,6 +119,15 @@ Windows 软链 `EPERM`，CI 上会跑）/ `build` ✓ / **budget 37/37** / smoke
 首屏 gzip **285.52 → 285.62 KB（+0.10 KB）**，预算 920 / 300 **未抬**，
 JS 首屏 0 增长（语法与组件落在懒加载的 markdown chunk），增量几乎全在 `index.css` 那 6 个 token。
 
+⚠️ **本地门禁清单漏了一道 CI 独有的 `check:strict-idx`（Q-3 严格下标守卫）**。
+它在 `noUncheckedIndexedAccess` 下扫全量 `src/`，要求**新文件默认干净**。
+首次推送后 CI 的「静态检查」job 就是它拦下的：`clipChipsToPlainText` 的围栏
+状态机里有 3 处 `fenceMatch[1]` 未判空（TS2532 ×2 / TS2322），`docker-publish`
+被 gate 连带拦下（build / merge 全 skipped，**没有产生坏镜像**）。已改成判过空的
+局部变量 + `charAt(0)`，围栏闭合语义用 21 组输入与旧实现逐字节比对过（0 处不一致）；
+修完严格层报错 **366 处 / 62 个文件**、豁免清单仍 **62 条**、新文件 0 报错。
+**这道守卫已补进本地全量门禁清单** —— 以后不许再只跑那 8 项就宣称全绿。
+
 ### 这次**没有**解决什么（别当成已经治好了）
 
 - **不支持嵌套**：`=={{clip:x}}==`、`` `{{clip:x}}` ``、`[[{{clip:x}}]]`、`${{clip:x}}$`
