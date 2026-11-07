@@ -299,18 +299,22 @@ jobs:
           cosign sign --yes "ghcr.io/zwjttztt/navihive:${{ steps.version.outputs.version }}"
           cosign sign --yes "ghcr.io/zwjttztt/navihive:${{ needs.gate.outputs.sha }}"
 
+      # Trivy 用官方镜像直接跑，不走 trivy-action：action 的组合依赖链里引用过
+      # 失效版本（v0.28.0 → setup-trivy@v0.2.1 不存在），在 job 准备阶段解析失败
+      # 且不受 continue-on-error 保护，33.1.0 首发连红两次都是这一类问题。
+      # 直接 docker run 无任何 action 依赖，天然免疫。包是 public（匿名可拉），
+      # 仍传 GHCR 凭据避免匿名限流。
       - name: Trivy 漏洞扫描（仅告警，不阻断发布）
-        # ⚠️ tag 必须带 `v` 前缀（v0.28.0）：写裸 0.28.0 会在 job 准备阶段
-        #    "Unable to resolve action" —— action 解析失败不受 continue-on-error
-        #    保护，会连带整条 merge job 红、镜像发布失败（33.1.0 首发踩过）。
-        uses: aquasecurity/trivy-action@v0.28.0
-        with:
-          image-ref: ghcr.io/zwjttztt/navihive:latest
-          format: table
-          exit-code: "0"
-          ignore-unfixed: true
-          vuln-type: os,library
         continue-on-error: true
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker run --rm \
+            -e TRIVY_USERNAME -e TRIVY_PASSWORD \
+            aquasec/trivy:latest image \
+            --scanners vuln --ignore-unfixed --exit-code 0 \
+            ghcr.io/zwjttztt/navihive:latest
 
       - name: 核对结果（两个平台都在才算成功）
         run: docker buildx imagetools inspect ghcr.io/zwjttztt/navihive:latest
