@@ -12,6 +12,19 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-07 · 修复：独立审计第一批（文档失真 / 崩溃页暗色 / SW 预缓存收紧）（32.5.0）
+
+> 一轮**不采信既有结论**的全维度独立审计之后，先落地「改动小、收益直接」的第一批。除错误兜底页配色外不改产品行为：
+> - **README 4 处失真纠正**：去掉已删除的「待办聚合视图」（`NotesPageShell` 2026-10-19 已移除）；「ZIP + manifest」改为实际（只打包 `notes.json` + `attachments/*`，无 manifest）；「Cursor 增量同步」改为实际（命中变更后整表重拉，非增量合并）；外观去掉「按账号保存」（`useThemeController` 读裸键 `theme`，实为浏览器级）。
+> - **`docs/codes.md` 补 API 错误码表**：此前只有内部代号索引、**零** API 错误码；补 `shared/apiErrorCodes.ts` 的 15 个码（状态码与语义对标 `worker/lib/apiError.ts` 的工厂，`quota_exceeded` 如实标注为预留、无对应状态）。
+> - **`docs/contributing.md`** 修正不存在的 `npm run dev:server` → `npm run start:selfhost`（真实联调第 2 步原本就断在这）。
+> - **`ErrorBoundary` 崩溃兜底页暗色化**：原 18 处硬编码亮色 → 全走 token；崩溃常发生在 React 挂载前（此时 `<html>` 只有 `data-boot-theme`、尚无 `.dark` 类），故在渲染时自判明暗并给外层 div 挂 `.dark`，即使主题类未挂也走暗色。样式从内联 `style` 搬到 `index.css` 的 `.eb-*`（内联 style 在 index chunk 里约 1.3 KB，搬迁后 index chunk 缩小、首屏预算反而更宽松）。
+> - **SW 预缓存核心清单收紧**（`vite.config.ts`）：只把首屏 `index-*.css` 算进 core，KaTeX 等可懒加载 CSS 走 lazy 分支（首访少预缓存一份约占全部 CSS 54% 的样式；precache 测试只校验 `.js` 双向对齐，不卡 CSS）。
+>
+> ⚠️ 审计报告原列的「browserslist 改 `firefox >= 121`」**本批未做**：实测它不是「一行止血」——`tests/safariApiGuard.test.ts` 与 `docs/architecture.md` 都把 `firefox >= 111` 钉成基线并联动越界 API 风险表，改基线等于放弃 FF111–120 / ESR115 支持、且需重分类整张表。正确解是给 `:has()` 补 `:focus-within` 兜底、`color-mix()` 补 `@supports`（保留 ESR115 可读），留作独立改动。
+>
+> 本地可跑门禁全绿：build / `check:budget`(37/37) / 单测+DOM(4086 通过，1 跳) / lint(0 error) / `check:strict-idx`(366/62/62) / `audit:contrast`(亮暗 0 不合格) / `audit:a11y`(0 不合格)。
+
 ## 2026-11-07 · 修复：对比度审计补 camelCase 别名 + 编辑器 IME 合成期守卫 + 迁移 updated_at 运行层断言（32.4.2）
 
 > 32.4.1 发布后的三处小修，全部是「防回归 / 补覆盖漏洞」，产品行为无变化：

@@ -127,9 +127,10 @@ function precacheManifest(): Plugin {
                 for (const dep of chunks.get(name)?.imports ?? []) queue.push(dep);
             }
 
-            // CSS 没有 chunk 图可走，一并算核心：项目里 CSS 很小（MUI 是 CSS-in-JS）
+            // CSS 没有 chunk 图可走，按文件名收核心：只收首屏的 index-*.css，
+            // katex 等可懒加载的 CSS 留在 lazy 分支（precache 测试只校验 .js 双向对齐，不卡 CSS）。
             for (const name of assets) {
-                if (name.endsWith(".css")) core.add(name);
+                if (/^assets\/index-.*\.css$/.test(name)) core.add(name);
             }
 
             // （2026-10-17）MUI 改为交回 rolldown 自然分包后不再有固定名字的

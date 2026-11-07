@@ -87,8 +87,8 @@ function walk(dir: string, out: string[] = []): string[] {
 /** 豁免清单：key 是相对仓库根的路径，cap 是**当前**命中数（新增即红） */
 const EXEMPT: Record<string, { reason: string; cap: number }> = {
     "src/components/ErrorBoundary.tsx": {
-        reason: "整页崩溃时的兜底 UI，必须零依赖（连主题/token 都不能依赖）——它要在「样式表都没加载出来」时也能读",
-        cap: 19,
+        reason: "整页崩溃时的兜底 UI：颜色全部走 var(--token, #兜底)，在「样式表没加载 / 主题类(.dark)未挂载」时仍可降级阅读（外包裹 div 自带 .dark 类，暗色下不再透出白底）。已无裸硬编码色值",
+        cap: 0,
     },
     "src/hooks/useThemeController.ts": {
         reason: "MUI 主题**定义源**本身：这里的字面量是产出方，不是消费方（token 就是照它写的）。2026-10-24 弹窗底色改成 var(--surface-modal) 后从 6 降到 4",

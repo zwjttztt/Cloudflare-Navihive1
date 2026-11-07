@@ -454,6 +454,14 @@
        以前在 7 个组件里各写一份 rgba(176,67,58,0.08~0.10)（把默认强调色的 RGB 抄死），
        用户换主色后这块底色不会跟着变 —— 用 color-mix 让它恒等于「当前主色的 10%」。 */
     --accent-wash: color-mix(in srgb, var(--accent) 10%, transparent);
+    /* 错误边界兜底页（src/components/ErrorBoundary.tsx）用的**不透明**底色。
+       现有 --surface-* 都是半透明、不能当满屏不透明底——错误页位于 ThemeProvider 之外、
+       body 透明，半透明 token 盖在浏览器白底上仍发灰、暗色下也读不出深色。
+       这两枚是满屏不透明的实底色：亮色对齐 MUI 亮态 background.default 的近似浅灰，
+       暗色对齐 MUI 暗态深底（值见 .dark）。错误页即便在「样式表/主题类未挂载」时
+       也靠 var(--x, #兜底) 降级可读。 */
+    --error-page-bg: #f4f5f7;
+    --error-page-surface: #ffffff;
 }
 
 .dark {
@@ -462,6 +470,10 @@
     --surface-card-hover: rgba(30, 35, 48, 0.72);
     --surface-raised: rgba(30, 35, 48, 0.92);
     --surface-modal: rgba(23, 27, 38, 0.94);
+    /* 错误边界兜底页的不透明底（亮态定义见 :root）：暗色对齐 MUI 暗态深底，
+       让崩溃页在深色模式下不再透出浏览器白底。 */
+    --error-page-bg: #0f1118;
+    --error-page-surface: #171b26;
     --surface-inset: rgba(255, 255, 255, 0.08);
     --logo-plate: rgba(255, 255, 255, 0.09);
     --logo-plate-border: rgba(255, 255, 255, 0.14);
@@ -1920,4 +1932,82 @@ html.dark .cm-editor .cm-content {
     html.nav-touch .nav-settings-btn:focus-visible {
         opacity: 1;
     }
+}
+
+/* 错误边界兜底页（src/components/ErrorBoundary.tsx）。样式放这里而不是内联 style，
+   是为了把首屏 index chunk 的字节让出来（内联 style 对象约 1.3 KB）。
+   颜色全部走 index.css 的 token；--error-page-bg / --error-page-surface 是新增的
+   **不透明**底色（现有 --surface-* 半透明、不能当满屏不透明底）。
+   深色时 ErrorBoundary 给外层 div 挂 .dark 类，靠 .dark 的 token 覆盖切到暗色值——
+   这样即便 <html> 尚未挂上主题类（崩溃发生在 React 挂载前），错误页也不透白底。 */
+.eb-page {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--error-page-bg);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    padding: 24px;
+}
+.eb-card {
+    background: var(--error-page-surface);
+    border: 1px solid var(--border-default);
+    border-radius: 16px;
+    padding: 28px 28px 24px;
+    box-shadow: var(--shadow-float);
+}
+.eb-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+.eb-text {
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+}
+.eb-details {
+    margin-top: 14px;
+}
+.eb-summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-muted);
+}
+.eb-pre {
+    margin-top: 10px;
+    max-height: 200px;
+    overflow: auto;
+    background: var(--error-page-surface);
+    border: 1px solid var(--border-default);
+    border-radius: 10px;
+    padding: 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--danger);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.eb-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+    flex-wrap: wrap;
+}
+.eb-btn {
+    padding: 8px 16px;
+    font-size: 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border-default);
+    background: var(--error-page-surface);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+.eb-btn-primary {
+    background: var(--accent);
+    color: var(--on-accent);
+}
+.eb-btn-danger {
+    color: var(--danger);
 }

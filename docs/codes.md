@@ -5,6 +5,30 @@
 > 本文按其在代码注释中的实际用法逐条标注，含义无法从代码/注释确定的一律标「含义待确认」，不作臆测。
 > 仅作为审计报告**章节号**出现的同名编号（如 `audit-report` 的 A1…A5 / V1…V3）不在此内，但单列提示以防混淆。
 
+## API 错误码
+
+> 来源：`shared/apiErrorCodes.ts` 的 `API_ERROR_CODES`（前后端共用一份，服务端产出端为 `worker/lib/apiError.ts`）。
+> 状态码与含义以服务端产出端为准——下面逐条列出 `ApiError` 各静态工厂对应的 HTTP 状态与业务语义。
+> `quota_exceeded` 目前是预留码（服务端尚未提供专门的生产函数，附件配额超限走 `conflict`/409），故标为预留。
+
+| 码 | HTTP 状态 | 含义 |
+|---|---|---|
+| bad_request | 400 | 请求体/参数不合法（字段缺失、格式错误等） |
+| unauthenticated | 401 | 未登录或会话失效，需要重新登录 |
+| forbidden | 403 | 已登录但没有权限访问该资源 |
+| not_found | 404 | 请求的内容不存在 |
+| method_not_allowed | 405 | 路径正确但方法不对（如对分享接口发了 PATCH） |
+| gone | 410 | 曾经存在、现已失效（如附件数据已丢失），不应重试 |
+| not_implemented | 501 | 服务端未配置该能力（如未绑定 R2/KV 时的附件上传），非用户过错 |
+| bad_gateway | 502 | 上游写失败（对象存储未写进去），重试有机会成功 |
+| conflict | 409 | 资源冲突（如并发修改产生冲突，需用户处理后再试） |
+| payload_too_large | 413 | 请求体过大（上传超出大小限制） |
+| unsupported_media_type | 415 | 上传内容类型不被支持（按文件内容判定后拒绝） |
+| rate_limited | 429 | 操作过于频繁，请稍后再试（响应带 `Retry-After`） |
+| quota_exceeded | —（预留） | 配额/存储超限。**预留码**：`API_ERROR_CODES` 里有定义，但 `ApiErrorStatus` 联合类型不含对应状态、也无专门工厂，当前未在服务端 emit |
+| service_unavailable | 503 | 系统维护中，写操作被拦、读操作放行 |
+| internal | 500 | 服务器内部错误（未预期的异常，不向客户端暴露内部细节） |
+
 ## 代号明细
 
 ### B1 — 全站设置摊平（设置中心取消二级 Tab）

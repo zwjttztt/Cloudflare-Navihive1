@@ -1,5 +1,11 @@
 // 渲染兜底：React 组件树里任何一处抛错，默认行为是整棵树被卸载 → 纯白屏。
 // 这里拦住异常，给一个能自助恢复的页面（重载 / 清理本机数据），而不是让人对着白屏发呆。
+//
+// 样式刻意放在 src/index.css 的 .eb-* 类里（而不是内联 style 对象）：
+// 内联 style 在 index chunk 里占约 1.3 KB，而首屏 gzip 预算余量只有几十字节——
+// 把样式搬进 CSS 后 index chunk 明显变小，反而给首屏腾出字节。
+// 颜色全部走 index.css 的 token（--error-page-bg / --error-page-surface 是新增的
+// **不透明**底色，现有 --surface-* 都是半透明，不能当满屏不透明底）。
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { reportError } from "../utils/errorReporter";
 import { clearLocalAppData } from "../utils/localAppData";
@@ -41,101 +47,43 @@ export default class ErrorBoundary extends Component<Props, State> {
         const { error, stack } = this.state;
         if (!error) return this.props.children;
 
+        // 崩溃可能发生在 React 挂载前：此时 <html> 上还没有 .dark 类（boot-theme.js
+        // 只写了 data-boot-theme），.dark 的 token 覆盖不生效。给外层 div 自己挂一个
+        // .dark 类，让这颗子树的 token 走暗色值——这样即便 <html> 尚未挂主题类，
+        // 深色模式下错误页也不会透出浏览器白底。
+        const root = document.documentElement;
+        const isDark =
+            root.dataset.bootTheme === "dark" ||
+            (root.dataset.bootTheme !== "light" &&
+                typeof window.matchMedia === "function" &&
+                window.matchMedia("(prefers-color-scheme: dark)").matches);
+
         return (
-            <div
-                style={{
-                    minHeight: "100vh",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    background: "#f4f5f7",
-                    color: "#1f2329",
-                    fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif",
-                    padding: 24,
-                }}
-            >
-                <div
-                    style={{
-                        maxWidth: 560,
-                        background: "#fff",
-                        border: "1px solid #e3e5e8",
-                        borderRadius: 16,
-                        padding: "28px 28px 24px",
-                        boxShadow: "0 8px 32px rgba(0,0,0,.08)",
-                    }}
-                >
-                    <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>
-                        页面出了点问题
-                    </div>
-                    <div style={{ fontSize: 14, lineHeight: 1.7, color: "#55595f" }}>
+            <div className={isDark ? "dark eb-page" : "eb-page"}>
+                <div className="eb-card" style={{ maxWidth: 560 }}>
+                    <div className="eb-title">页面出了点问题</div>
+                    <div className="eb-text">
                         界面渲染时抛出了一个异常，已经被拦下来，数据没有被写入服务器。
                         可以先重新加载；如果每次打开都崩，多半是本机保存的偏好或缓存坏了，
                         清理本机数据即可（站点数据在服务器，不会丢）。
                     </div>
-                    <details style={{ marginTop: 14 }}>
-                        <summary style={{ cursor: "pointer", fontSize: 13, color: "#6b7076" }}>
-                            查看错误详情
-                        </summary>
-                        <pre
-                            style={{
-                                marginTop: 10,
-                                maxHeight: 200,
-                                overflow: "auto",
-                                background: "#f6f7f9",
-                                border: "1px solid #eceef1",
-                                borderRadius: 10,
-                                padding: 12,
-                                fontSize: 12,
-                                lineHeight: 1.6,
-                                color: "#8a3b3b",
-                                whiteSpace: "pre-wrap",
-                                wordBreak: "break-word",
-                            }}
-                        >
+                    <details className="eb-details">
+                        <summary className="eb-summary">查看错误详情</summary>
+                        <pre className="eb-pre">
                             {error.message}
                             {stack ? `\n${stack}` : ""}
                         </pre>
                     </details>
-                    <div style={{ display: "flex", gap: 10, marginTop: 20, flexWrap: "wrap" }}>
-                        <button
-                            onClick={this.reload}
-                            style={{
-                                padding: "8px 16px",
-                                fontSize: 14,
-                                borderRadius: 10,
-                                border: "1px solid #d0d3d8",
-                                background: "#1976d2",
-                                color: "#fff",
-                                cursor: "pointer",
-                            }}
-                        >
+                    <div className="eb-actions">
+                        <button onClick={this.reload} className="eb-btn eb-btn-primary">
                             重新加载
                         </button>
-                        <button
-                            onClick={() => this.clearAndReload(false)}
-                            style={{
-                                padding: "8px 16px",
-                                fontSize: 14,
-                                borderRadius: 10,
-                                border: "1px solid #d0d3d8",
-                                background: "#fff",
-                                color: "#1f2329",
-                                cursor: "pointer",
-                            }}
-                        >
+                        <button onClick={() => this.clearAndReload(false)} className="eb-btn">
                             清理本机数据并重载
                         </button>
                         <button
                             onClick={() => this.clearAndReload(true)}
-                            style={{
-                                padding: "8px 16px",
-                                fontSize: 14,
-                                borderRadius: 10,
-                                border: "1px solid #d0d3d8",
-                                background: "#fff",
-                                color: "#8a3b3b",
-                                cursor: "pointer",
-                            }}
+                            className="eb-btn eb-btn-danger"
                         >
                             连登录一起清理
                         </button>

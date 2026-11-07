@@ -19,7 +19,7 @@ printf 'AUTH_SECRET=%s\nAUTH_USERNAME=root\nAUTH_PASSWORD=dev-only\n' "$(openssl
 如果目标是验证真实后端（真实鉴权、账号隔离、备份落库等），必须显式开启真实联调：
 
 1. 给前端设置 `VITE_USE_REAL_API=true`（例如命令行前缀 `VITE_USE_REAL_API=true npm run dev`，或写进 `.env.local`）。
-2. 启动后端并让它监听前端约定地址。当前前端在真实模式下请求 `localhost:8788/api`，因此后端需要以对应端口/前缀运行（Cloudflare 形态走 `npm run dev:server` 一类命令；自托管形态走 `npm run start:selfhost` 并确认端口与静态资源映射一致）。
+2. 启动后端并让它监听前端约定地址。当前前端在真实模式下请求 `localhost:8788/api`，因此后端需要以对应端口/前缀运行（两种形态的本地真实联调都走 `npm run start:selfhost`，并确认端口与静态资源映射一致）。
 3. `.dev.vars` 里的凭据只对 Worker 后端生效；它**不会**自动变成 Vite 前端变量，前端是否走真实 API 只看 `VITE_USE_REAL_API`。
 
 排障时 README 建议删本地 state 重来 —— 那是破坏性操作（会清掉本地真实数据），只在确认要丢弃本地库时才做。
