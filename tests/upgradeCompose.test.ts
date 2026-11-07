@@ -11,6 +11,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readComposeInfo, upgraderCommand } from "../server/upgrade/compose";
+// selfUpgrade 被这里 import 后，CI 覆盖率第 1 层（server/ 触及率 100%）才会把它算进去；
+// 顺带把它的两段线上事故文案钉进用例（见文件尾）。
+import {
+    imageUnchangedError,
+    missingComposeInfoError,
+    upgradeStatus,
+} from "../server/upgrade/selfUpgrade";
 
 const LABELS = (over: Record<string, string> = {}): Record<string, string> => ({
     "com.docker.compose.project": "navihive",
@@ -131,4 +138,36 @@ test("upgraderCommand：容器名走参数（用例可断言，生产用默认�
     const cmd = upgraderCommand(info, "my-navihive");
     assert.ok(cmd.includes("my-navihive"), "容器名要能被替换");
     assert.ok(!cmd.includes("docker inspect --format='{{.Image}}' navihive "), "不该残留默认名");
+});
+
+// ---------------- selfUpgrade 的两条错误文案（同批抽出，一并钉住） ----------------
+// selfUpgrade.ts 是编排状态机（连 docker.sock 的部分没法在单测里真跑），
+// 但它有两段**只在线上炸过**的文案 —— v4.3.0/v4.3.1 的 /compose 标签污染、
+// 「版本号先到、镜像后到」的空档提示。文案错一个字，运维就少一条救命线索。
+
+test("missingComposeInfoError：/compose 标签污染给『能修』的处方，不是 compose 部署给『换方式』的处方", () => {
+    assert.match(missingComposeInfoError({ "com.docker.compose.project.working_dir": "/compose" }), /\/compose/);
+    assert.match(
+        missingComposeInfoError({ "com.docker.compose.project.working_dir": "/compose" }),
+        /NAVIHIVE_COMPOSE_DIR/,
+        "污染情形要给出两条修法（宿主机重建 / NAVIHIVE_COMPOSE_DIR）"
+    );
+    const generic = missingComposeInfoError({});
+    assert.match(generic, /不是 docker compose 启动的/);
+    assert.doesNotMatch(generic, /\/compose（v4\.3\.0/, "未污染时不能误报旧版污染的处方");
+});
+
+test("imageUnchangedError：空档提示必须带上「容器没动」与「等 docker-publish 变绿」", () => {
+    const msg = imageUnchangedError("ghcr.io/zwjttztt/navihive:latest");
+    assert.ok(msg.includes("ghcr.io/zwjttztt/navihive:latest"), "要带镜像名");
+    assert.match(msg, /容器没有重建/);
+    assert.match(msg, /docker-publish/);
+});
+
+test("upgradeStatus：初始相位是 idle，终态联合类型包含两个回滚态", () => {
+    assert.equal(upgradeStatus.phase, "idle");
+    // 类型层钉过的两个终态（rolled_back / rollback_failed）在运行时同样可写：
+    // 前端 upgradeWait 对它们有显式否决，别把联合类型收窄
+    const snapshot = { ...upgradeStatus };
+    assert.deepEqual(snapshot, { phase: "idle", image: "", error: "", startedAt: 0, finishedAt: 0 });
 });

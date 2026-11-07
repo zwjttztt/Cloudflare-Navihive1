@@ -12,6 +12,10 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-07 · 修复：补 selfUpgrade 的触及覆盖（33.0.1）
+
+> 33.0.0 把 Docker 自升级拆到 `server/upgrade/selfUpgrade.ts` 后，CI 覆盖率第 1 层（server/ 文件触及率 100%）红了 —— 该文件没有任何用例引入过。把其中两段**只在线上炸过**的错误文案抽成纯函数并补真测试（`missingComposeInfoError`：/compose 标签污染 vs 非 compose 部署给不同处方；`imageUnchangedError`：「版本号先到、镜像后到」空档提示），`upgradeCompose.test.ts` 引入后触及率回到 100%（本地复跑 coverage 第 1 层 12/12 全绿）。
+
 ## 2026-11-07 · 安全/重构：独立审计第二批（P2-2 兼容契约 + 拆自升级 + 日志三件事 + 切批 + 口令策略 + compose 硬化）（33.0.0）
 
 > 审计第二批 5 项全部落地，外加被暂缓的 P2-2。要点：

@@ -47,6 +47,32 @@ export const upgradeStatus: {
     finishedAt: number;
 } = { phase: "idle", image: "", error: "", startedAt: 0, finishedAt: 0 };
 
+/**
+ * 读不到 compose 部署坐标时的错误文案（纯函数，有单测）：
+ * 「容器标签被旧版写成 /compose」与「根本不是 compose 起的」给不同处方 ——
+ * 前者是 v4.3.0/v4.3.1 的已知污染，能修；后者是部署形态不支持网页升级。
+ */
+export function missingComposeInfoError(labels: Record<string, string>): string {
+    const polluted = labels["com.docker.compose.project.working_dir"] === "/compose";
+    return polluted
+        ? "compose 目录标签被旧版写成 /compose（v4.3.0/v4.3.1 的已知问题）：" +
+              "请到宿主机进入 compose 目录执行 docker compose up -d --force-recreate 修正标签，" +
+              "或在 compose 的 environment 里加 NAVIHIVE_COMPOSE_DIR 指向真实目录。"
+        : "读不到 compose 部署信息（容器标签里没有 com.docker.compose.*）：本容器不是 docker compose 启动的。" +
+              "网页一键升级只支持 compose 部署，请到宿主机执行 docker compose up -d --force-recreate。";
+}
+
+/** 拉完镜像发现 registry 上还是旧镜像时的文案（纯函数，有单测） */
+export function imageUnchangedError(image: string): string {
+    return (
+        `镜像没有更新：registry 上的 ${image} 仍是当前运行的这一版。` +
+        "「发现新版本」比的是仓库里的 package.json，而镜像要在 GitHub 上构建（本仓库是 " +
+        "multi-arch，要模拟 arm64，**通常 10 分钟以上**）—— 版本号先到、镜像后到，这个空档里" +
+        "点「更新」只会拉回旧镜像。容器没有重建、站点没受影响；等镜像构建完成（GitHub → " +
+        "Actions → docker-publish 变绿）后再点一次。"
+    );
+}
+
 /** 等 helper 退出。返回退出码；超时（多半是本进程已被换掉）返回 null */
 function waitForHelperExit(id: string): Promise<number | null> {
     return new Promise(resolve => {
@@ -192,15 +218,7 @@ export async function dockerUpgradeSelf(image: string): Promise<void> {
     const compose = readComposeInfo(labels);
     if (!compose) {
         // 两种读不到坐标的情况给不同的处方：被旧版污染 vs 根本不是 compose 起的
-        const polluted = labels["com.docker.compose.project.working_dir"] === "/compose";
-        throw new Error(
-            polluted
-                ? "compose 目录标签被旧版写成 /compose（v4.3.0/v4.3.1 的已知问题）：" +
-                      "请到宿主机进入 compose 目录执行 docker compose up -d --force-recreate 修正标签，" +
-                      "或在 compose 的 environment 里加 NAVIHIVE_COMPOSE_DIR 指向真实目录。"
-                : "读不到 compose 部署信息（容器标签里没有 com.docker.compose.*）：本容器不是 docker compose 启动的。" +
-                      "网页一键升级只支持 compose 部署，请到宿主机执行 docker compose up -d --force-recreate。"
-        );
+        throw new Error(missingComposeInfoError(labels));
     }
     // 网络名从本容器身上读：helper 要跟它在同一个网里才解析得到代理。
     // 有多个网时取第一个 —— 代理模式的标准形态是单网。
@@ -225,13 +243,7 @@ export async function dockerUpgradeSelf(image: string): Promise<void> {
     const pulledImageId = await dockerImageId(image);
     if (pulledImageId && runningImageId && pulledImageId === runningImageId) {
         upgradeStatus.phase = "idle";
-        throw new Error(
-            `镜像没有更新：registry 上的 ${image} 仍是当前运行的这一版。` +
-                "「发现新版本」比的是仓库里的 package.json，而镜像要在 GitHub 上构建（本仓库是 " +
-                "multi-arch，要模拟 arm64，**通常 10 分钟以上**）—— 版本号先到、镜像后到，这个空档里" +
-                "点「更新」只会拉回旧镜像。容器没有重建、站点没受影响；等镜像构建完成（GitHub → " +
-                "Actions → docker-publish 变绿）后再点一次。"
-        );
+        throw new Error(imageUnchangedError(image));
     }
 
     upgradeStatus.phase = "recreating";
