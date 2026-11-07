@@ -12,6 +12,10 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-07 · 修复：用户名枚举挡板输入改走 gitleaks 值级白名单（33.0.2）
+
+> 33.0.1 之后 CI 的 gitleaks 门禁把 `DUMMY_HASH_PASSWORD`（用户名枚举计时挡板的假哈希输入）误判为 `generic-api-key`（变量名含 PASSWORD + 高熵串）。它本来就不是凭据 —— 把值改成含 `dummy` 的低熵串（`navihive-dummy-hash-input`），走 `.gitleaks.toml` 自己的值级白名单（dummy/fake/mock…），不再依赖侥幸。挡板行为不变（固定串 → 固定假哈希 → 烧一次满迭代 PBKDF2）。
+
 ## 2026-11-07 · 修复：补 selfUpgrade 的触及覆盖（33.0.1）
 
 > 33.0.0 把 Docker 自升级拆到 `server/upgrade/selfUpgrade.ts` 后，CI 覆盖率第 1 层（server/ 文件触及率 100%）红了 —— 该文件没有任何用例引入过。把其中两段**只在线上炸过**的错误文案抽成纯函数并补真测试（`missingComposeInfoError`：/compose 标签污染 vs 非 compose 部署给不同处方；`imageUnchangedError`：「版本号先到、镜像后到」空档提示），`upgradeCompose.test.ts` 引入后触及率回到 100%（本地复跑 coverage 第 1 层 12/12 全绿）。

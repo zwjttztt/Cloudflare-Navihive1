@@ -272,7 +272,9 @@ export async function verifyPassword(password: string, stored: string): Promise<
 // （currentPbkdf2Iterations），写死的话调参后挡板就跟真路径差一个量级，
 // 挡板自己变成新的计时信号。首次用到时现场生成一次，之后整个 isolate 复用。
 
-const DUMMY_HASH_PASSWORD = "navihive-decoy-4f8a1c63b9e2d705";
+// ⚠️ 值里刻意带 "dummy"：.gitleaks.toml 的值级白名单（dummy/fake/mock…）靠它放行 ——
+// 这个串不是凭据（挡板假哈希的输入，谁都知道），不该被密钥扫描拦下来。
+const DUMMY_HASH_PASSWORD = "navihive-dummy-hash-input";
 
 let dummyHashPromise: Promise<string> | null = null;
 
