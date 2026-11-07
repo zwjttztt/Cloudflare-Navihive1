@@ -90,4 +90,15 @@ export function useDocumentEffects({
     useEffect(() => {
         document.documentElement.classList.toggle("nav-lite", liteMode);
     }, [liteMode]);
+
+    // QQ 浏览器安全档（自动，仅对 QQ 浏览器生效，Chrome 等不受影响）：
+    // QQ 浏览器的合成器扛不住极光层那种「永不停歇的 blur + 无限动画」叠加大量
+    // backdrop-filter 每帧重采样，表现为卡片悬停闪、顶栏/滚动条闪、弹窗超界白块。
+    // 摘掉极光（display:none）+ 关掉毛玻璃模糊后，surface 仍是可读的半透明静态面板，
+    // QQ 用户失去的只是磨砂感而非可用性。UA 侦测一次即可，运行期间不会变化。
+    useEffect(() => {
+        const ua = navigator.userAgent;
+        const isQQBrowser = /QQBrowser|MQQBrowser/i.test(ua);
+        document.documentElement.classList.toggle("nav-qqbrowser", isQQBrowser);
+    }, []);
 }

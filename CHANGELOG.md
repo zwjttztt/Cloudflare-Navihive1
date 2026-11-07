@@ -12,6 +12,17 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-07 · 修复：普通模式在 QQ 浏览器持续闪烁 / 弹窗白块（极光重绘风暴 + QQ 自动安全档）（34.1.1）
+
+> 34.1.0 上线后用户复测：**Chrome 一切正常，但 QQ 浏览器**仍持续闪烁（卡片悬停闪、顶栏与滚动条逐帧闪）并伴随设置 / 弹窗超界白块，开启「清爽模式」后全部消失。这一批定位到真正的根因并修复；34.1.0 那一轮的头部滞回 / 零位移 / sensor 引用 / 设置纸面去模糊**都没碰极光**，所以对你无效。
+>
+> - **真正的根因（P0）**：全屏柔光背景层 `.nav-aurora` 是一块 `position:fixed; inset:-12%` 铺满视口（还外扩 12%）的装饰层，带 `filter: blur(48px)` 与 `animation: navAurora 26s ease-in-out infinite`——等于**永不停歇地全屏重绘 + 模糊重算**。它身后每帧都在变，于是所有带 `backdrop-filter` 的元素（弹窗纸面、卡片、顶栏、搜索框等约 20 处）**每帧都得重新采样背景**。Chrome 的现代合成器扛得住，QQ 浏览器的合成器扛不住，表现为逐帧重排的闪烁与 backdrop-filter 合成失败时糊出的超界白块。清爽模式靠 `.nav-aurora{display:none}` 掐掉驱动源、再 `backdrop-filter:none` 停采样，所以一下全好——这正说明极光才是驱动源。
+> - **主干修复**：`BackgroundLayers.tsx` 删掉极光的 `filter:"blur(48px)"`；`index.css` 删掉 `@keyframes navAurora` 与 `.nav-aurora` 的 `animation`。极光退化为**静止柔光**（径向渐变本就柔和，三处尺寸略放大以补偿扩散损失），卡片 / 顶栏 / 弹窗的毛玻璃照旧，但背后是静止背景，不再每帧重采样 → 重绘风暴停止。这是清爽模式对你生效的那一刀，只是这次只动极光、保留观感。
+> - **QQ 浏览器安全档（自动，仅 QQ 生效）**：检测到 QQ 系 UA（`QQBrowser` / `MQQBrowser`）时，由 `useDocumentEffects.ts` 一次性嗅探给根节点挂 `nav-qqbrowser`，`index.css` 在该类下 `display:none` 关掉极光、并把所有元素的 `backdrop-filter` 降级为 `none`（复用 `nav-no-glass` 的成熟写法，surface 仍是半透明静态面板）。QQ 用户失去的只是「磨砂感」而非可用性；Chrome 用户不会挂这个类，毛玻璃观感完全不变。
+> - **未动**：任何 `backdrop-filter` 用法、清爽模式 `.nav-lite`、34.1.0 的全部改动、死代码清理。
+>
+> 本地门禁全绿：`tsc -b`(0 error) / lint(0 error，23 条 react-refresh 基线 warning) / 全量单测(4195 通过，0 失败，1 跳) / build / `check:budget`(37/37) / `audit:a11y`(0 项不合格) / `audit:contrast`(亮暗各 0 处) / `check:strict-idx`(366/62/62) / smoke(全部通过)。
+
 ## 2026-11-07 · 修复：导航站持续闪烁（滚动滞回 / 头部零位移 / 渲染引用稳定）+ 设置中心切换面板白框（34.1.0）
 
 > 34.0.0 上线后用户复测：笔记页白块已消失，但**停留在导航站首页**仍有持续闪烁 —— 鼠标移上卡片不停闪、顶部进度条与右侧滚动条逐帧闪；点设置左栏面板时右缘冒出一圈白色圆角浮框。这一批逐项收口。

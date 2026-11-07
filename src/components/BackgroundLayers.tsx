@@ -59,11 +59,13 @@ export default function BackgroundLayers({
                     inset: "-12%",
                     zIndex: 0,
                     pointerEvents: "none",
-                    filter: "blur(48px)",
                     opacity: hasImage ? 0.35 : 0.55,
+                    // 去掉 blur(48px)：原 blur 让这块全屏柔光持续重绘，拖得带
+                    // backdrop-filter 的弹窗/卡片/顶栏每帧重新采样而闪烁。去掉后
+                    // 径向渐变本就柔和，仅少一点扩散；下面把三处尺寸略放大以补偿。
                     background: darkMode
-                        ? "radial-gradient(38% 44% at 18% 22%, rgba(63,94,206,.45) 0%, transparent 62%), radial-gradient(34% 40% at 82% 28%, rgba(126,63,206,.38) 0%, transparent 60%), radial-gradient(40% 46% at 62% 86%, rgba(20,120,140,.34) 0%, transparent 62%)"
-                        : "radial-gradient(38% 44% at 18% 22%, rgba(88,140,255,.24) 0%, transparent 62%), radial-gradient(34% 40% at 82% 28%, rgba(196,120,255,.20) 0%, transparent 60%), radial-gradient(40% 46% at 62% 86%, rgba(80,200,220,.18) 0%, transparent 62%)",
+                        ? "radial-gradient(46% 54% at 18% 22%, rgba(63,94,206,.45) 0%, transparent 72%), radial-gradient(42% 48% at 82% 28%, rgba(126,63,206,.38) 0%, transparent 70%), radial-gradient(48% 56% at 62% 86%, rgba(20,120,140,.34) 0%, transparent 72%)"
+                        : "radial-gradient(46% 54% at 18% 22%, rgba(88,140,255,.24) 0%, transparent 72%), radial-gradient(42% 48% at 82% 28%, rgba(196,120,255,.20) 0%, transparent 70%), radial-gradient(48% 56% at 62% 86%, rgba(80,200,220,.18) 0%, transparent 72%)",
                     transition: "opacity .4s ease",
                 }}
             />

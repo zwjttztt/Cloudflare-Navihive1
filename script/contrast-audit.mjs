@@ -339,7 +339,7 @@ async function waitAnimationsSettled(limitMs = 6000) {
                 return document.getAnimations().filter(a => {
                     if (a.playState !== 'running') return false;
                     const t = a.effect && a.effect.getTiming ? a.effect.getTiming() : {};
-                    // 装饰性动画（首页 .nav-aurora 的 navAurora 26s 无限循环）与
+                    // 装饰性动画（首页 .nav-aurora 柔光层，原本 26s 无限循环漂移，现已改为静止柔光）与
                     // spinner/呼吸灯永远「没停」，等不出结果 —— 只等有限时长的。
                     if (t.iterations === Infinity) return false;
                     // CSSTransition：有限时长的过渡一律等。旧实现只放行 opacity，

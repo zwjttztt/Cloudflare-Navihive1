@@ -692,6 +692,19 @@ html.nav-lite *::after {
 html.nav-lite .nav-aurora {
     display: none;
 }
+
+/* QQ 浏览器安全档（自动，仅对 QQ 浏览器生效，Chrome 等不受影响）：
+   其合成器扛不住极光层的 blur + 无限动画叠加大量 backdrop-filter 每帧重采样，
+   会闪/出白块。摘掉极光 + 关掉毛玻璃模糊后，surface 仍是可读的半透明静态面板。 */
+html.nav-qqbrowser .nav-aurora {
+    display: none;
+}
+html.nav-qqbrowser *,
+html.nav-qqbrowser *::before,
+html.nav-qqbrowser *::after {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
 html.nav-lite .nav-card-in,
 html.nav-lite .nav-group-panel {
     animation: none !important;
@@ -860,17 +873,6 @@ html.dark .nav-skip-link {
     }
 }
 
-/* 背景光晕缓慢漂移 */
-@keyframes navAurora {
-    0%,
-    100% {
-        transform: translate3d(0, 0, 0) scale(1);
-    }
-    50% {
-        transform: translate3d(3%, -3%, 0) scale(1.08);
-    }
-}
-
 /* 卡片入场：只在**首次挂载**那一批播，数据刷新时不重播。
    SiteCard 给组件实例第一次渲染加 .nav-card-first-in，同实例后续重渲染会摘掉它 ——
    animation 从有到无是「立刻回到最终态」，绝不会重新走进 backwards 的 opacity:0 帧。
@@ -936,9 +938,6 @@ html[data-notes-open] .nav-card-in {
     transform: var(--nav-hover-lift, translateY(-6px));
 }
 
-.nav-aurora {
-    animation: navAurora 26s ease-in-out infinite;
-}
 
 /* 分组标题吸顶（内容从下方滑过时保持可读） */
 .nav-sticky {
