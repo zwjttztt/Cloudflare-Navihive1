@@ -12,6 +12,17 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-07 · 性能/修复/工程：独立审计第三批 · 增量 A（P2-8 快照节流 + P2-15 批量删补偿 + P2-14 离线孤儿 + P2-10 CI 供应链）（33.1.0）
+
+> 第三批（结构性）先落**风险低、收益直接**的四项；最险的 P1-5（App.tsx 拆 7 个 controller hook）单独放增量 B 后续。要点：
+>
+> - **P2-8 版本快照节流（容量）**：`note_revision` 每笔记保留份数 `REVISION_KEEP_PER_NOTE` 60 → **20**（D1 容量硬上限下的主杠杆）；新增纯函数 `shouldSkipRevision` + 常量 `REVISION_MIN_INTERVAL_MS = 5min`，**只挂在显式 `pushRevision` 入口**（拦重复的手动「存版本」点击，正文不变不丢历史）。`src/API/methods/notes/notesNote.ts` 的 `updateNote`「每次编辑存改动前快照」路径**不**走时间节流——全量单测抓到：若在这里节流，用户在 5 分钟内的连续编辑会丢掉中间版本、破坏「版本历史可恢复」契约（测试 `noteFolderTagRealSql` 锁定的「改两次 = 2 份」直接红）。`docs/architecture.md` 新增 §4.4 容量估算公式（库体积 ≈ Σ正文×1.15 + Σ正文×0.8×平均快照份数 + 附件元数据，含 60→20 与 5min 节流的说明，标注经验估值待校准）。
+> - **P2-15 批量删除跨 batch 补偿**：`data.ts` `deleteSites` 阶段②逐批 `try/catch`——多批时单批失败返回 `{ items, failed, partial: true }`（已提交批次保留、未提交并入 failed），不再「中途失败只回 500 把已删的也判失败」；单 batch（`planned.length===1`）仍保持原子 500。`SiteBatchDeleteResult` 新增 `partial?: boolean` 字段（语义对齐 `NoteImportStats.partial`）。前端据此在提示条上给「撤销」并标注部分成功。
+> - **P2-14 离线队列孤儿**：重放时若某 mutation 依赖的占位 id 仍未被解析（上游还没回），不再无限重试/直接失败留下孤儿数据；新增 `findUnresolvedTempIds`（深搜去重、排除已解析占位）与 `UnresolvedTempIdError`，命中则在 `translateTempIds` 之前把 `op.blockedBy` 指向第一个未解析 id、`saveQueueMerged()` 保留 pending、跳过本轮，等上游重放后再推进。
+> - **P2-10 CI 供应链**：`docker-publish.yml` 的 `merge` job 加 `id-token: write`，并接三段 fail-soft 流水线——`anchore/sbom-action` 产 SBOM（ CycloneDX）、`sigstore/cosign-installer` + keyless `cosign sign` 对 latest / 版本 / sha 三 tag 签名、`aquasecurity/trivy-action` 镜像扫描（`continue-on-error` 仅告警，不卡发布）。
+>
+> 本地门禁全绿：build / `check:budget`(37/37) / 全量单测(4132 通过，0 失败，1 跳) / lint(0 error) / `check:strict-idx`(366/62/62) / `audit:contrast` / `audit:a11y` / smoke。
+
 ## 2026-11-07 · 修复：用户名枚举挡板输入改走 gitleaks 值级白名单（33.0.2）
 
 > 33.0.1 之后 CI 的 gitleaks 门禁把 `DUMMY_HASH_PASSWORD`（用户名枚举计时挡板的假哈希输入）误判为 `generic-api-key`（变量名含 PASSWORD + 高熵串）。它本来就不是凭据 —— 把值改成含 `dummy` 的低熵串（`navihive-dummy-hash-input`），走 `.gitleaks.toml` 自己的值级白名单（dummy/fake/mock…），不再依赖侥幸。挡板行为不变（固定串 → 固定假哈希 → 烧一次满迭代 PBKDF2）。

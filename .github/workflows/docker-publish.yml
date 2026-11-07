@@ -227,10 +227,12 @@ jobs:
 
     # 这是整份文件里**唯一**真的要写仓库的 job：合成 multi-arch manifest（packages: write）
     # 之后还要打并推送 v${version} git tag（contents: write）。
+    # id-token: write 供 keyless cosign 走 GitHub OIDC 取签名身份（P2-10）。
     # 改动前这把钥匙挂在顶层，gate / notify 也一起拿着（R18 收窄）。
     permissions:
       contents: write
       packages: write
+      id-token: write
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -269,6 +271,41 @@ jobs:
             --tag ghcr.io/zwjttztt/navihive:${{ steps.version.outputs.version }} \
             --tag ghcr.io/zwjttztt/navihive:${{ needs.gate.outputs.sha }} \
             $(printf 'ghcr.io/zwjttztt/navihive@%s ' $(cat *))
+
+      # ── P2-10 供应链安全：SBOM / 签名 / 漏洞扫描 ──
+      # 镜像推上 ghcr 之后补三道防线，全部 fail-soft（不挡发布）：
+      #   SBOM（anchore）给镜像出物料清单，便于漏洞溯源与合规；
+      #   签名（cosign keyless）用 GitHub OIDC 签发，无需管理私钥；
+      #   扫描（trivy）只告警不阻断（continue-on-error）。
+      - name: 生成 SBOM（anchore/sbom-action）
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/zwjttztt/navihive:latest
+          format: spdx-json
+          output-file: sbom.spdx.json
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 安装 cosign（keyless 签名用）
+        uses: sigstore/cosign-installer@v3
+
+      - name: cosign 签名（keyless，3 个 tag）
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign --yes "ghcr.io/zwjttztt/navihive:latest"
+          cosign sign --yes "ghcr.io/zwjttztt/navihive:${{ steps.version.outputs.version }}"
+          cosign sign --yes "ghcr.io/zwjttztt/navihive:${{ needs.gate.outputs.sha }}"
+
+      - name: Trivy 漏洞扫描（仅告警，不阻断发布）
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ghcr.io/zwjttztt/navihive:latest
+          format: table
+          exit-code: "0"
+          ignore-unfixed: true
+          vuln-type: os,library
+        continue-on-error: true
 
       - name: 核对结果（两个平台都在才算成功）
         run: docker buildx imagetools inspect ghcr.io/zwjttztt/navihive:latest

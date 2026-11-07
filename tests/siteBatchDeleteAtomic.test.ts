@@ -54,6 +54,8 @@ interface FakeDb {
     calls: Call[];
     /** 让 DELETE FROM sites 抛错：模拟「写完回收站之后、删真身时」崩掉 */
     failSiteDelete: boolean;
+    /** 只让「删真身」命中这些 id 的批次失败（模拟跨多批时某批中途抖动） */
+    failSiteDeleteSet: Set<number>;
 }
 
 /**
@@ -72,6 +74,7 @@ function makeFakeDb(sites: Row[]): FakeDb {
         store: { sites: sites.map(s => ({ ...s })), recycle: [], tombstones: [], audits: 0 },
         calls,
         failSiteDelete: false,
+        failSiteDeleteSet: new Set<number>(),
     };
 
     const clone = (store: Store): Store => JSON.parse(JSON.stringify(store)) as Store;
@@ -101,6 +104,9 @@ function makeFakeDb(sites: Row[]): FakeDb {
             if (fake.failSiteDelete) throw new Error("D1 抖动：删除真身失败");
             const count = (sql.match(/\?/g) || []).length;
             const ids = args.slice(0, count);
+            if (fake.failSiteDeleteSet.size > 0 && (ids as number[]).some(id => fake.failSiteDeleteSet.has(id))) {
+                throw new Error("D1 抖动：删除真身失败");
+            }
             store.sites = store.sites.filter(s => !ids.includes(s.id));
             return { success: true };
         }
@@ -313,4 +319,42 @@ test("还原：目标 id 已被活卡片占用时改用新 id，不再把活卡�
     const names = fake.store.sites.map(s => String(s.name));
     assert.ok(names.includes("站点 7"), "原来活着的卡片不许被顶掉");
     assert.ok(names.includes("第二次删的那张"), "第二次删的那张也要还原出来");
+});
+
+test("批量删除：跨多批时某批失败，已提交批次保留、其余并入 failed 并返回 partial", async () => {
+    resetMigrationCacheForTests();
+    const ids = Array.from({ length: 250 }, (_, i) => i + 1);
+    const fake = makeFakeDb(ids.map(site));
+    const api = makeApi(fake);
+    // 让第二批（id 101..200）里的 150 删真身失败 —— 第一批（1..100）已成功提交
+    fake.failSiteDeleteSet = new Set([150]);
+
+    const result = await api.deleteSites(ids);
+
+    assert.equal(result.partial, true, "跨多批部分失败要标 partial，不让前端误以为都删掉了");
+    // 第一批 100 张已提交：真身删掉、回收站有记录（事务已落地）
+    assert.equal(fake.store.sites.length, 250 - 100, "已提交的第一批 100 张真身要删掉");
+    assert.equal(fake.store.recycle.length, 100, "已提交批次的回收站条目保留");
+    // failed 包含：第二批及之后所有 id（101..250），已提交批次的 id（1..100）不在其中
+    const expectFailed = ids.filter(id => id >= 101);
+    assert.deepEqual(
+        [...result.failed].sort((a, b) => a - b),
+        [...expectFailed].sort((a, b) => a - b),
+        "本批及之后未提交的 id 都要进 failed"
+    );
+    assert.equal(result.failed.filter(id => id <= 100).length, 0, "已提交批次的 id 不能算失败");
+    // items 含已提交的 100 张（recycleId 有值）
+    assert.equal(result.items.length, 100);
+    assert.ok(result.items.every(i => typeof i.recycleId === "number"), "已提交的每条都要带回 recycleId");
+});
+
+test("批量删除：单批失败仍走「全或无」原子性（保持原 reject 行为）", async () => {
+    resetMigrationCacheForTests();
+    const fake = makeFakeDb([site(1), site(2), site(3)]);
+    const api = makeApi(fake);
+    fake.failSiteDelete = true; // 单批（3 个 id 不足 100 参数，仍是 1 批）全失败
+
+    await assert.rejects(() => api.deleteSites([1, 2, 3]));
+    assert.equal(fake.store.sites.length, 3, "单批失败必须整体回滚，真身一个都不能少");
+    assert.equal(fake.store.recycle.length, 0, "回收站里不许留下没删成的条目");
 });

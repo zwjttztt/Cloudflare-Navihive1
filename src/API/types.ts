@@ -706,6 +706,13 @@ export interface SiteBatchDeleteResult {
     items: Array<{ id: number; recycleId?: number }>;
     /** 一个都没动过的 id（卡片不存在 / 不是自己的 / 回收站没写进去） */
     failed: number[];
+    /**
+     * 跨多批删除时部分批次失败：已提交批次的删除保留在 `items`，
+     * 本批及之后未提交的 id 并入 `failed`。语义对齐 `NoteImportStats.partial` ——
+     * 调用方据此如实提示「重新删除可续传」，而不是当成一次完整成功的删除。
+     * 单批场景保持「全或无」，失败不出现此字段（走 500 上抛）。
+     */
+    partial?: boolean;
 }
 
 /** 批量从回收站还原的结果：restored 直接给前端插回界面，省掉一次全量重拉 */

@@ -35,6 +35,8 @@ const SITE_COLUMNS = [
 function makeDb(store: Store) {
     let nextId = 1;
     const allocId = () => nextId++;
+    // 只让「删真身」命中这些 id 的批次失败（模拟跨多批时某批中途抖动）
+    const failSiteDeleteSet = new Set<number>();
 
     const prepare = (sql: string) => {
         let args: unknown[] = [];
@@ -108,6 +110,9 @@ function makeDb(store: Store) {
                 }
                 if (sql.includes("DELETE FROM sites")) {
                     const ids = args.slice(0, (sql.match(/\?/g) || []).length);
+                    if (failSiteDeleteSet.size > 0 && (ids as number[]).some(id => failSiteDeleteSet.has(id))) {
+                        throw new Error("D1 抖动：删除真身失败");
+                    }
                     const before = store.sites.length;
                     store.sites = store.sites.filter(s => !ids.includes(s.id));
                     return { success: store.sites.length < before };
@@ -126,6 +131,7 @@ function makeDb(store: Store) {
 
     return {
         prepare,
+        failSiteDeleteSet,
         async exec() {
             return { success: true };
         },
@@ -270,4 +276,63 @@ test("批量删除：空数组与非法 id 不炸，也不误删", async () => {
     assert.deepEqual(await api.deleteSites([]), { items: [], failed: [] });
     assert.deepEqual(await api.deleteSites([NaN, 1.5]), { items: [], failed: [] });
     assert.equal(store.sites.length, 1);
+});
+
+test("批量删除：跨多批部分失败返回 partial + 已提交 items + 未提交 failed", async () => {
+    const store = freshStore(Array.from({ length: 250 }, (_, i) => site(i + 1, `S${i + 1}`)));
+    const db = makeDb(store);
+    const api = new NavigationAPI({
+        DB: db as never,
+        AUTH_ENABLED: "false",
+        AUTH_USERNAME: "",
+        AUTH_PASSWORD: "",
+        AUTH_SECRET: "test-secret",
+    });
+    // 让第二批（id 101..200）里的 150 删真身失败 —— 第一批（1..100）已成功提交
+    db.failSiteDeleteSet.add(150);
+
+    const result = await api.deleteSites(Array.from({ length: 250 }, (_, i) => i + 1));
+
+    assert.equal(result.partial, true, "跨多批部分失败要标 partial");
+    // 第一批 100 张已提交
+    assert.equal(result.items.length, 100);
+    assert.ok(
+        result.items.every(i => typeof i.recycleId === "number"),
+        "已提交每条都要带回 recycleId"
+    );
+    // failed = 第二批及之后所有 id（101..250）；已提交批次的 id（1..100）不在其中
+    const expectFailed = Array.from({ length: 250 }, (_, i) => i + 1).filter(id => id >= 101);
+    assert.deepEqual(
+        [...result.failed].sort((a, b) => a - b),
+        [...expectFailed].sort((a, b) => a - b),
+        "本批及之后未提交的 id 都要进 failed"
+    );
+    assert.equal(result.failed.filter(id => id <= 100).length, 0, "已提交的 id 不能算失败");
+    // 第一批真身确实删掉了（非事务假库里 batch0 的 run 已落地）
+    assert.equal(store.sites.length, 250 - 100, "已提交批次的真身要真的删掉");
+});
+
+test("批量删除：单批失败仍走「全或无」原子性（保持原 reject 行为）", async () => {
+    const store = freshStore([site(1, "A"), site(2, "B"), site(3, "C")]);
+    const api = makeApi(store);
+    // 让 INSERT recycle_bin 失败：模拟 D1 写入报错（单批场景，必须整体 reject）
+    const db = (api as unknown as { db: { prepare: (sql: string) => unknown } }).db;
+    const original = db.prepare.bind(db);
+    db.prepare = (sql: string) => {
+        if (sql.includes("INSERT INTO recycle_bin")) {
+            return {
+                bind() {
+                    return {
+                        async run() {
+                            throw new Error("D1 写入失败");
+                        },
+                    };
+                },
+            };
+        }
+        return original(sql);
+    };
+
+    await assert.rejects(() => api.deleteSites([1, 2, 3]));
+    assert.equal(store.sites.length, 3, "单批失败必须整体 reject，真身一个都不能少");
 });

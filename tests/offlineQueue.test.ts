@@ -19,6 +19,8 @@ import {
     OfflineQueueFullError,
     OfflineQueueUnserializableError,
     QueuePayloadTooLargeError,
+    UnresolvedTempIdError,
+    findUnresolvedTempIds,
     MAX_PAYLOAD_BYTES,
     MAX_QUEUE_BYTES,
     MAX_FAILED_BYTES,
@@ -444,4 +446,87 @@ test("BigInt 载荷同样被拒（JSON.stringify 对 BigInt 直接抛 TypeError�
     );
     assert.equal(pendingCount(), 0);
     assert.equal(diskQueue().length, 0);
+});
+
+// ---------------- P2-14：离线队列重放依赖（占位 id 尚未解析时的跳过语义） ----------------
+//
+// 离线新建分组时本地先拿一个负数占位 id（见 isTempId），同会话下在该分组里新建的站点
+// 会在参数里带着这个负数入队。重放时如果「新建分组的那条操作」还没轮到、tempIdMap 里
+// 还没有真实 id，硬发下去只会把站点挂在一个本地才有的负数分组上、造出孤儿数据。
+// 所以重放循环发现依赖未解析时要本轮跳过：记下 blockedBy、留在队列，等依赖回填后再重放。
+
+test("P2-14：findUnresolvedTempIds / UnresolvedTempIdError 新导出符号", () => {
+    localStorage.clear();
+    setAccountUid(null); // 全新账号的 tempIdMap 必为空
+    // 两个未解析的占位 id 都该出现，且按出现去重
+    assert.deepEqual(
+        findUnresolvedTempIds([{ group_id: -5 }, { sites: [{ group_id: -6 }] }]),
+        [-5, -6]
+    );
+    // 重复出现的同一个占位 id 只报告一次
+    assert.deepEqual(findUnresolvedTempIds([{ group_id: -5, sites: [{ group_id: -5 }] }]), [-5]);
+    // 正数 id 不算占位 id，不该被报告
+    assert.deepEqual(findUnresolvedTempIds([{ group_id: 5, id: 9 }]), []);
+    // 嵌套对象 / 数组里的占位 id 也能深搜出来
+    assert.deepEqual(
+        findUnresolvedTempIds([{ nested: { deep: { group_id: -7 } }, arr: [[-8]] }]),
+        [-7, -8]
+    );
+
+    const err = new UnresolvedTempIdError(-5, "createSite");
+    assert.ok(err instanceof Error);
+    assert.equal(err.name, "UnresolvedTempIdError");
+    assert.equal(err.blockedId, -5);
+    assert.match(err.message, /尚未解析/);
+});
+
+test("P2-14：重放时依赖的占位 id 尚未解析 → 跳过、记 blockedBy、留在队列", async () => {
+    localStorage.clear();
+    reset();
+    const calls: unknown[][] = [];
+    const api: MutationApi = {
+        createSite: async (...a: unknown[]) => { calls.push(a); return { id: 7 }; },
+    };
+    // 站点带着一个本地占位 id（-1234567），但同会话里「新建它所属分组」的那条操作
+    // 既没入队也没重放成功，tempIdMap 里查不到这个号 → 必须跳过、不能硬发成孤儿数据
+    const op = enqueueMutation("createSite", [{ group_id: -1234567, name: "孤儿" }]);
+    const done = await flushOfflineQueue(api);
+
+    assert.equal(done, 0, "带未解析占位 id 的操作不应被重放");
+    assert.equal(calls.length, 0, "createSite 绝不该被调用——否则会造出挂在负数分组上的数据");
+    assert.equal(pendingCount(), 1, "操作必须留在队列里等依赖回填");
+    const kept = takeAll();
+    assert.equal(kept.length, 1);
+    assert.equal(kept[0].kind, "createSite");
+    assert.equal(kept[0].blockedBy, -1234567, "blockedBy 应记下卡住它的那个占位 id");
+    // 入队时拿到的对象引用与队列里的应是同一个，便于后续按 blockedBy 排序 / 诊断
+    assert.equal(op.blockedBy, -1234567);
+});
+
+test("P2-14：依赖的占位 id 被同轮重放回填后，后续操作正常重放（group_id 翻译为真实 id）", async () => {
+    localStorage.clear();
+    reset();
+    const calls: { kind: string; args: unknown[] }[] = [];
+    const realGroupId = 99;
+    const api: MutationApi = {
+        createGroup: async (...a: unknown[]) => { calls.push({ kind: "createGroup", args: a }); return { id: realGroupId }; },
+        createSite: async (...a: unknown[]) => { calls.push({ kind: "createSite", args: a }); return { id: 7 }; },
+    };
+
+    // 离线新建分组（本地占位 id 自动分配），再在它下面建一个站点（参数带上那个占位 id）
+    const groupOp = enqueueMutation("createGroup", [{ name: "G" }]);
+    assert.ok(typeof groupOp.tempId === "number" && groupOp.tempId < 0, "新建分组应拿到一个负数占位 id");
+    enqueueMutation("createSite", [{ group_id: groupOp.tempId, name: "S" }]);
+
+    const done = await flushOfflineQueue(api);
+    assert.equal(done, 2, "分组建好、占位 id 回填后，站点也该重放成功");
+
+    const groupCall = calls.find(c => c.kind === "createGroup");
+    const siteCall = calls.find(c => c.kind === "createSite");
+    assert.ok(groupCall, "createGroup 必须被调用");
+    assert.ok(siteCall, "createSite 必须被调用");
+    // 站点的 group_id 必须被翻译成真实 id，而不是残留的负数占位
+    const siteArg = siteCall!.args[0] as { group_id: number };
+    assert.equal(siteArg.group_id, realGroupId, "占位 id 必须翻译成真实分组 id");
+    assert.equal(pendingCount(), 0, "两条都重放成功，队列清空");
 });

@@ -8,6 +8,7 @@ import type { NavigationAPI } from "../../http";
 import type { NotesApi } from "../notes";
 import type { Note, NoteRevision } from "../../types";
 import { REVISION_KEEP_PER_NOTE } from "../../../utils/noteLimits";
+import { shouldSkipRevision } from "./revisionThrottle";
 
 /**
  * 记一个版本快照，并裁掉超出上限的旧版本。
@@ -22,6 +23,13 @@ async function pushRevision(
     title: string,
     content: string
 ): Promise<void> {
+    // 节流（P2-8，2026-11）：距上次快照不足 REVISION_MIN_INTERVAL_MS 就跳过。
+    // 这里不存正文，跳过的代价仅仅是「少一份快照」；本函数是**显式**创建快照的入口
+    // （例如 restoreNoteRevision 经 updateNote 落到此、以及 mock 服务端的更新路径），
+    // 用于拦重复的手动存版本点击（正文未变时不丢历史）。
+    // ⚠️ 注意：真实 updateNote 的「每次编辑存改动前快照」路径**不**走此节流（见 notesNote.ts），
+    //    以保证版本历史可恢复、不丢中间版本。
+    if (await shouldSkipRevision(api, noteId)) return;
     await api.db
         .prepare(
             `INSERT INTO note_revision (note_id, user_id, title, content) VALUES (?, ?, ?, ?)`

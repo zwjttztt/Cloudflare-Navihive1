@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 
 import type { ExportData } from "../src/API/http";
 import { NavigationAPI } from "../src/API/navigationApi";
+import { REVISION_KEEP_PER_NOTE } from "../src/utils/noteLimits";
 
 interface NoteRow {
     id: number;
@@ -201,12 +202,12 @@ test("快照数量有上限，超出从最旧开始裁", async () => {
     const db = new MockD1();
     db.notes.push({ id: 1, user_id: 2, title: "标题", content: "v0" });
     const api = apiWith(db, 2);
-    // 连改 80 次，超过了后端的 60 条上限
+    // 连改 80 次，超过了后端的 REVISION_KEEP_PER_NOTE 条上限（2026-11 审计整改前为 60，现降为 20）
     for (let i = 1; i <= 80; i++) {
         await api.updateNote(1, { content: `v${i}` });
     }
-    assert.ok(db.revisions.length <= 60, `不该超过 60 条，实际 ${db.revisions.length}`);
-    assert.equal(db.revisions.length, 60);
+    assert.ok(db.revisions.length <= REVISION_KEEP_PER_NOTE, `不该超过 ${REVISION_KEEP_PER_NOTE} 条，实际 ${db.revisions.length}`);
+    assert.equal(db.revisions.length, REVISION_KEEP_PER_NOTE);
     // 留的是**最近**的 60 条（最新的快照对应最后一次改动前的内容）
     assert.equal(db.revisions.at(-1)!.content, "v79");
 });

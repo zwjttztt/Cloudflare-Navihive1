@@ -378,7 +378,15 @@ export const noteMethods: Pick<NotesApi,
             const titleOrContentTouched =
                 patch.content !== undefined || patch.title !== undefined;
             if (changed && before) {
-                const followup: D1PreparedStatement[] = [
+                // 版本快照（存的是**改动前**的内容）与全文索引合进**同一个 batch** = 一次往返。
+                // 两者都是辅助功能，失败只记日志，不能让用户的保存失败。
+                // ⚠️ 这里**不做**时间节流（P2-8 的 5 分钟闸门）：每一次正文/标题编辑都必须保留
+                //    改动前快照，否则用户在 5 分钟内的连续编辑会丢掉中间版本、破坏「版本历史可恢复」
+                //    契约（既有测试 noteFolderTagRealSql 也锁定了「改两次 = 2 份」）。
+                //    快照存储上限由 REVISION_KEEP_PER_NOTE(=20) 兜底；时间节流只保留在显式
+                //    pushRevision 入口（拦重复的手动存版本点击，正文不变不丢历史）。
+                const followup: D1PreparedStatement[] = [];
+                followup.push(
                     this.db
                         .prepare(
                             "INSERT INTO note_revision (note_id, user_id, title, content) VALUES (?, ?, ?, ?)"
@@ -394,8 +402,8 @@ export const noteMethods: Pick<NotesApi,
                              )`
                         )
                         // ⚠️ `IS ?` 而不是 `= ?`：单账号部署 user_id 是 NULL，`= NULL` 永远不成立
-                        .bind(id, this.currentUserId, id, this.currentUserId, REVISION_KEEP_PER_NOTE),
-                ];
+                        .bind(id, this.currentUserId, id, this.currentUserId, REVISION_KEEP_PER_NOTE)
+                );
                 if (typeof row.id === "number" && titleOrContentTouched && this.notesFtsReady) {
                     // ⚠️ 按 rowid 定位（不是 note_id）：note_id 是 UNINDEXED 列，
                     // `WHERE note_id = ?` 会整表扫 fts5 虚拟表，而保存笔记是最高频的
@@ -416,7 +424,8 @@ export const noteMethods: Pick<NotesApi,
                     );
                 }
                 try {
-                    await this.db.batch(followup);
+                    // 此分支（changed && before）followup 至少含一份改动前快照，FTS 就绪时再加索引项
+                    if (followup.length > 0) await this.db.batch(followup);
                 } catch (error) {
                     logger.error("保存版本快照/全文索引失败:", { err: error, component: "notesNote" })
                 }

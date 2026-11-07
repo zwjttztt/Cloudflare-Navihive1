@@ -2,7 +2,7 @@
 // 笔记域的「规则值 + 由它派生的判定」（2026-10-22，3.3 mock 同源化第一批）。
 //
 // 为什么集中在这里：这些数字原先散在两处，而且**已经在两处走偏了**：
-//   - 真实侧 `REVISION_KEEP_PER_NOTE = 60`，mock 里直接写 `60`，
+//   - 真实侧 `REVISION_KEEP_PER_NOTE = 20`（2026-11 审计整改前为 60），mock 里直接 import 这个常量，
 //     只靠一句注释「与后端 REVISION_KEEP_PER_NOTE 一致」维持 —— 改常量时 mock 不会跟着变，
 //     而这类不一致**不会报错**，只会让本地演示和线上表现不同；
 //   - 摘要截断：真实侧是 `>= NOTE_SUMMARY_CHARS` 且只打标记（内容已在 SQL 里截好），
@@ -11,7 +11,16 @@
 // 约定：**规则值只在这里定义一次**，两边都 import；判定也一起给，别各写一次比较。
 
 /** 每条笔记最多保留多少个历史版本（超出从最旧开始裁） */
-export const REVISION_KEEP_PER_NOTE = 60;
+export const REVISION_KEEP_PER_NOTE = 20;
+
+/**
+ * 版本快照的最小写入间隔（毫秒）。
+ *
+ * 自动保存是 3 秒一防抖，一次连续改字会触发很多次 update，每次都存快照的话
+ * 一分钟能堆出几十条一模一样的版本（P2-8，2026-11 审计整改）。
+ * 距上次快照不足这个间隔时，跳过写新快照 —— 节流的是快照，不是笔记正文。
+ */
+export const REVISION_MIN_INTERVAL_MS = 5 * 60 * 1000;
 
 /** 列表摘要里正文最多多少字（超出打 content_truncated 标记） */
 export const NOTE_SUMMARY_CHARS = 200;

@@ -605,11 +605,28 @@ export const dataImpl: DataApi = {
                     const auditStmt = auditStatement(this, audit);
                     if (auditStmt) statements.push(auditStmt);
                 }
-                const results = await this.db.batch(statements);
-                // results 前 k 条就是回收站 INSERT，按位置取回 recycleId
-                step.ids.forEach((id, j) => {
-                    items.push({ id, recycleId: recycleIdOf(results[j]) });
-                });
+                try {
+                    const results = await this.db.batch(statements);
+                    // results 前 k 条就是回收站 INSERT，按位置取回 recycleId
+                    step.ids.forEach((id, j) => {
+                        items.push({ id, recycleId: recycleIdOf(results[j]) });
+                    });
+                } catch (error) {
+                    // 跨批无法原子：D1 没有跨 batch 的事务。本批及之后尚未提交的 id 全部并入
+                    // failed，已提交批次（items）保留，并标记 partial —— 客户端据此如实提示
+                    // 「重新删除可续传」，而不是当成一次完整成功的删除（否则界面会误以为都删掉了）。
+                    // 单批场景（planned.length === 1）：保持原「全或无」的原子性，失败照旧上抛（500）。
+                    if (planned.length === 1) throw error;
+                    return {
+                        items,
+                        failed: [
+                            ...failed,
+                            ...items.filter(item => item.recycleId === undefined).map(item => item.id),
+                            ...planned.slice(i).flatMap(s => s.ids),
+                        ],
+                        partial: true,
+                    };
+                }
             }
 
             return {

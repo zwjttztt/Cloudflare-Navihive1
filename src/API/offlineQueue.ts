@@ -65,6 +65,11 @@ export interface PendingMutation {
      * 之后在同一分组下新建的站点会带着这个负数入队，重放时按这里翻译回真实 id。
      */
     tempId?: number;
+    /**
+     * 重放时因「依赖的占位 id 尚未解析」被跳过后记录：第一个未解析的占位 id。
+     * 仅作诊断 / 排序用，不阻塞该操作留在队列里等依赖回填（见 P2-14，2026-11）。
+     */
+    blockedBy?: number;
 }
 
 /** 已经放弃的操作：留给用户查看 / 重试 / 放弃，不再占着待同步角标 */
@@ -459,6 +464,45 @@ export function translateTempIds(args: unknown[], map: Record<string, number> = 
     }
 
     return [out, ...args.slice(1)];
+}
+
+/**
+ * 扫描操作参数里出现的「本地占位 id」，返回其中**尚未在 tempIdMap 解析**的那些。
+ *
+ * 离线新建分组时本地先拿一个负数占位 id（见 isTempId），同会话下在该分组里新建的站点
+ * 会在参数里带着这个负数入队。只有当占位 id 已经回填成真实 id（tempIdMap 里有记录），
+ * 重放时 `translateTempIds` 才翻译得出去；否则下灌会造出挂在负数分组上的孤儿数据。
+ *
+ * 已解析的占位 id 不出现在结果里 —— 它们走 `translateTempIds` 正常翻译即可，不应被跳过。
+ * 遍历对对象/数组做深搜，并用 `visited` 去环（args 理论上不环，但防御性处理以免误把
+ * 循环结构卡死）。
+ *
+ * @param args 操作的参数数组（与重放时传给 `api[kind](...args)` 的同一份）
+ * @returns 尚未解析的占位 id 列表（按出现去重），已解析的不在其中
+ */
+export function findUnresolvedTempIds(args: unknown[]): number[] {
+    const unresolved = new Set<number>();
+    const visited = new Set<unknown>();
+    const walk = (value: unknown): void => {
+        if (typeof value === "object" && value !== null) {
+            if (visited.has(value)) return;
+            visited.add(value);
+            if (Array.isArray(value)) {
+                for (const item of value) walk(item);
+            } else {
+                for (const key of Object.keys(value as Record<string, unknown>)) {
+                    walk((value as Record<string, unknown>)[key]);
+                }
+            }
+            return;
+        }
+        if (isTempId(value)) {
+            const id = value as number;
+            if (tempIdMap[String(id)] === undefined) unresolved.add(id);
+        }
+    };
+    walk(args);
+    return [...unresolved];
 }
 
 // ---------------- 入队 / 出队 ----------------
@@ -880,6 +924,18 @@ export async function flushOfflineQueue(api: MutationApi): Promise<number> {
                         api.setIdempotencyKey(op.opId ?? null);
                     }
 
+                    // P2-14：这条操作的参数里带着「还没解析的离线占位 id」。它的依赖——
+                    // 同会话里离线新建的那个分组 / 卡片——还没重放成功，tempIdMap 里还没有
+                    // 真实 id。现在硬发只会把站点挂在一个本地才有的负数分组上，造出孤儿数据。
+                    // 先记下卡在谁身上（blockedBy），本轮跳过、留它在队列里；等依赖被重放成功、
+                    // tempIdMap 填上真实 id 后，下一次 online 重放时这里就能翻译出去了。
+                    const unresolvedIds = findUnresolvedTempIds(op.args);
+                    if (unresolvedIds.length > 0) {
+                        op.blockedBy = unresolvedIds[0];
+                        saveQueueMerged();
+                        continue;
+                    }
+
                     // 先标 sending 再落盘：页面此刻关掉的话，下次启动能靠租期把它收回来重发，
                     // 而不是像「先取出再执行」那样凭空消失。
                     op.state = "sending";
@@ -944,6 +1000,31 @@ export class OfflineQueuedError extends Error {
         this.name = "OfflineQueuedError";
         if (tempId !== undefined) this.tempId = tempId;
         if (cause) (this as { cause?: unknown }).cause = cause;
+    }
+}
+
+/**
+ * 一条操作在重放时因为「依赖的离线占位 id 还没解析」而被本轮跳过。
+ *
+ * 它**不是** `OfflineQueuedError`：那条代表「新操作已离线、已入队、联网自动同步」，
+ * 而这里根本没有「新入队」发生 —— 操作早就在队列里了，只是它的依赖（同会话里离线
+ * 新建的那个分组 / 卡片）还没重放成功、真实 id 还没回填进 tempIdMap。
+ *
+ * 这条错误目前**不抛出**：重放循环发现后会把它记进 `op.blockedBy`、本轮 `continue`，
+ * 让这条操作继续留在队列里等依赖回填（见 P2-14，2026-11）。把它单独定义成一类，
+ * 是为了让调用方 / 诊断逻辑能精确识别这种「卡在依赖上」的状态（与「网络错」「服务端拒」
+ * 「载荷过大」区分开），将来若要在 UI 上提示「正在等待依赖同步」直接复用即可。
+ */
+export class UnresolvedTempIdError extends Error {
+    /** 卡住这条操作、尚未解析的那个占位 id */
+    public readonly blockedId: number;
+
+    constructor(blockedId: number, kind: string = "unknown") {
+        super(
+            `该操作依赖的离线占位 id（${blockedId}）尚未解析，已推迟到依赖同步后再重放：${kind}`
+        );
+        this.name = "UnresolvedTempIdError";
+        this.blockedId = blockedId;
     }
 }
 
