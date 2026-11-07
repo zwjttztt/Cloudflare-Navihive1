@@ -279,6 +279,7 @@ jobs:
       #   扫描（trivy）只告警不阻断（continue-on-error）。
       - name: 生成 SBOM（anchore/sbom-action）
         uses: anchore/sbom-action@v0
+        continue-on-error: true
         with:
           image: ghcr.io/zwjttztt/navihive:latest
           format: spdx-json
@@ -290,6 +291,7 @@ jobs:
         uses: sigstore/cosign-installer@v3
 
       - name: cosign 签名（keyless，3 个 tag）
+        continue-on-error: true
         env:
           COSIGN_YES: "true"
         run: |
@@ -298,7 +300,10 @@ jobs:
           cosign sign --yes "ghcr.io/zwjttztt/navihive:${{ needs.gate.outputs.sha }}"
 
       - name: Trivy 漏洞扫描（仅告警，不阻断发布）
-        uses: aquasecurity/trivy-action@0.28.0
+        # ⚠️ tag 必须带 `v` 前缀（v0.28.0）：写裸 0.28.0 会在 job 准备阶段
+        #    "Unable to resolve action" —— action 解析失败不受 continue-on-error
+        #    保护，会连带整条 merge job 红、镜像发布失败（33.1.0 首发踩过）。
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: ghcr.io/zwjttztt/navihive:latest
           format: table
