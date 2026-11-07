@@ -219,6 +219,63 @@ WebKit 的差异靠静态守卫兜底：`tests/safariApiGuard.test.ts` 扫 `src/
 尚未覆盖的部分（真机 WebKit 专项）：真实 Safari 的触摸/滚动行为、`-webkit-` 前缀的渲染差异、
 iOS 上的存储配额表现 —— 这些只能靠真机，静态扫描管不到。
 
+### 5.2 CSS 特性：两条必须显式降级的
+
+JS 侧靠 `safariApiGuard` 拦，CSS 侧有两个特性**不在 Firefox 基线的全段内**：
+
+| 特性 | Chrome | Firefox | Safari | 与基线的关系 |
+| --- | --- | --- | --- | --- |
+| `:has()` | 105 | **121** | 15.4 | `firefox >= 111` 里的 111–120（含 ESR115）**不支持** |
+| `color-mix()` | 111 | **113** | 16.2 | 只有 Firefox 111–112 不支持 |
+
+**`:has()` 的坑比「这条不生效」严重得多**：CSS 的普通选择器列表**不是 forgiving 的** ——
+
+```css
+.a:hover .x,
+.b:has(:focus-visible) { opacity: 1 }
+```
+
+老浏览器认不出 `:has()`，会把**整条规则**丢掉，连那条完全兼容的 `.a:hover .x` 也一起失效。
+功能静默坏掉，而 CI 只有 Chromium，永远发现不了。
+
+所以本仓库固定用两段式写法（老浏览器走兜底，新浏览器精修）：
+
+```css
+/* ① 所有浏览器都能走的兜底 —— 老浏览器唯一路径 */
+.nav-card-in:focus-within { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+/* ② 支持 :has() 时才收紧成「只有键盘焦点画环」 */
+@supports selector(:has(*)) {
+    .nav-card-in:focus-within:not(:has(:focus-visible)) { outline: none; }
+    .nav-card-in:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
+}
+```
+
+判据由 `tests/cssBaselineGuard.test.ts` 钉住：**`:has()` 出现在 `@supports selector(:has(*))`
+之外即 CI 红**；`@supports not selector(:has(*))` 块里写 `:has()` 同样判红（逻辑自相矛盾）。
+
+**`color-mix()` 则有意不做兜底**，接受降级 —— 理由是成本与收益不成比例：
+
+- 受影响的只有 **Firefox 111–112 两个已过期的补丁版本**（ESR115 本身就支持 113+ 的特性），
+  而不支持的后果只是「少一层淡底 / 淡边」，不影响布局、可读性与功能可达性；
+- 自定义属性里的未知函数**不会**在声明时被丢弃，而是等 `var()` 展开时才失效 ——
+  「同一个 token 写两遍声明」这种老 fallback 手法对 `--accent-wash` 这类 token **不管用**，
+  只能靠 `@supports` 换值，而全文件另有 28 处 `color-mix()` 都无兜底，单给一处补反而不一致；
+- 首屏 gzip 预算已贴死（余量只有几十字节），为两个版本窗口的淡底加 `@supports`
+  会直接顶破门禁 —— **门禁的意义就是逼你在这种情况下做取舍，而不是偷偷加体积**。
+
+所以两条特性的处理策略是分开的：**`:has()` 兜底**（缺 10 个版本，且会连带丢弃整组规则，
+杀伤面完全不同），**`color-mix()` 接受降级**（缺 2 个补丁版本，只丢装饰）。
+
+知道了这个边界之后，还有一条经验值得记住：**能不改用新特性就别改**。
+`.nav-card-actions` 的浮层显隐原来写的是 `.nav-card-in:focus-within`（祖先选择器，
+鼠标点卡片也会亮 → 常驻不消失），后来被改成 `:has(:focus-visible)` 来绕开。
+但真正的病根是**选择器范围太大**：浮层按钮早就不在 `<a>` 里了，写成
+`.nav-card-actions:focus-within` 就精确命中「焦点落进浮层内部」，`opacity` 不会误亮 ——
+一个 CSS3 老特性就够了，不需要 `:has()`。同类地，`.nav-group-tools:has(:focus-visible)`
+从来没独立起过作用（工具条是 panel 的后代，`:focus-within` 早已覆盖），2026-11 直接删掉。
+现在整份 `index.css` 只剩**一处** `:has()`（卡片焦点环，那里非它不可）。
+
 ---
 
 ## 6. 构建与分包

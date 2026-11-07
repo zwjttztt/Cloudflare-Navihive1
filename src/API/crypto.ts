@@ -261,6 +261,27 @@ export async function verifyPassword(password: string, stored: string): Promise<
     return constantTimeEqual(derived, expected);
 }
 
+// ---------------- 用户名枚举的计时挡板（2026-11，P2-7） ----------------
+//
+// 登录时「账号存在」要跑一次满迭代 PBKDF2，而「账号不存在」如果直接 return，
+// 响应时间会差出一整个哈希的量（几十到几百毫秒）—— 攻击者拿着秒表就能把
+// 「哪些用户名注册过」逐个探出来。挡法：账号不存在时也对一个**固定的假哈希**
+// 跑同一次 verifyPassword，把两条路的时间拉平。
+//
+// 为什么用惰性初始化而不是写死一个哈希串：hashPassword 的迭代数是可配的
+// （currentPbkdf2Iterations），写死的话调参后挡板就跟真路径差一个量级，
+// 挡板自己变成新的计时信号。首次用到时现场生成一次，之后整个 isolate 复用。
+
+const DUMMY_HASH_PASSWORD = "navihive-decoy-4f8a1c63b9e2d705";
+
+let dummyHashPromise: Promise<string> | null = null;
+
+/** 对固定假哈希跑一次 verifyPassword（结果必然 false，调用方只用它烧时间） */
+export async function verifyPasswordAgainstDummyHash(password: string): Promise<void> {
+    dummyHashPromise ??= hashPassword(DUMMY_HASH_PASSWORD);
+    await verifyPassword(password, await dummyHashPromise);
+}
+
 async function pbkdf2(
     password: string,
     salt: Uint8Array,

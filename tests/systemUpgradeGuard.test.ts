@@ -32,6 +32,17 @@ import {
 const repoRoot = process.cwd();
 const composeYml = readFileSync(resolve(repoRoot, "docker-compose.yml"), "utf8");
 const entryTs = readFileSync(resolve(repoRoot, "server/entry.ts"), "utf8");
+/**
+ * sock 路径的「命令拼装层」。2026-11 从 server/entry.ts 拆出（原文件 1500+ 行）——
+ * `upgraderCommand` 所在的文件变了，锚点检查的对象也要跟着换，否则这条守卫会变成
+ * 「检查一个已经不存在的地方」的假绿。拆分的背景见 server/upgrade/compose.ts 文件头。
+ */
+const upgradeComposeTs = readFileSync(resolve(repoRoot, "server/upgrade/compose.ts"), "utf8");
+/**
+ * 重建序列与状态机（退出码 → 相位类型的另一半）。同样在 2026-11 从 entry.ts 拆出，
+ * 所以「退出码有没有真的从 helper 传到失败分支」要到这个文件里看。
+ */
+const selfUpgradeTs = readFileSync(resolve(repoRoot, "server/upgrade/selfUpgrade.ts"), "utf8");
 /** spool 升级器的执行体（2026-11 从 compose 内联抽出来的那份） */
 const loopScript = readFileSync(resolve(repoRoot, "deploy/upgrader/upgrade-loop.sh"), "utf8");
 
@@ -117,11 +128,13 @@ describe("两条升级路径锚点一致", () => {
         });
     }
 
-    // entry.ts（sock helper）必须真正 import 并调用这两个生成函数，否则就是没接线
-    test("entry.ts 接入了 upgradeHealth 的两个函数", () => {
-        assert.ok(entryTs.includes('from "./upgradeHealth"'));
-        assert.ok(entryTs.includes("tagPreviousBeforeRecreate("));
-        assert.ok(entryTs.includes("healthGuardAfterRecreate("));
+    // 命令拼装层（sock helper）必须真正 import 并调用这两个生成函数，否则就是没接线。
+    // ⚠️ 2026-11 起这条检查的是 server/upgrade/compose.ts —— 那两个函数连同整个
+    // upgraderCommand 从 entry.ts 搬出去了（见该文件头）。entry.ts 只留路由。
+    test("server/upgrade/compose.ts 接入了 upgradeHealth 的两个函数", () => {
+        assert.ok(upgradeComposeTs.includes('from "../upgradeHealth"'));
+        assert.ok(upgradeComposeTs.includes("tagPreviousBeforeRecreate("));
+        assert.ok(upgradeComposeTs.includes("healthGuardAfterRecreate("));
     });
 
     test("TS 生成锚点与升级器脚本逐一吻合", () => {
@@ -342,13 +355,18 @@ function extractShellBlock(script: string, opener: string): string {
         );
     });
 
-    test("entry.ts：失败分支真的用退出码反解相位（不是只写了个纯函数没人调）", () => {
+    test("两条链路都把 helper 退出码反解成相位（不是只写了个纯函数没人调）", () => {
+        // 反解动作留在了路由层（entry.ts 的失败分支），退出码的产生与相位类型
+        // 随实现搬到了 server/upgrade/selfUpgrade.ts（2026-11 拆分，见该文件头）。
         assert.ok(entryTs.includes("classifyHelperExitCode("), "entry.ts 没调用 classifyHelperExitCode");
-        assert.ok(entryTs.includes("helperExitCode"), "helper 退出码没从 runUpgraderContainer 传到失败分支");
         assert.ok(
-            entryTs.includes('"rolled_back" | "rollback_failed"'),
+            selfUpgradeTs.includes("helperExitCode"),
+            "helper 退出码没从 runUpgraderContainer 传到失败分支",
+        );
+        assert.ok(
+            selfUpgradeTs.includes('"rolled_back" | "rollback_failed"'),
             "upgradeStatus.phase 联合类型没补两个终态",
         );
-        assert.ok(entryTs.includes('from "./upgradeHealth"'));
+        assert.ok(entryTs.includes('from "./upgradeHealth"'), "entry.ts 仍要 import upgradeHealth（反解在那里调）");
     });
 });

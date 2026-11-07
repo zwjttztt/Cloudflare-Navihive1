@@ -18,6 +18,7 @@ import {
     encryptBytes,
     decryptBytes,
     validatePasswordStrength,
+    verifyPasswordAgainstDummyHash,
     constantTimeEqual,
     constantTimeEqualString,
 } from "../src/API/crypto";
@@ -116,6 +117,14 @@ test("validatePasswordStrength 强制最低 12 位且拒绝同字符重复", () 
     const ok = validatePasswordStrength("Kp9$mQ2xLz7!vR");
     assert.equal(ok.ok, true);
     assert.equal(ok.message, "");
+});
+
+test("verifyPasswordAgainstDummyHash：假哈希可重复调用且永不应验（P2-7 计时挡板）", async () => {
+    // ① 正常返回：挡板的目的只是「把『账号不存在』的响应时间拉平到与『存在』一致」，
+    //    调用方不消费布尔结果 —— 这里钉住的是「不会抛、可复用」。
+    await assert.doesNotReject(() => verifyPasswordAgainstDummyHash("whatever-password"));
+    // ② 第二次调用走的是缓存的那把假哈希（isolate 内只生成一次），同样不抛
+    await assert.doesNotReject(() => verifyPasswordAgainstDummyHash("another-try"));
 });
 
 // ---- 多重加密的历史脏值要能自愈 ----

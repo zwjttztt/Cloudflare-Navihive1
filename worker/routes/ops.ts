@@ -7,6 +7,7 @@ import type { RouteCtx } from "./types";
 import { ApiError, errorResponse } from "../lib/apiError";
 import { readJsonBody } from "./jsonBody";
 import { enforceWriteGuard, writeBucket } from "../loginGuard";
+import { SLOW_REQUEST_MS, metricsSnapshot } from "../../shared/metrics";
 
 export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
     const {
@@ -61,6 +62,27 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
         }
         const stats = await api.getOpsStats();
         return Response.json({ success: true, stats });
+    }
+
+    // 运行时指标（仅 owner）：请求总数 / 5xx / 429 / 慢请求四个计数。
+    //
+    // ⚠️ 语义边界写在 shared/metrics.ts 文件头，这里再强调一遍最容易误读的那条：
+    //   数字是「**本进程 / 本 isolate 自启动以来**」的累计，不落库、不跨实例聚合。
+    //   Cloudflare 形态下 isolate 随时会被回收或按地域新开，不同实例的数字互不相干 ——
+    //   它回答「这个实例近来怎么样」，**不能**当计费、容量或 SLO 依据。
+    //   要长期趋势得靠日志导出（自托管有全量访问日志，Cloudflare 侧走 Logpush）。
+    if (path === "metrics" && method === "GET") {
+        const uid = api.getCurrentUserId();
+        const me = uid !== null ? await api.getUserById(uid) : null;
+        if (!me || me.role !== "owner") {
+            return errorResponse(ApiError.forbidden("仅站点所有者可以查看运行时指标"));
+        }
+        return Response.json({
+            success: true,
+            metrics: metricsSnapshot(),
+            // 把阈值一起回给前端：否则「slowRequests 到底是什么算慢」只能靠读代码
+            slowThresholdMs: SLOW_REQUEST_MS,
+        });
     }
 
     // 前端错误上报的聚合视图（仅 owner）。

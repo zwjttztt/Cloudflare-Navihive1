@@ -14,6 +14,7 @@ import {
     bumpShareGuardFailure,
     clearShareGuard,
     clientBucket,
+    LOGIN_GLOBAL_BUCKET,
     computeLockAfterFailure,
     INIT_BASE_LOCK_MS,
     INIT_FREE_ATTEMPTS,
@@ -21,6 +22,7 @@ import {
     INIT_MAX_LOCK_MS,
     LOGIN_BASE_LOCK_MS,
     LOGIN_FREE_ATTEMPTS,
+    LOGIN_FREE_ATTEMPTS_SHARED,
     LOGIN_GUARD_KEY,
     LOGIN_MAX_LOCK_MS,
     RECOVER_BASE_LOCK_MS,
@@ -297,9 +299,18 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
 
         // 还在锁定期就直接回绝，并告诉还要等多久。
         // 锁是按来源 IP 分的桶：陌生人乱猜不该把站点主人自己也挡在门外。
-        const guard = await readLoginGuard(api, clientBucket(request, trustXFF, trustXRealIp));
+        //
+        // ⚠️ P1-2 共享桶（login:global）：自托管同机反代且没开 TRUST_XFF 时所有用户
+        // 共用一个桶 —— 硬锁等于任何一个人都能把全站登录挡门外 30 分钟。改用：
+        //   ① 宽限次数提到 20（提高爆破成本，同时不误伤正常用户）；
+        //   ② 锁定期不硬拒，改成每次响应前软节流（见下面的失败分支）——
+        //      知道密码的人照样登得进来，爆破者每次被拖最多 10 秒。
+        const bucket = clientBucket(request, trustXFF, trustXRealIp);
+        const sharedBucket = bucket === LOGIN_GLOBAL_BUCKET;
+        const freeAttempts = sharedBucket ? LOGIN_FREE_ATTEMPTS_SHARED : LOGIN_FREE_ATTEMPTS;
+        const guard = await readLoginGuard(api, bucket);
         const now = Date.now();
-        if (guard.until > now) {
+        if (!sharedBucket && guard.until > now) {
             const waitSec = Math.ceil((guard.until - now) / 1000);
             return errorResponse(ApiError.rateLimited(`登录尝试过于频繁，请 ${waitSec} 秒后再试`), { headers: { "Retry-After": String(waitSec) } });
         }
@@ -308,7 +319,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         if (result.success) {
             // 登录成功就清零，别让之前的手滑一直累积
             if (guard.count > 0)
-                await writeLoginGuard(api, { count: 0, until: 0 }, clientBucket(request, trustXFF, trustXRealIp));
+                await writeLoginGuard(api, { count: 0, until: 0 }, bucket);
             await api.writeAudit("login.success", loginData.username || "", ip);
 
             // 登记这台设备：之后才好在「账号管理 → 登录设备」里把它单独踢下线。
@@ -355,12 +366,12 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         const bumped = await bumpGuard(
             api,
             LOGIN_GUARD_KEY,
-            clientBucket(request, trustXFF, trustXRealIp),
+            bucket,
             prev => {
                 const count = prev.count + 1;
                 const lockMs = computeLockAfterFailure(
                     count,
-                    LOGIN_FREE_ATTEMPTS,
+                    freeAttempts,
                     LOGIN_BASE_LOCK_MS,
                     LOGIN_MAX_LOCK_MS
                 );
@@ -373,13 +384,24 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
 
         // 三种状态文案要分清楚：还能试几次 / 这是最后一次 / 已经锁了。
         // （之前按「剩余次数」判断，第 5 次还没真锁上却说「已暂时锁定」）
-        const left = LOGIN_FREE_ATTEMPTS - count;
+        // 共享桶的软节流：锁定期不拒绝请求，但让每次响应最多多等 10 秒 ——
+        // 爆破被拖慢到 6 次/分钟以内，正确密码的登录在 api.login 里就已成功返回、
+        // 清零计数，不受这个延迟影响（它只在失败分支跑）。
+        // 封顶 10s：until 可能长达 30 分钟，真等满等于把 DoS 从「锁登录」变成「占连接」。
+        if (sharedBucket && until > now) {
+            const waitMs = Math.min(until - now, 10_000);
+            if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
+        }
+
+        const left = freeAttempts - count;
         let message: string;
         let status = 401;
-        if (until > 0) {
+        if (!sharedBucket && until > 0) {
             const waitSec = Math.ceil((until - now) / 1000);
             message = `${result.message}，尝试次数过多，请 ${waitSec} 秒后再试`;
             status = 429;
+        } else if (sharedBucket && count > freeAttempts) {
+            message = `${result.message}（失败次数过多，响应已变慢；站点未启用来源识别时所有用户共享额度）`;
         } else if (left > 0) {
             message = `${result.message}（还可尝试 ${left} 次）`;
         } else {

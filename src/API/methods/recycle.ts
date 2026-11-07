@@ -11,7 +11,7 @@ import { RETENTION_DAYS, RETENTION_DAYS_KEY, RETENTION_DAYS_MAX, RETENTION_DAYS_
 import { D1PreparedStatement } from "../schema";
 import { RecycleBatchRestoreResult, Site } from "../types";
 import { GROUP_RESTORE_COLUMNS, SITE_RESTORE_COLUMNS } from "./internals";
-import { chunkByParamBudget, chunkStatements } from "../d1Limits";
+import { chunkByParamBudget, chunkStatements, D1_MAX_BOUND_PARAMS } from "../d1Limits";
 import { logger } from "../../../shared/logger";
 
 /**
@@ -254,24 +254,33 @@ export const recycleImpl: RecycleApi = {
             n => Number.isInteger(n) && n > 0
         );
         if (!newId || wanted.length === 0) return;
-        const alive = await this.db
-            .prepare(
-                `SELECT id FROM note_tag WHERE id IN (${wanted.map(() => "?").join(",")})${this.scopeSql(
-                    true
-                )}`
-            )
-            .bind(...this.scopeParams(wanted))
-            .all<{ id: number }>();
-        const ok = (alive.results || []).map(r => r.id);
+        // ⚠️ D1 每条语句最多 100 个绑定参数：IN 列表 + scopeSql 追加的 user_id 一起算，
+        // 超了整条失败。切批取并集（与 notesTag.ts / data.ts 同一套约定）。
+        const ok: number[] = [];
+        for (const chunk of chunkByParamBudget(wanted, 1)) {
+            const alive = await this.db
+                .prepare(
+                    `SELECT id FROM note_tag WHERE id IN (${chunk.map(() => "?").join(",")})${this.scopeSql(
+                        true
+                    )}`
+                )
+                .bind(...this.scopeParams(chunk))
+                .all<{ id: number }>();
+            for (const row of alive.results || []) ok.push(row.id);
+        }
         if (ok.length === 0) return;
-        await this.db
-            .prepare(
-                `INSERT OR REPLACE INTO note_note_tag (note_id, tag_id) VALUES ${ok
-                    .map(() => "(?, ?)")
-                    .join(",")}`
-            )
-            .bind(...ok.flatMap(tagId => [newId, tagId]))
-            .run();
+        // 每行 2 个参数（note_id + tag_id）：预算按「每项占 2」折算，直接拿 100 当
+        // 每项 1 个用会超限（本机 SQLite 上限 32766，测不出来）。
+        for (const chunk of chunkByParamBudget(ok, 0, Math.floor(D1_MAX_BOUND_PARAMS / 2))) {
+            await this.db
+                .prepare(
+                    `INSERT OR REPLACE INTO note_note_tag (note_id, tag_id) VALUES ${chunk
+                        .map(() => "(?, ?)")
+                        .join(",")}`
+                )
+                .bind(...chunk.flatMap(tagId => [newId, tagId]))
+                .run();
+        }
     },
 
     restoreRecycleItem: async function (this: NavigationAPI, id: number): Promise<boolean> {

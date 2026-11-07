@@ -452,7 +452,17 @@
     --group-accent-width: 3px;
     /* 强调色淡底：选中态 / 当前项的背景染色。
        以前在 7 个组件里各写一份 rgba(176,67,58,0.08~0.10)（把默认强调色的 RGB 抄死），
-       用户换主色后这块底色不会跟着变 —— 用 color-mix 让它恒等于「当前主色的 10%」。 */
+       用户换主色后这块底色不会跟着变 —— 用 color-mix 让它恒等于「当前主色的 10%」。
+       ⚠️ 兼容契约（基线 firefox >= 111）：`color-mix()` 要 Firefox 113，
+       所以 Firefox 111–112 上这条 token 无效 → 选中态**没有淡底**（不是崩坏，只是少一层染色）。
+       **有意不做兜底**：① 受影响的只有两个已过期的补丁版本，ESR115 本身就支持；
+       ② 自定义属性里的未知函数不会在声明时被丢弃，而是等 var() 展开才失效 ——
+       「同一个 token 写两遍声明」这种老手法在这里不管用，只能靠 @supports 换值，
+       而全文件另有 28 处 color-mix 都无兜底，只给这一处补反而不一致；
+       ③ 首屏 gzip 预算已贴死（余量个位数 KB 的小数点后三位），
+       为一个 2 版本窗口的淡底加 @supports 会直接顶破门禁。
+       所以策略是：`:has()` 兜底（它会连带丢弃整组规则，且缺 10 个版本），
+       `color-mix()` 接受降级。见 docs/architecture.md §5.2。 */
     --accent-wash: color-mix(in srgb, var(--accent) 10%, transparent);
     /* 错误边界兜底页（src/components/ErrorBoundary.tsx）用的**不透明**底色。
        现有 --surface-* 都是半透明、不能当满屏不透明底——错误页位于 ThemeProvider 之外、
@@ -861,10 +871,6 @@ html.dark .nav-skip-link {
     }
 }
 
-.nav-fade-up {
-    animation: navFadeUp 0.45s ease both;
-}
-
 /* 入场动画用 backwards：
    延迟期间先保持隐藏（避免闪一下），动画结束回到基础样式，
    这样悬停的抬升 transform 才不会被动画的 fill 状态压住 */
@@ -920,10 +926,20 @@ mark.nav-hl {
 /* 这里曾经写过 .nav-card-in:focus-within，是个坑：
    卡片本体是 <a>，鼠标点一下就把焦点留在卡片里了（哪怕立刻移到别处），
    于是整组浮层常驻不消失；点过设置按钮后更是会一直亮着。
-   改成只看「浮层自己里面的按钮有没有被键盘聚焦」（:has(:focus-visible)），
-   鼠标点击不会触发 :focus-visible，所以点完就散。 */
+
+   修法不是「改用 :has()」而是**把范围缩小到浮层自己**：`.nav-card-actions` 是
+   与 <a> 平级的兄弟节点（2026 年那次改造把按钮挪出了链接外），所以
+   `.nav-card-actions:focus-within` 只在「焦点落进浮层内部」时命中，卡片本身
+   被点中不算 —— 老写法 `.nav-card-in:focus-within` 的病根就在那个祖先选择器上。
+
+   ⚠️ 兼容契约（基线 firefox >= 111，含 ESR115）：`:has()` 要 Firefox 121 才支持，
+   而 CSS 的**普通选择器列表不是 forgiving 的** —— 列表里只要有一个老浏览器不认识的
+   选择器，**整条规则**都会被丢弃。所以这里刻意**完全不用 :has()**：
+   `:focus-within` 是 CSS3 老特性，全基线可用，零降级成本。
+   （`:has()` 只留在 `.nav-card-in` 的焦点环那一处 —— 那里非它不可，
+   因为要判断的是**后代**是不是键盘焦点。见该规则上方的说明。） */
 .nav-card-in:hover .nav-card-actions,
-.nav-card-actions:has(:focus-visible) {
+.nav-card-actions:focus-within {
     opacity: 1;
     transform: none;
     pointer-events: auto;
@@ -941,7 +957,11 @@ mark.nav-hl {
 
 /* 分组工具条（添加卡片 / 排序 / 编辑）：平时安静，指到分组或键盘走进来才浮出。
    用 opacity 而不是 display —— 位置一直占着，鼠标移到分组上不会把行高挤变。
-   隐藏期间关掉 pointer-events，免得出现「看不见却点得到」的幽灵按钮。 */
+   隐藏期间关掉 pointer-events，免得出现「看不见却点得到」的幽灵按钮。
+   ⚠️ 这里曾经多写了一条 `.nav-group-tools:has(:focus-visible)`，2026-11 删掉：
+   工具条是 `.nav-group-panel` 的**后代**，焦点落进工具条 ⇒ 焦点必然也在 panel 里，
+   `:focus-within` 那条已经命中了 —— 那条 `:has()` 从来没有独立起过作用，
+   留着只会让基线里多一个需要 `@supports` 保护的特性。 */
 .nav-group-tools {
     opacity: 0;
     pointer-events: none;
@@ -949,7 +969,6 @@ mark.nav-hl {
 }
 .nav-group-panel:hover .nav-group-tools,
 .nav-group-panel:focus-within .nav-group-tools,
-.nav-group-tools:has(:focus-visible),
 .nav-group-tools-active {
     opacity: 1;
     pointer-events: auto;
@@ -990,16 +1009,29 @@ html.nav-touch .nav-group-tools {
     pointer-events: auto;
 }
 
-/* 键盘导航：卡片聚焦时给出清晰的焦点环 */
-[data-nav-card]:focus-visible,
-/* V4：外壳 div 不再挂 tabIndex（它没有 role，读屏不念东西），停靠点挪到了里面那个
+/* 键盘导航：卡片聚焦时给出清晰的焦点环。
+   V4：外壳 div 不再挂 tabIndex（它没有 role，读屏不念东西），停靠点挪到了里面那个
    <a> 上 —— 焦点环还得画在整个卡片外面，所以用 :has() 往回找。
    用 :has(:focus-visible) 而不是 :focus-within：后者鼠标点一下也会亮，
-   点过的卡片会一直挂着焦点环（与 .nav-card-actions 那处同一个坑）。 */
-.nav-card-in:has(:focus-visible) {
+   点过的卡片会一直挂着焦点环（与 .nav-card-actions 那处同一个坑）。
+
+   兼容契约（基线 firefox >= 111）：`:has()` 要 Firefox 121。分两层写：
+     ① `.nav-card-in:focus-within` —— 所有浏览器都能画环（老浏览器唯一路径，
+        代价是鼠标点一下也亮，属于次优但可用）；与 `[data-nav-card]:focus-visible`
+        共用同一条规则（三条声明一模一样，别写两遍）；
+     ② `@supports selector(:has(*))` 里把「非 :focus-visible」的情形清掉。
+   注意 ② 只需要「清掉」那一条：键盘聚焦时 ① 已经画了环，不必再重复一遍三条声明。 */
+[data-nav-card]:focus-visible,
+.nav-card-in:focus-within {
     outline: 2px solid var(--accent);
     outline-offset: 3px;
     border-radius: var(--card-radius);
+}
+
+@supports selector(:has(*)) {
+    .nav-card-in:focus-within:not(:has(:focus-visible)) {
+        outline: none;
+    }
 }
 
 /* 拖拽排序：被拖起的卡片变成半透明虚线「幽灵」，原位置留一个占位框 */
@@ -1019,11 +1051,6 @@ html.nav-touch .nav-group-tools {
     box-shadow: 0 18px 40px rgba(15, 23, 42, 0.28);
     cursor: grabbing;
     opacity: 0.96;
-}
-/* 拖拽经过的分组：容器高亮，提示可以放这里 */
-.nav-drop-hint {
-    border-color: var(--accent) !important;
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 /* 失效链接角标 */
@@ -1117,7 +1144,6 @@ html.nav-touch .nav-group-tools {
         scroll-behavior: auto !important;
     }
     .nav-card-in,
-    .nav-fade-up,
     .nav-aurora,
     .nav-group-panel.nav-reveal-in,
     .nav-bulk-bar,

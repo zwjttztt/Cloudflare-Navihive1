@@ -56,9 +56,13 @@ interface RiskApi {
 /**
  * 风险 API 清单：**超出 browserslist 基线**的那些。
  *
+ * 只收 JS API。CSS 特性（`:has()` / `color-mix()`）**不在本守卫的扫描面内** ——
+ * 它们的危险点不是「调用即 TypeError」，而是「普通选择器列表不 forgiving，整条规则
+ * 连带丢弃」，判据与修法完全不同，由 `tests/cssBaselineGuard.test.ts` 单独管
+ * （降级写法见 docs/architecture.md §5.2）。
+ *
  * 刻意不收的（已在基线内，收进来只会制造噪声）：`Array.prototype.at`（Chrome 92 / Safari 15.4）、
  * `Object.hasOwn`（93 / 15.4）、`structuredClone`（98 / 15.4）、`Array.prototype.findLast`、
- * `color-mix()`（Chrome 111 / Safari 16.2）、`:has()`（Chrome 105 / Safari 15.4）、
  * `crypto.randomUUID`（92 / 15.4，需安全上下文，本站本来就要求 HTTPS）。
  */
 const RISK_APIS: RiskApi[] = [

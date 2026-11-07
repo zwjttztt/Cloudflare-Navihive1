@@ -7,7 +7,7 @@
 
 import type { NavigationAPI } from "../http";
 import { AUTH_PASSWORD_KEY, AUTH_USERNAME_KEY, DEFAULT_TOKEN_TTL, INACTIVE_DELETE_GRACE_DAYS_DEFAULT, INACTIVE_DELETE_GRACE_DAYS_KEY, INACTIVE_DISABLE_DAYS_DEFAULT, INACTIVE_DISABLE_DAYS_KEY, INVITE_TTL_SECONDS, REMEMBER_TOKEN_TTL, SESSION_STATE_TTL_MS } from "../configKeys";
-import { hashPassword, isHashedPassword, verifyPassword } from "../crypto";
+import { hashPassword, isHashedPassword, validatePasswordStrength, verifyPassword, verifyPasswordAgainstDummyHash } from "../crypto";
 import { D1PreparedStatement } from "../schema";
 import { STARTER_GROUPS } from "../starterData";
 import { AccountInfo, AccountSessionState, InviteInfo, LoginRequest, LoginResponse, RegisterResult, UserRecord, computeInactiveTimeline } from "../types";
@@ -19,22 +19,19 @@ import { errorMessageOf, isMissingSchemaError, randomInviteCode } from "./intern
 import { credentialBucket, enforceCredentialGuard } from "../../../worker/loginGuard";
 import { logger } from "../../../shared/logger";
 
-/** 新密码的最短长度。注册与改密共用（见 validateNewPassword） */
-const MIN_PASSWORD_LENGTH = 6;
-
 /**
- * 新密码的准入规则。**注册与改密共用这一份** ——
+ * 新密码的准入规则。**注册、改密、auth/credentials 三处共用这一份** ——
  *
  * 以前两处各自为政：注册只问「有没有 6 位」，改密连问都不问
  * （`if (password)` 就写库）—— 于是改密能把密码设成 1 位，或者干脆设成账号名。
- * 门槛取注册那条线的口径（≥6 位）：把改密补到与注册一致，是这次要修的不一致；
- * 再往上抬到 12 位（validatePasswordStrength 那条）是另一件事，会连注册一起改，
- * 动到的是「用户现在能设什么密码」，不该夹在这次安全修复里一起上。
+ * 后来改密补到了与注册一致的 6 位；2026-11（P2-6）三处**全部并入
+ * `validatePasswordStrength`（≥12 位 + 不能全同字符）**：与改密 / 恢复那条线
+ * 原有的 12 位策略对齐，不再出现「注册能设 6 位、改密却要 12 位」的拧巴。
+ * 账号名相同那条是这里特有的（撞库脚本第一个试的就是它）。
  */
 function validateNewPassword(password: string, username: string): { ok: boolean; message: string } {
-    if (!password || password.length < MIN_PASSWORD_LENGTH) {
-        return { ok: false, message: `密码至少 ${MIN_PASSWORD_LENGTH} 位` };
-    }
+    const strength = validatePasswordStrength(password);
+    if (!strength.ok) return strength;
     // 密码 = 账号名是最省事的那种弱口令，撞库脚本第一个试的就是它
     if (username && password.toLowerCase() === username.toLowerCase()) {
         return { ok: false, message: "密码不能与账号名相同" };
@@ -174,6 +171,9 @@ export const accountsImpl: AccountsApi = {
          *      现在改密 / 改名会同步把 configs 那份作废（见 disableLegacyCredentials）。
          */
         if (await this.hasAnyUser()) {
+            // P2-7：账号不存在也要对固定假哈希烧一次满迭代 PBKDF2 ——
+            // 否则「存在」与「不存在」的响应时间差一整个哈希的量，用户名枚举靠秒表就能做。
+            await verifyPasswordAgainstDummyHash(loginRequest.password);
             return { success: false, message: "用户名或密码错误" };
         }
 

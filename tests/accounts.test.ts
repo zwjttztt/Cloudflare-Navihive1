@@ -398,12 +398,12 @@ test("邀请码：30 分钟有效，用过一次就作废", async () => {
     const nowSec = Math.floor(Date.now() / 1000);
     assert.ok((invite.expiresAt ?? 0) - nowSec > 29 * 60);
 
-    const first = await api.registerUser("alice", "password123", invite.code || "");
+    const first = await api.registerUser("alice", "password123456", invite.code || "");
     assert.equal(first.success, true, first.message);
     assert.equal(first.user?.role, "user");
 
     // 同一枚码第二次注册必须被拒
-    const second = await api.registerUser("bob", "password123", invite.code || "");
+    const second = await api.registerUser("bob", "password123456", invite.code || "");
     assert.equal(second.success, false);
     assert.match(second.message, /已被使用/);
 });
@@ -421,7 +421,7 @@ test("邀请码过期后不能再用", async () => {
     assert.ok(row);
     row.expires_at = Math.floor(Date.now() / 1000) - 1;
 
-    const result = await api.registerUser("carol", "password123", invite.code || "");
+    const result = await api.registerUser("carol", "password123456", invite.code || "");
     assert.equal(result.success, false);
     assert.match(result.message, /过期/);
 });
@@ -434,12 +434,22 @@ test("没有邀请码 / 邀请码无效 / 账号名重复都注册不了", async
     const ownerId = store.users[0].id as number;
     const invite = await api.createInvite(ownerId);
 
-    assert.equal((await api.registerUser("dave", "password123", "")).success, false);
-    assert.equal((await api.registerUser("dave", "password123", "NOPE1234")).success, false);
+    assert.equal((await api.registerUser("dave", "password123456", "")).success, false);
+    assert.equal((await api.registerUser("dave", "password123456", "NOPE1234")).success, false);
     // 密码太短
     assert.equal((await api.registerUser("dave", "123", invite.code || "")).success, false);
+    // P2-6：注册也并入 12 位策略 —— 以前 6 位就能过，与改密那条线的 12 位拧巴
+    assert.match(
+        (await api.registerUser("dave", "password123", invite.code || "")).message, // 11 位
+        /12 位/
+    );
+    // 同字符重复同样拒绝（validatePasswordStrength 的另一条）
+    assert.match(
+        (await api.registerUser("dave", "000000000000", invite.code || "")).message,
+        /同一字符/
+    );
     // 与 owner 重名
-    assert.equal((await api.registerUser("root", "password123", invite.code || "")).success, false);
+    assert.equal((await api.registerUser("root", "password123456", invite.code || "")).success, false);
 });
 
 test("数据隔离：A 账号看不到 B 账号的分组", async () => {
@@ -453,7 +463,7 @@ test("数据隔离：A 账号看不到 B 账号的分组", async () => {
     await api.createGroup({ name: "owner 的分组", order_num: 0 });
 
     const invite = await api.createInvite(ownerId);
-    const registered = await api.registerUser("alice", "password123", invite.code || "");
+    const registered = await api.registerUser("alice", "password123456", invite.code || "");
     const aliceId = registered.user?.id as number;
 
     // 新账号看不到 owner 的分组，但自带一套默认分组（见下一条用例）
@@ -482,7 +492,7 @@ test("新注册的账号自带几个默认分组和示例卡片，全部挂在�
     await api.migrate();
     const ownerId = store.users[0].id as number;
     const invite = await api.createInvite(ownerId);
-    const registered = await api.registerUser("alice", "password123", invite.code || "");
+    const registered = await api.registerUser("alice", "password123456", invite.code || "");
     const aliceId = registered.user?.id as number;
 
     api.setCurrentUser(aliceId);
@@ -521,7 +531,7 @@ test("恢复公钥按账号隔离：老的全局公钥搬给 owner，新账号�
 
     // 新账号不该看到别人配的密钥
     const invite = await api.createInvite(ownerId);
-    const registered = await api.registerUser("alice", "password123", invite.code || "");
+    const registered = await api.registerUser("alice", "password123456", invite.code || "");
     api.setCurrentUser(registered.user?.id as number);
     assert.equal(await api.hasRecoveryKey(), false);
     assert.equal(await api.getRecoveryPublicKey(), "");
@@ -598,14 +608,14 @@ test("令牌版本按账号走：A 改密不该把 B 的会话踢掉", async () 
     api.setCurrentUser(ownerId);
 
     const invite = await api.createInvite(ownerId);
-    await api.registerUser("bob", "password123", invite.code || "");
+    await api.registerUser("bob", "password123456", invite.code || "");
 
     // 两人各自登录，拿到带着自己 uid 的令牌
     api.setCurrentUser(null);
     const ownerApi = makeApi(store);
     ownerApi.setCurrentUser(ownerId);
     const ownerLogin = await makeApi(store).login({ username: "root", password: "seed-password" });
-    const bobLogin = await makeApi(store).login({ username: "bob", password: "password123" });
+    const bobLogin = await makeApi(store).login({ username: "bob", password: "password123456" });
     assert.equal(ownerLogin.success, true);
     assert.equal(bobLogin.success, true);
 
@@ -628,7 +638,7 @@ test("外观键：普通账号能改自己那份但碰不到全站那份；其�
     const ownerId = store.users[0].id as number;
 
     const invite = await api.createInvite(ownerId);
-    const bob = await api.registerUser("bob", "password123", invite.code || "");
+    const bob = await api.registerUser("bob", "password123456", invite.code || "");
     const bobId = bob.user?.id as number;
 
     // owner：改的就是全站那份（同时是登录页 / 新账号的初始外观）
@@ -663,7 +673,7 @@ test("卡片跨组移动不能塞进别人的分组", async () => {
     const ownerId = store.users[0].id as number;
 
     const invite = await api.createInvite(ownerId);
-    const bob = await api.registerUser("bob", "password123", invite.code || "");
+    const bob = await api.registerUser("bob", "password123456", invite.code || "");
     const bobId = bob.user?.id as number;
 
     // owner 的分组 + 卡片
@@ -706,7 +716,7 @@ test("注销账号：数据一起删除；站点所有者一律不允许注销",
 
     // 邀请一个新账号进来，再注销它
     const invite = await api.createInvite(ownerId);
-    const registered = await api.registerUser("alice", "password123", invite.code || "");
+    const registered = await api.registerUser("alice", "password123456", invite.code || "");
     const aliceId = registered.user?.id as number;
     api.setCurrentUser(aliceId);
     await api.createGroup({ name: "alice 的分组", order_num: 0 });
@@ -745,7 +755,7 @@ test("WebDAV 备份配置按账号隔离：新账号看不到别人填的网盘�
 
     // 新注册的账号：一个 WebDAV 键都不该带过来（前端会回落到默认的 navihive-backup）
     const invite = await api.createInvite(ownerId);
-    const registered = await api.registerUser("alice", "password123", invite.code || "");
+    const registered = await api.registerUser("alice", "password123456", invite.code || "");
     const aliceId = registered.user?.id as number;
     api.setCurrentUser(aliceId);
 
@@ -803,7 +813,7 @@ test("升级：全站那份 WebDAV 配置自动搬给 owner，且不留全局副
 
     // 新账号依然是干净的
     const invite = await api.createInvite(ownerId);
-    const registered = await api.registerUser("bob", "password123", invite.code || "");
+    const registered = await api.registerUser("bob", "password123456", invite.code || "");
     api.setCurrentUser(registered.user?.id as number);
     assert.equal(await api.getConfig("webdav.url"), null);
 });
@@ -865,12 +875,12 @@ async function setupAliceWithRecoveryKey() {
     await api.migrate();
     const ownerId = store.users[0].id as number;
     const invite = await api.createInvite(ownerId);
-    const registered = await api.registerUser("alice", "password123", invite.code || "");
+    const registered = await api.registerUser("alice", "password123456", invite.code || "");
     const aliceId = registered.user?.id as number;
 
     const { pub, privKey } = await newRecoveryKeypair();
     api.setCurrentUser(aliceId);
-    const saved = await api.setRecoveryPublicKey(pub, "password123");
+    const saved = await api.setRecoveryPublicKey(pub, "password123456");
     assert.equal(saved.success, true, saved.message);
     // 找回是不带身份的公网入口
     api.setCurrentUser(null);
@@ -932,7 +942,7 @@ test("恢复密钥：改成别人在用的账号名 → 拒绝，且不动任何
     assert.equal(result.success, false);
     assert.match(result.message, /已被占用/);
     assert.equal((store.users.find(u => u.id === aliceId) as Row).username, "alice");
-    assert.equal(await api.verifyPasswordOfUser(aliceId, "password123"), true, "旧密码仍然有效");
+    assert.equal(await api.verifyPasswordOfUser(aliceId, "password123456"), true, "旧密码仍然有效");
 });
 
 test("恢复密钥：被停用的账号找回后自动恢复可用（否则重置完仍登不进去）", async () => {
@@ -940,7 +950,7 @@ test("恢复密钥：被停用的账号找回后自动恢复可用（否则重�
 
     // 模拟沉睡治理扫到 alice：停用后应当连登录都进不去
     (store.users.find(u => u.id === aliceId) as Row).status = "disabled";
-    const blocked = await api.login({ username: "alice", password: "password123" });
+    const blocked = await api.login({ username: "alice", password: "password123456" });
     assert.equal(blocked.success, false, "停用期间不能放行");
     assert.match(blocked.message ?? "", /停用/);
 
@@ -975,7 +985,7 @@ async function setupOwnerAndAlice() {
     await api.migrate();
     const ownerId = store.users[0].id as number;
     const invite = await api.createInvite(ownerId);
-    const registered = await api.registerUser("alice", "password123", invite.code || "");
+    const registered = await api.registerUser("alice", "password123456", invite.code || "");
     const aliceId = registered.user?.id as number;
     return { store, api, ownerId, aliceId };
 }

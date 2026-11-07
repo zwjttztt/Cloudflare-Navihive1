@@ -40,7 +40,17 @@ export const ATTACHMENT_UPLOADS_PER_HOUR = 100;
 /** lease 持有时长：2 分钟。拿不到就返回 409 让用户重试 */
 export const ATTACHMENT_LEASE_MS = 2 * 60 * 1000;
 
-const LEASE_KEY = "attachment-quota";
+/**
+ * 租约 key：**按用户**（2026-11，P2-4）。
+ *
+ * 以前是全局一个 `attachment-quota`：A 用户在传 25MB 的图，B 用户的上传直接 409 ——
+ * 「另一个上传正在进行」对多账号部署是错误的报错，两人根本没在抢同一个配额。
+ * 每用户一把锁后，同一用户的上传仍然串行化（配额判据不被并发打穿），
+ * 不同用户互不阻塞。
+ */
+export function quotaLeaseKey(userId: number): string {
+    return `attachment-quota:u${userId}`;
+}
 const UPLOAD_RATE_KEY = "attachment-rate";
 
 /** KV prefix —— 备份/导出时要能一眼认出这些不是配置 */
@@ -191,8 +201,36 @@ export type QuotaResult =
     | { ok: true; storage: AttachmentStorage }
     | { ok: false; status: number; error: string };
 
+/** 租约句柄（调用方拿到后必须在 finally 里 release，否则要等 TTL 过期才能再传） */
+export interface UploadLease {
+    key: string;
+    token: string;
+}
+
 /**
- * 上传前的三道闸：存储通道 → 租约 → 配额。
+ * 拿用户自己的上传租约。拿不到（同账号另一个上传正占着）返回 null → 路由层转 409。
+ *
+ * ⚠️ 2026-11（P2-4）租约从 checkUploadQuota 里提出来，交给路由层包住
+ * 「校验 + 写对象 + 写 D1」全程：原来租约只在判配额时握着，判完就放 ——
+ * 两个并发上传可以**都**通过检查再各自写盘，1GB 配额能被写出 1.1GB。
+ * 现在校验到落库全程持锁，才真正把并发超配额堵住。
+ */
+export async function acquireUploadLease(env: Env, userId: number): Promise<UploadLease | null> {
+    return acquireLease(env, quotaLeaseKey(userId), ATTACHMENT_LEASE_MS);
+}
+
+/** 释放租约（只删自己 token 那把；被接管了就不误伤对方） */
+export async function releaseUploadLease(env: Env, lease: UploadLease): Promise<void> {
+    await releaseLease(env, lease);
+}
+
+/**
+ * 配额两道闸：每小时次数 → 总量（存储通道 / 单文件大小照旧在前）。
+ *
+ * ⚠️ 2026-11（P2-4）：**租约不再在这里面拿**。原来「拿锁 → 判 → 放锁」只把
+ * 检查本身串行化了，检查通过后的写盘是裸奔的，并发下配额照样能被打穿。
+ * 现在租约由路由层持有（见 worker/routes/data.ts 的 handleUploadAttachment），
+ * 包住「校验 + 写对象 + 写 D1」全程；本函数只在**已持锁**的前提下做判定。
  * 顺序照 inkstone storage.ts:44（先拿锁再算配额），否则并发下配额会算错。
  */
 export async function checkUploadQuota(env: Env, userId: number, size: number): Promise<QuotaResult> {
@@ -212,37 +250,28 @@ export async function checkUploadQuota(env: Env, userId: number, size: number): 
             error: `单个文件不能超过 ${Math.round(ATTACHMENT_MAX_BYTES / 1024 / 1024)}MB`,
         };
     }
-    // ① 租约：同一用户的上传串行化。拿不到直接 409，不排队 —— 宁可让用户重试。
-    const lease = await acquireLease(env, LEASE_KEY, ATTACHMENT_LEASE_MS);
-    if (!lease) {
-        return { ok: false, status: 409, error: "另一个上传正在进行，请稍后重试" };
+    // ① 每小时次数
+    const hourAgo = Date.now() - 3600 * 1000;
+    const stamps = await listUploadStamps(env, userId);
+    const recent = stamps.filter(t => t > hourAgo);
+    if (recent.length >= ATTACHMENT_UPLOADS_PER_HOUR) {
+        return {
+            ok: false,
+            status: 429,
+            error: `每小时最多上传 ${ATTACHMENT_UPLOADS_PER_HOUR} 张，请稍后再试`,
+        };
     }
-    try {
-        // ② 每小时次数
-        const hourAgo = Date.now() - 3600 * 1000;
-        const stamps = await listUploadStamps(env, userId);
-        const recent = stamps.filter(t => t > hourAgo);
-        if (recent.length >= ATTACHMENT_UPLOADS_PER_HOUR) {
-            return {
-                ok: false,
-                status: 429,
-                error: `每小时最多上传 ${ATTACHMENT_UPLOADS_PER_HOUR} 张，请稍后再试`,
-            };
-        }
-        // ③ 总量：实时 SUM，不维护累加字段
-        const used = await usedBytes(env, userId);
-        if (used + size > ATTACHMENT_QUOTA_BYTES) {
-            const free = Math.max(0, ATTACHMENT_QUOTA_BYTES - used);
-            return {
-                ok: false,
-                status: 413,
-                error: `存储空间不足（每账号 ${Math.round(ATTACHMENT_QUOTA_BYTES / 1024 / 1024)}MB，还剩 ${Math.floor(free / 1024 / 1024)}MB）`,
-            };
-        }
-        return { ok: true, storage };
-    } finally {
-        await releaseLease(env, lease);
+    // ② 总量：实时 SUM，不维护累加字段
+    const used = await usedBytes(env, userId);
+    if (used + size > ATTACHMENT_QUOTA_BYTES) {
+        const free = Math.max(0, ATTACHMENT_QUOTA_BYTES - used);
+        return {
+            ok: false,
+            status: 413,
+            error: `存储空间不足（每账号 ${Math.round(ATTACHMENT_QUOTA_BYTES / 1024 / 1024)}MB，还剩 ${Math.floor(free / 1024 / 1024)}MB）`,
+        };
     }
+    return { ok: true, storage };
 }
 
 /**

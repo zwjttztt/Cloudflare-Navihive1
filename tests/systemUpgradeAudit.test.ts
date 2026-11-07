@@ -282,9 +282,11 @@ test("entry.ts：审计写在响应之前（容器随时会被换掉，不能留
 // 调用之前。谁把 early return 挪到后面（或删掉），这条立刻红 —— 否则下次又是「健康启动刷
 // 一条看起来像故障的 warn」，而没有任何东西会报错。
 
-test("entry.ts：cleanupUpgraderContainer 在 spool 模式下直接收工（不许去连没挂进来的 docker.sock）", () => {
+test("selfUpgrade.ts：cleanupUpgraderContainer 在 spool 模式下直接收工（不许去连没挂进来的 docker.sock）", () => {
     // 换行统一成 LF：仓库里这份源码是 CRLF（Windows 检出），不归一化就切不出函数体
-    const src = readSrc("server/entry.ts").replace(/\r\n/g, "\n");
+    // ⚠️ 2026-11 这个函数从 server/entry.ts 搬到了 server/upgrade/selfUpgrade.ts
+    //（拆分背景见该文件头）。守卫跟着走 —— 留在原处只会变成「检查一段已经不存在的代码」的假绿。
+    const src = readSrc("server/upgrade/selfUpgrade.ts").replace(/\r\n/g, "\n");
 
     const at = src.indexOf("async function cleanupUpgraderContainer(");
     assert.ok(at > 0, "找不到 cleanupUpgraderContainer（改名了？这条守卫要跟着走）");

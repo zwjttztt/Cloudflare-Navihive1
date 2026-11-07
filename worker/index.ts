@@ -45,6 +45,8 @@ import { handlePublicRoutes } from "./routes/public";
 import type { RouteCtx } from "./routes/types";
 import type { Env, ExportedHandler, ScheduledController } from "./types";
 import { isSpaRoute, looksLikeAsset } from "../shared/spaRoutes";
+import { logger } from "../shared/logger";
+import { recordRequest, SLOW_REQUEST_MS } from "../shared/metrics";
 
 // 原来散在别处的导出，测试与别的文件还在引，从这儿原样转出去
 export { requestIsSecure } from "./httpUtils";
@@ -324,7 +326,17 @@ async function handleRequest(request: Request, env: Env, rid: string): Promise<R
         // 根本不知道是哪个请求、哪个地址、哪个账号 —— 现在这一行带 rid + method + path，
         // 并且按 rid 落一条审计，能和客户端上报里的 requestId 对上同一次请求。
         if (!(error instanceof ApiError)) {
-            console.error("[api]", rid, request.method, url.pathname, error);
+            // P1-4：走 logger 而不是裸 console —— `err` 会在发射口被转成
+            // `{name,message,stack}`，与自托管的访问日志 / 审计同一套结构化格式，
+            // 能直接按 rid 串起来。裸 console 打的是宿主 inspect 格式（多行、带类型前缀），
+            // 既不能 jq 也不能按字段检索。
+            logger.error("[api] 未处理的请求错误", {
+                component: "worker.api",
+                rid,
+                m: request.method,
+                p: url.pathname,
+                err: error,
+            });
             await recordServerError(env, rid, request, url.pathname, error, trustXFF, trustXRealIp);
         }
         // logged: true —— 上面已经带上下文打过了，别再让统一出口重复打一行没有上下文的
@@ -354,8 +366,42 @@ export function missingAuthSecret(
     return !env.AUTH_SECRET;
 }
 
+/**
+ * 出口埋点（P1-4 ③）：4 个计数 + 「值得看」的那类请求逐条结构化日志。
+ *
+ * 为什么只对 5xx 与慢请求逐条记：Cloudflare 形态下每一行日志都要计量，全量访问日志
+ * 在这里是纯成本 —— 而「站点现在几个请求、几个错」已经由 shared/metrics 的计数器回答。
+ * 自托管形态另有全量访问日志（server/entry.ts 的 `res.on("finish")`），两者互补：
+ * 一个给趋势，一个能按 rid 逐条追。
+ */
+function recordAccess(request: Request, response: Response, durationMs: number, rid: string): void {
+    recordRequest(response.status, durationMs);
+    const slow = durationMs > SLOW_REQUEST_MS;
+    if (response.status < 500 && !slow) return;
+    // ⚠️ 只记 pathname，**不记 query**：query 里可能带分享口令 / token，日志是明文落盘的。
+    // 与自托管侧访问日志同一个口径。
+    let pathname = "/";
+    try {
+        pathname = new URL(request.url).pathname;
+    } catch {
+        // 畸形 URL 就当根路径 —— 埋点不该把请求搞挂
+    }
+    const fields = {
+        component: "worker.access",
+        rid,
+        m: request.method,
+        p: pathname,
+        s: response.status,
+        ms: durationMs,
+        ...(slow ? { slow: true } : {}),
+    };
+    if (response.status >= 500) logger.error("请求失败", fields);
+    else logger.warn("慢请求", fields);
+}
+
 export default {
     async fetch(request: Request, env: Env): Promise<Response> {
+        const startedAt = Date.now();
         // 一次请求一个 rid：日志、审计、响应头、浏览器上报共用同一个值。
         const rid = requestRid(request);
         if (missingAuthSecret(env)) {
@@ -373,6 +419,7 @@ export default {
                 )
             );
             denied.headers.set(REQUEST_ID_HEADER, rid);
+            recordAccess(request, denied, Date.now() - startedAt, rid);
             return denied;
         }
         const response = withSecurityHeaders(await handleRequest(request, env, rid));
@@ -381,6 +428,7 @@ export default {
         // 把「用户看到的这句报错」和日志 / 审计里的同一行对上。
         // withSecurityHeaders 返回的是**重建过的可变副本**（见它的注释），set 不会踩 immutable。
         response.headers.set(REQUEST_ID_HEADER, rid);
+        recordAccess(request, response, Date.now() - startedAt, rid);
         return response;
     },
     /**

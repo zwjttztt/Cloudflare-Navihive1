@@ -93,6 +93,29 @@ services:
     # 有日志可查，比被内核 OOM-kill 静默杀掉好排查得多。
     mem_limit: 384m
 
+    # ============ 资源与逃逸面硬化（2026-11，P2-9）============
+    # CPU 上限 1 核：SQLite 单写者 + Node 单进程，1 核足够；
+    # 没有上限的话一个失控的正则/压缩任务能把小 VPS 整机拖死。
+    cpus: 1.0
+    # 进程数上限：Node 运行时 + uv 线程池用不到几十个；128 顶到天了。
+    # pids 耗尽是 fork 炸弹与「conn 泄漏堆积」的最后一道闸。
+    pids_limit: 128
+    # 根文件系统只读：业务只写三个已声明的位置（/app/data 数据卷、/spool 共享卷、
+    # /tmp 临时盘，见下面 tmpfs）。容器被攻破后往系统路径写后门/改二进制的路全部堵死。
+    # ⚠️ 新增可写路径时必须显式加卷，别靠关掉 read_only 图省事。
+    read_only: true
+    tmpfs:
+      # Node / 临时库的杂项落点；1777 = sticky + 全员可写（/tmp 的标准语义）
+      - /tmp:mode=1777,size=64m
+    # 丢弃全部 Linux capabilities：绑 8787（非特权端口）、写卷、跑 Node 都不需要任何 cap。
+    cap_drop:
+      - ALL
+    # 禁止提权：setuid/setgid 二进制与内核漏洞利用的经典通道直接封掉。
+    # 对 upgrader 没加这两条 —— 它持有 docker.sock，本来就是设计内的最高权限点，
+    # 在它身上做表面硬化只会给「安全完成了」的错觉（要收它就换 rootless/docker-proxy）。
+    security_opt:
+      - no-new-privileges:true
+
     volumes:
       - navihive-data:/app/data
       # ⚠️ 这里**不再挂 /var/run/docker.sock**（2026-10-22）。
@@ -188,6 +211,10 @@ services:
       - upgrade-spool:/spool
     # 只跑 docker CLI + 轮询循环，128m 绰绰有余；给它设顶是防升级器自己失控吃内存
     mem_limit: 128m
+    # P2-9：进程数也设顶（轮询循环 + docker CLI 子进程，64 足够）
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
     logging:
       driver: json-file
       options:

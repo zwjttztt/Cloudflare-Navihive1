@@ -77,16 +77,31 @@ test("logger: a build without env injection defaults to warn/error", () => {
     assert.deepEqual(emissions.map(entry => entry.level), ["warn", "error"]);
 });
 
-test("logger: structured context and the original Error retain their references", () => {
+test("logger: structured context is copied and Error fields are serialized", () => {
     const emissions: Emission[] = [];
     const error: Error = new Error("original failure");
     const fields = { component: "transfer", action: "importData", rid: "request-7", err: error };
     const logger: Logger = loadLogger(true, recordingConsole(emissions));
     logger.error("import failed", fields);
     assert.equal(emissions.length, 1);
-    assert.equal(emissions[0].args[1], fields);
-    assert.equal((emissions[0].args[1] as typeof fields).err, error);
+
+    // ⚠️ 2026-11（P1-4）契约变了：发射口不再把调用方对象原样透传，而是整理一份副本 ——
+    // `Error` 会被转成 {name,message,stack}。原样透传时 console 打的是宿主 inspect 格式
+    // （多行、带类型前缀），既不能 jq 也不能按字段检索，和自托管的结构化访问日志两套格式并存。
+    const emitted = emissions[0]?.args[1] as Record<string, unknown>;
+    assert.notEqual(emitted, fields, "必须是整理后的副本，不能是同一个引用");
+    assert.equal(emitted.component, "transfer");
+    assert.equal(emitted.action, "importData");
+    assert.equal(emitted.rid, "request-7", "调用方显式给的 rid 必须保留");
+
+    const serialized = emitted.err as { name: string; message: string; stack?: string };
+    assert.equal(serialized.name, "Error");
+    assert.equal(serialized.message, "original failure");
+    assert.equal(typeof serialized.stack, "string", "stack 是唯一能看到调用链的地方，不能丢");
+
+    // 原对象不被改动（序列化是只读的，别把调用方手里的 Error 弄坏）
     assert.equal(error.message, "original failure");
+    assert.ok(error instanceof Error);
 });
 
 test("logger: throwing console implementations cannot interrupt requests", () => {

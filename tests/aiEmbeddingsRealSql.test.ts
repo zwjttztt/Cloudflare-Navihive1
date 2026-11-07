@@ -14,7 +14,7 @@ async function twoUsers(db: ReturnType<typeof makeRealD1>, api: ReturnType<typeo
     const rootRow = await db.prepare("SELECT id FROM users WHERE username = 'root'").first<{ id: number }>();
     const ownerId = rootRow!.id;
     const invite = await api.createInvite(ownerId);
-    const registered = await api.registerUser("alice", "password123", invite.code || "");
+    const registered = await api.registerUser("alice", "password123456", invite.code || "");
     assert.ok(registered.success, "alice 注册成功");
     return { ownerId, aliceId: registered.user!.id as number };
 }

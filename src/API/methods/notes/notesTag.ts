@@ -7,6 +7,7 @@
 import type { NavigationAPI } from "../../http";
 import type { NotesApi } from "../notes";
 import type { NoteTag } from "../../types";
+import { D1_MAX_BOUND_PARAMS, chunkByParamBudget } from "../../d1Limits";
 
 export const tagMethods: Pick<NotesApi,
     "listTags" | "createTag" | "updateTag" | "deleteTag" |
@@ -123,17 +124,23 @@ export const tagMethods: Pick<NotesApi,
             if (!note) return [];
 
             // 标签也必须属于当前账号：别人的标签 id 传进来不能拿来贴上
-            const owned = ids.length
-                ? await this.db
-                      .prepare(
-                          `SELECT id FROM note_tag WHERE id IN (${ids
-                              .map(() => "?")
-                              .join(",")})${this.scopeSql(true)}`
-                      )
-                      .bind(...this.scopeParams(ids))
-                      .all<{ id: number }>()
-                : null;
-            const allowed = new Set((owned?.results || []).map(r => r.id));
+            // ⚠️ D1 每条语句最多 100 个绑定参数：IN 列表 + scopeSql 追加的 user_id
+            // 一起算，超了整条失败。按预算切批、结果取并集（数据.ts 同一套约定）。
+            const ownedIds = new Set<number>();
+            if (ids.length > 0) {
+                for (const chunk of chunkByParamBudget(ids, 1)) {
+                    const owned = await this.db
+                        .prepare(
+                            `SELECT id FROM note_tag WHERE id IN (${chunk
+                                .map(() => "?")
+                                .join(",")})${this.scopeSql(true)}`
+                        )
+                        .bind(...this.scopeParams(chunk))
+                        .all<{ id: number }>();
+                    for (const row of owned.results || []) ownedIds.add(row.id);
+                }
+            }
+            const allowed = ownedIds;
             const toKeep = ids.filter(id => allowed.has(id));
 
             await this.db
@@ -141,14 +148,18 @@ export const tagMethods: Pick<NotesApi,
                 .bind(noteId)
                 .run();
             if (toKeep.length > 0) {
-                await this.db
-                    .prepare(
-                        `INSERT OR REPLACE INTO note_note_tag (note_id, tag_id) VALUES ${toKeep
-                            .map(() => "(?, ?)")
-                            .join(",")}`
-                    )
-                    .bind(...toKeep.flatMap(id => [noteId, id]))
-                    .run();
+                // ⚠️ 每行 2 个参数（note_id + tag_id）：预算按「每项占 2」折算 ——
+                // 直接把 100 当每项 1 个用会超限（本机 SQLite 上限 32766 测不出来）。
+                for (const chunk of chunkByParamBudget(toKeep, 0, Math.floor(D1_MAX_BOUND_PARAMS / 2))) {
+                    await this.db
+                        .prepare(
+                            `INSERT OR REPLACE INTO note_note_tag (note_id, tag_id) VALUES ${chunk
+                                .map(() => "(?, ?)")
+                                .join(",")}`
+                        )
+                        .bind(...chunk.flatMap(id => [noteId, id]))
+                        .run();
+                }
             }
             return this.listTags();
         });

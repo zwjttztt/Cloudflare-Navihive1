@@ -174,7 +174,14 @@ test("导入第 2 批失败：恰好一条 notes.import.partial，字段与 stat
     assert.ok(typeof event.fields.batchCount === "number" && (event.fields.batchCount as number) >= 2);
     assert.equal(typeof event.fields.warning, "string");
     assert.ok((event.fields.warning as string).includes("续传"), "warning 必须仍是「重导可续传」那句");
-    assert.ok(event.fields.err instanceof Error, "原始异常保留引用（排障要靠 cause，不能压成字符串）");
+    // ⚠️ 2026-11（P1-4）契约：logger 发射口会把 Error 序列化成 {name,message,stack,cause}
+    // 的普通对象（便于 jq / 按字段检索）。排障信息一个不丢 —— message、完整调用链、
+    // cause 链都在，只是不再是宿主 inspect 的多行格式。
+    const err = event.fields.err as { name: string; message: string; stack?: string };
+    assert.equal(typeof err, "object", "err 必须是结构化对象（序列化后的 Error）");
+    assert.equal(err.name, "Error");
+    assert.equal(typeof err.message, "string", "message 保留（不能压成字符串以外的丢真）");
+    assert.equal(typeof err.stack, "string", "stack 是唯一能看到调用链的地方，不能丢");
     assert.equal("userId" in event.fields, false, "单账号部署不该凭空造一个 userId");
 
     // 这次没有 CAS 冲突（新库、无并发），所以不该有冲突事件 —— 两个事件名互不越界
@@ -248,7 +255,13 @@ test("迁移失败：一条 migration.failed，phase = 第一个失败步骤，�
     assert.equal(steps[0], event.fields.phase, "phase 就是清单里的第一个");
     assert.equal(event.fields.failedSteps, steps.length);
     assert.equal(typeof event.fields.version, "string");
-    assert.equal(event.fields.err instanceof Error, true);
+    // 序列化后的 Error（P1-4）：name/message/stack 结构化，不再 instanceof。
+    // name 不写死 "Error"：迁移链路抛的是 MigrationIncompleteError 这类具名子类。
+    const migErr = event.fields.err as { name: string; message: string; stack?: string };
+    assert.equal(typeof migErr.name, "string");
+    assert.ok(migErr.name.length > 0, "具名子类的 name 必须保留（按类型检索靠它）");
+    assert.equal(typeof migErr.message, "string");
+    assert.equal(typeof migErr.stack, "string");
     assert.equal((event.fields.err as Error).name, "MigrationIncompleteError");
 
     // 逐步骤的那些自由文本 error 不该被当成事件（否则一次故障刷出二十几条「事件」）

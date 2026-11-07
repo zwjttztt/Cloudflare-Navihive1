@@ -332,3 +332,24 @@ test("clientBucket：两个开关都开时 X-Real-IP（反代覆盖头）优先�
         "unknown"
     );
 });
+
+// ---------------- 共享桶第三态（2026-11，P1-2） ----------------
+
+test("clientBucket：socket 对端是回环且无受信头时返回 login:global 共享桶", () => {
+    const req = (headers: Record<string, string>) =>
+        new Request("https://nav.example.com/api/login", { headers });
+    const REAL_IP = "x-navihive-client-ip";
+    // 同机反代（TRUST_XFF 没开）→ 唯一身份是回环地址 → 显式共享桶，
+    // 登录入口据此放宽宽限次数并改软节流（见 worker/routes/public.ts）
+    assert.equal(
+        clientBucket(req({ [REAL_IP]: "127.0.0.1" }), false, false),
+        "login:global",
+        "回环地址不该当普通桶名用：那等于全站一把锁"
+    );
+    assert.equal(clientBucket(req({ [REAL_IP]: "::1" }), false, false), "login:global");
+    assert.equal(clientBucket(req({ [REAL_IP]: "::ffff:127.0.0.1" }), false, false), "login:global");
+    assert.equal(clientBucket(req({ [REAL_IP]: "localhost" }), false, false), "login:global");
+    // 正常外网地址照旧用地址本身当桶名（回环判据不能误伤）
+    assert.equal(clientBucket(req({ [REAL_IP]: "203.0.113.7" }), false, false), "203.0.113.7");
+    assert.equal(clientBucket(req({ [REAL_IP]: "::ffff:203.0.113.7" }), false, false), "::ffff:203.0.113.7");
+});

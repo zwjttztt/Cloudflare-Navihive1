@@ -375,7 +375,7 @@ const LoginForm: React.FC<LoginFormProps> = ({
                                 value={regPassword}
                                 onChange={e => setRegPassword(e.target.value)}
                                 disabled={regLoading}
-                                placeholder='至少 6 位'
+                                placeholder='至少 12 位'
                             />
                             <PasswordField
                                 id='register-password-confirm'

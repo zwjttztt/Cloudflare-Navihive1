@@ -20,6 +20,7 @@ import { currentUserIdentity } from "./account";
 import {
     ATTACHMENT_MAX_BYTES,
     attachmentObjectKey,
+    acquireUploadLease,
     checkReplaceQuota,
     checkUploadQuota,
     finishAttachmentDeletion,
@@ -27,6 +28,7 @@ import {
     putAttachmentObject,
     readAttachmentObject,
     recordUpload,
+    releaseUploadLease,
     sniffImageMime,
     sniffTextMime,
     textExtension,
@@ -67,7 +69,7 @@ function parsePositiveInt(raw: string | null): number | null {
  * 下载时按 text/plain;charset=utf-8 出，浏览器只当纯文本，不构成 XSS 面。
  */
 async function handleUploadAttachment(ctx: RouteCtx): Promise<Response> {
-    const { request, api, env } = ctx;
+    const { request, env } = ctx;
 
     // ⚠️ 先按 Content-Length 拒掉超大请求体（省得真去读 100MB 进内存）：
     // Workers 的请求体有上限，超了会直接 413/500，报错还不友好。
@@ -79,8 +81,27 @@ async function handleUploadAttachment(ctx: RouteCtx): Promise<Response> {
     }
 
     const bytes = new Uint8Array(await request.arrayBuffer());
-    // 配额三道闸（存储通道 / 租约 / 每小时次数 / 总量）。租约让同一用户的上传串行化，
-    // 否则并发下「都读到已用 900MB、都觉得还能塞 100MB」→ 实际写了 1.1GB。
+    // ⚠️ 租约（P2-4）：拿在**路由层**，包住「校验 + 写对象 + 写 D1」全程。
+    // 原来租约藏在 checkUploadQuota 里，判完配额就放 —— 两个并发上传可以都通过
+    // 检查再各自写盘，1GB 配额能被写出 1.1GB。现在校验到落库全程持锁。
+    // key 按用户（quotaLeaseKey）：不同账号的上传互不阻塞，同一账号串行化。
+    const lease = await acquireUploadLease(env, currentUserIdOf(ctx));
+    if (!lease) {
+        throw quotaError({ status: 409, error: "另一个上传正在进行，请稍后重试" });
+    }
+    try {
+        return await persistUploadedAttachment(ctx, bytes);
+    } finally {
+        await releaseUploadLease(env, lease);
+    }
+}
+
+/** 上传主体：配额判定 → 嗅探 MIME → 写对象 → 写 D1 元数据。**调用方必须已持租约** */
+async function persistUploadedAttachment(ctx: RouteCtx, bytes: Uint8Array): Promise<Response> {
+    const { request, api, env } = ctx;
+    // 配额判定（每小时次数 / 总量 / 存储通道 / 单文件上限）。
+    // 租约已由 handleUploadAttachment 持有（先拿锁再算配额，照 inkstone storage.ts:44），
+    // 否则并发下配额会算错。
     const quota = await checkUploadQuota(env, currentUserIdOf(ctx), bytes.byteLength);
     if (!quota.ok) throw quotaError(quota);
 

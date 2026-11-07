@@ -20,6 +20,16 @@ export const LOGIN_FREE_ATTEMPTS = 5;
 export const LOGIN_BASE_LOCK_MS = 60_000; // 第 6 次起锁 1 分钟
 export const LOGIN_MAX_LOCK_MS = 30 * 60_000; // 最多 30 分钟
 
+/**
+ * 共享桶（P1-2，2026-11）：自托管反代同机部署且没开 TRUST_XFF 时，
+ * 唯一能拿到的身份是 socket 对端 = 回环地址 —— 所有真实用户都长在这一个地址上。
+ * clientBucket 返回这个显式桶名而不是 "127.0.0.1"，登录入口据此改用
+ * 「宽限次数 20 + 失败后软节流（不硬锁）」策略：硬锁等于任何一个人都能把全站登录挡门外。
+ */
+export const LOGIN_GLOBAL_BUCKET = "login:global";
+/** 共享桶下的宽限次数：全站一个桶，5 次会把正常用户误伤，20 次兼顾爆破成本 */
+export const LOGIN_FREE_ATTEMPTS_SHARED = 20;
+
 // 该端点每天不限 developments —— 但过去这把锁是**全站一把**：
 // 任何人只要连着输错 5 次，站点主人自己也登不进去了（最长 30 分钟）。
 // 多账号上线后这条从「防爆破」变成了「DoS 入口」：陌生人动动手指就能把所有人挡在门外。
@@ -76,6 +86,16 @@ export type GuardStore = Record<string, GuardState>;
  * 从 socket 对端地址写进去的，且一律覆盖客户端带过来的值，伪造不了。
  * Workers 部署下 CF-Connecting-IP 永远命中第一档，这条链路不受影响。
  */
+/**
+ * 是不是回环身份（P1-2）：`127.x` / `::1` / `::ffff:127.x` / 字面 `localhost`。
+ * 自托管同机反代（Nginx 容器 host 网络 → 127.0.0.1:8787）与本地 curl 都长这样。
+ */
+function isLoopbackIdentity(value: string): boolean {
+    const v = value.toLowerCase();
+    if (v === "::1" || v === "localhost") return true;
+    return v.startsWith("127.") || v.startsWith("::ffff:127.");
+}
+
 export function clientBucket(
     request: Request,
     trustXForwardedFor = false,
@@ -94,7 +114,14 @@ export function clientBucket(
         if (xff) return xff.slice(0, 64);
     }
     const real = request.headers.get(REAL_IP_HEADER);
-    if (real) return real.trim().slice(0, 64);
+    if (real) {
+        const trimmed = real.trim().slice(0, 64);
+        // P1-2 第三态：回环身份 → 共享桶。硬拿 "127.0.0.1" 当桶名，效果等于
+        // 全站一把锁；换成显式的 LOGIN_GLOBAL_BUCKET，登录入口才有机会区别对待。
+        // 其它消费方（注册 / 导出 / 写闸门）拿到的桶名分组语义不变（本来也全是同一个人）。
+        if (isLoopbackIdentity(trimmed)) return LOGIN_GLOBAL_BUCKET;
+        return trimmed;
+    }
     return "unknown";
 }
 

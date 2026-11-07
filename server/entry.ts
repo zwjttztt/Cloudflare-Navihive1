@@ -12,10 +12,9 @@
 // 配置全部走环境变量（.env 或 systemd EnvironmentFile），见文件底部的 CONFIG。
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { request as httpRequest, type RequestOptions } from "node:http";
 import { Readable } from "node:stream";
 import { mkdir, readFile } from "node:fs/promises";
-import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { timingSafeEqual, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import path from "node:path";
@@ -31,7 +30,10 @@ import {
 import { makeFileKv } from "./file-kv";
 import { parseHeaderRules, serveStatic, type HeaderRule } from "./static";
 import { recordUpgradeAudit, type UpgradeOutcome } from "./upgradeAudit";
-import { tagPreviousBeforeRecreate, healthGuardAfterRecreate, classifyHelperExitCode, rollbackTerminalEvent } from "./upgradeHealth";
+import { UPGRADE_IMAGE, dockerAvailable } from "./upgrade/dockerApi";
+import { readSpoolState, reportRollbackOnce, requestUpgradeViaSpool, spoolEnabled } from "./upgrade/spool";
+import { cleanupUpgraderContainer, dockerEnsureRunning, dockerUpgradeSelf, upgradeStatus } from "./upgrade/selfUpgrade";
+import { classifyHelperExitCode, rollbackTerminalEvent } from "./upgradeHealth";
 import { NavigationAPI } from "../src/API/navigationApi";
 import { isPublicHost, normalizeRemoteAddress } from "./net";
 import { setEgressResolver, setFetchImpl } from "../worker/safeFetch";
@@ -39,7 +41,8 @@ import { installEgressDispatcher } from "./egressDispatch";
 import { isBlockedHost } from "../worker/util";
 import { REAL_IP_HEADER } from "../worker/httpUtils";
 import { REQUEST_ID_HEADER, REQUEST_ID_LEN } from "../shared/requestId";
-import { logger } from "../shared/logger";
+import { logger, setRidProvider } from "../shared/logger";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Env } from "../worker/types";
 // 透传白名单的唯一真源在 shared/env.ts（worker 侧也要能读到同一份约束）。
 // 这份清单由那边的**编译期断言**守着：`Env` 里新增一个非绑定键却忘了加进去，
@@ -70,6 +73,8 @@ const CRON_EXPR = "0 * * * *";
  * 的默认值也是 0，部署前请按 deploy/selfhost.md 确认（P2-19）。
  */
 const TRUST_XFF = env("NAVIHIVE_TRUST_XFF", "0");
+/** P1-2 强告警的去重标志：每进程只警告一次「有 XFF 但没开 TRUST_XFF」 */
+let xffMismatchWarned = false;
 /**
  * 是否信任反代**覆盖写入**的 `X-Real-IP`。
  * 默认**关**（"0"），与 TRUST_XFF 独立：TRUST_XFF=1 只说明这层反代老实写 XFF，
@@ -285,6 +290,20 @@ async function proxyToWorker(req: IncomingMessage, res: ServerResponse, rid: str
     headers.delete("cf-connecting-ip");
     headers.delete("cf-visitor");
     if (!trustXFF) {
+        // P1-2 强告警：请求里带着 XFF 却没声明信任它 —— 十有八九是「挡了反代但 .env
+        // 没设 NAVIHIVE_TRUST_XFF=1」。后果：限速只能落在 socket 对端（回环）上，
+        // 所有真实用户共享一个登录桶。自 2026-11 起登录侧对这种情况改用共享桶软节流
+        // （worker/loginGuard.ts 的 LOGIN_GLOBAL_BUCKET），但正确的解法仍是开 TRUST_XFF，
+        // 让限速、审计、会话列表都拿到真实来源。每进程只警告一次，别把日志刷爆。
+        if (req.headers["x-forwarded-for"] && !xffMismatchWarned) {
+            xffMismatchWarned = true;
+            logger.warn(
+                "检测到 X-Forwarded-For，但 NAVIHIVE_TRUST_XFF=0（未信任该头）：限速与审计将退化为按回环地址共享一个桶。" +
+                    "若前面确有可信反代（用本仓 deploy/nginx 模板），请在 .env 设 NAVIHIVE_TRUST_XFF=1 并按需设 NAVIHIVE_TRUST_X_REAL_IP=1；" +
+                    "若端口直接暴露公网，请保持 0 并删掉反代。本告警每进程只出现一次。",
+                { component: "server", count: 1 }
+            );
+        }
         headers.delete("x-forwarded-for");
         headers.delete("x-forwarded-proto");
     }
@@ -410,647 +429,16 @@ async function runServerCron(): Promise<void> {
 
 // ============ HTTP 服务 ============
 
-// ============ 网页端直接升级（Docker Engine API over unix socket） ============
+// ============ 网页端直接升级 ============
 //
-// 为什么不用 `docker` CLI：镜像是 node:24-slim，里面**没有** docker 二进制；
-// 而把宿主机的 /usr/bin/docker 挂进容器要连带挂 cli-plugins（`docker compose`
-// 是插件不是内建命令），还要挂 compose 目录，链路长且动态库容易不兼容。
-// Docker Engine 的 HTTP API 走 /var/run/docker.sock，Node 原生就能发请求
-// （http.request 的 socketPath 选项），零额外依赖、也不需要 compose。
-//
-// ⚠️ 这个文件在容器里跑，升级的正是**它自己所在的容器**：整条序列必须
-// 「先把 200 响应发出去，再动手」，否则 compose 换容器时进程被杀，
-// 用户等不到任何反馈。调用方（下面的路由）已保证顺序。
-/**
- * Docker daemon 的访问方式。两种，按 `NAVIHIVE_DOCKER_HOST` 是否配置自动选：
- *
- *   1. 没配（默认）—— 走 unix socket `/var/run/docker.sock`
- *      （路径可用 `NAVIHIVE_DOCKER_SOCK` 改）。等价于把宿主机 Docker 的完整控制权
- *      交给这个容器。
- *   2. 配了 —— 走 TCP，接的是 `docker-socket-proxy` 一类的最小权限代理，
- *      只能碰升级必需的几个端点（拉镜像 / 建启删容器 / 读日志），
- *      容器失守也不等于拿到宿主机 root。
- *      compose 片段见 `deploy/docker-socket-proxy.yml`。
- *
- * ⚠️ 代理模式下 helper 容器**不再挂 sock**，改为给它注入 `DOCKER_HOST`，
- * 让里面的 `docker compose` 也走同一个代理（见 runUpgraderContainer）。
- */
-const DOCKER_SOCK = process.env.NAVIHIVE_DOCKER_SOCK || "/var/run/docker.sock";
-const DOCKER_HOST = (process.env.NAVIHIVE_DOCKER_HOST || "").trim();
-/** API 版本写死：不跟着 daemon 版本漂，行为才可预期（v1.47 ≈ Docker 25/26） */
-const DOCKER_API_VERSION = "v1.47";
-
-/** 拼 http.request 的连接参数：代理模式给 host/port，否则给 socketPath */
-function dockerEndpoint(): RequestOptions {
-    if (!DOCKER_HOST) return { socketPath: DOCKER_SOCK };
-    // 形如 http://docker-socket-proxy:2375；代理只开 http，端口缺省 2375
-    const url = new URL(DOCKER_HOST);
-    return { host: url.hostname, port: Number(url.port) || 2375 };
-}
-
-/**
- * 给 **docker CLI / compose** 用的 DOCKER_HOST。
- *
- * ⚠️⚠️ CLI 只接受 `unix://` 与 `tcp://` 两种形状，`http://` 会被直接判非法：
- *   `Failed to initialize: unable to resolve docker endpoint:
- *    invalid bind address format: http://docker-socket-proxy:2375`
- *   2026-10-22 网页一键升级就是这么挂的 —— 我把给自己 fetch 用的 http:// 地址
- *   原样塞进了 helper 的 DOCKER_HOST。自己读 api 要 http://，CLI 要 tcp://，
- *   **同一个地址两种写法**，所以这里必须分开派生，不能共用 DOCKER_HOST。
- *
- * ⚠️ https:// 也映射到 tcp://，不带 TLS：socket-proxy 只监听明文 TCP（2375）。
- *    真要上 TLS 得给 CLI 配 --tlsverify 与证书目录，不在当前形态里。
- */
-function dockerCliHost(): string {
-    if (!DOCKER_HOST) return "";
-    return DOCKER_HOST.replace(/^https?:\/\//i, "tcp://");
-}
-
-/** 「升级可用」的判据：走代理时不需要本机能看到 sock */
-/**
- * spool 模式（2026-10-22）：把「执行重建」挪出本进程。
- *
- * 为什么：原先本进程直接调 Docker API、再起 helper 容器跑 `docker compose up`，
- * 代价是**必须把 /var/run/docker.sock 挂进应用容器** —— 而 sock 等于宿主机 root：
- * 容器一旦被攻破，攻击者能起特权容器、挂宿主目录、读全部数据。
- * 试过用 socket-proxy 收权限（4.5），实测不可行：compose 需要 create/stop/networks/volumes，
- * 而放开 `POST /containers/create` 的那一刻，加固就归零了。
- *
- * 所以变成：应用容器只往共享卷写一个请求文件，由独立的 upgrader 容器
- * （持 sock、不开端口、不跑业务代码、不渲染用户内容）执行 compose。
- * 应用容器从此**零 daemon 权限**。配了 NAVIHIVE_UPGRADE_SPOOL 就启用。
- *
- * 那台 upgrader 容器跑什么：`deploy/upgrader/upgrade-loop.sh`（仓库文件，compose 的
- * `upgrader.command` 只是 exec 它）。它是本文件这套 sock 路径的**另一份实现**，
- * 两份的锚点必须同步 —— 见 upgradeHealth.ts 文件头与 tests/systemUpgradeGuard.test.ts。
- */
-const UPGRADE_SPOOL = (process.env.NAVIHIVE_UPGRADE_SPOOL || "").trim();
-
-interface SpoolState {
-    phase?: string;
-    image?: string;
-    error?: string;
-    startedAt?: number;
-    finishedAt?: number;
-}
-
-function spoolEnabled(): boolean {
-    return UPGRADE_SPOOL.length > 0;
-}
-
-/** 读升级器写的状态；读不到/坏掉一律当 idle（前端会退化成「看版本号变没变」） */
-function readSpoolState(): SpoolState {
-    if (!spoolEnabled()) return {};
-    try {
-        const parsed = JSON.parse(readFileSync(`${UPGRADE_SPOOL}/state.json`, "utf8")) as SpoolState;
-        return parsed && typeof parsed === "object" ? parsed : {};
-    } catch {
-        return {};
-    }
-}
-
-/**
- * spool 模式的回滚终态**只能被读到**：相位是 upgrader 容器写进 state.json 的，
- * 本进程没参与那次判定 —— 唯一能观察到它的地方是 GET /api/system/upgrade 的轮询。
- * 所以在那里补一条结构化事件（`upgrade.rollback.failed`，见 upgradeHealth.ts）。
- *
- * 三条约束（缺一条这个事件就会变成噪音，而噪音型事件等于没有）：
- *   · 只对两个**回滚终态**发。`idle` / `pulling` / `recreating` / `failed` 都不是回滚，
- *     尤其 `failed`（重建失败、没走门禁）是另一类事，别混进来；
- *   · 按 `phase:时间戳` **去重**：前端点完升级会连着轮询好几秒，不去重就是每个请求一条；
- *   · 去重状态是模块级的（不是每个请求各自一份），进程被换掉后自然清零，
- *     不影响下一次升级 —— 同一进程里发生第二次回滚（换了新的 finishedAt）照样会报。
- *
- * ⚠️ 与 sock 模式那条（下面的失败分支）是同一事件名的两个触发点，字段由
- * rollbackTerminalEvent 统一生成，别在这里另拼一份。
- */
-let lastReportedRollback = "";
-
-function reportRollbackOnce(state: SpoolState): void {
-    const phase = state.phase;
-    if (phase !== "rolled_back" && phase !== "rollback_failed") return;
-    const stamp = typeof state.finishedAt === "number" ? state.finishedAt : (state.startedAt ?? 0);
-    const key = `${phase}:${stamp}`;
-    if (key === lastReportedRollback) return;
-    lastReportedRollback = key;
-    const event = rollbackTerminalEvent(phase, {
-        reason: typeof state.error === "string" ? state.error : "",
-        // 升级器只写目标镜像引用；升级前的旧版本在宿主机上只剩 ImageID，没法当版本号报
-        toVersion: typeof state.image === "string" ? state.image : "",
-    });
-    logger[event.level](event.message, event.fields);
-}
-
-/**
- * 提交升级请求。
- * ⚠️ 先写临时文件再 rename：升级器可能在同一瞬间读到半截 JSON，
- *    原子替换能保证它要么看到完整文件、要么看不到。
- */
-function requestUpgradeViaSpool(by: string): void {
-    const tmp = `${UPGRADE_SPOOL}/request.tmp`;
-    writeFileSync(tmp, JSON.stringify({ at: Date.now(), by }), "utf8");
-    renameSync(tmp, `${UPGRADE_SPOOL}/request`);
-}
-
-function dockerAvailable(): boolean {
-    // spool 模式：重建由升级器容器做，本进程不需要 daemon
-    if (spoolEnabled()) return true;
-    return DOCKER_HOST ? true : existsSync(DOCKER_SOCK);
-}
-const UPGRADE_CONTAINER = process.env.NAVIHIVE_CONTAINER_NAME || "navihive";
-const UPGRADE_IMAGE = process.env.NAVIHIVE_IMAGE || "ghcr.io/zwjttztt/navihive:latest";
-
-interface DockerCall {
-    status: number;
-    body: string;
-}
-
-/** 打一次 Docker Engine API。socketPath 走 unix socket，不需要 TCP 端口。 */
-function dockerApi(
-    method: string,
-    apiPath: string,
-    payload?: unknown,
-): Promise<DockerCall> {
-    return new Promise((resolve, reject) => {
-        const body = payload === undefined ? undefined : JSON.stringify(payload);
-        const req = httpRequest(
-            {
-                ...dockerEndpoint(),
-                method,
-                path: `/${DOCKER_API_VERSION}${apiPath}`,
-                headers: {
-                    ...(body ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } : {}),
-                    Host: "docker",
-                },
-            },
-            res => {
-                const chunks: Buffer[] = [];
-                res.on("data", c => chunks.push(c as Buffer));
-                res.on("end", () =>
-                    resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }),
-                );
-            },
-        );
-        req.on("error", reject);
-        // 拉镜像可能几分钟：别让 socket 级别的超时把它掐了
-        req.setTimeout(0);
-        if (body) req.write(body);
-        req.end();
-    });
-}
-
-/** 拉镜像。POST /images/create 回的是 NDJSON 进度流，要读到流结束才算拉完。 */
-async function dockerPull(image: string): Promise<void> {
-    const sep = image.lastIndexOf(":");
-    const fromImage = sep > image.lastIndexOf("/") ? image.slice(0, sep) : image;
-    const tag = sep > image.lastIndexOf("/") ? image.slice(sep + 1) : "latest";
-    await new Promise<void>((resolve, reject) => {
-        const req = httpRequest(
-            {
-                ...dockerEndpoint(),
-                method: "POST",
-                path: `/${DOCKER_API_VERSION}/images/create?fromImage=${encodeURIComponent(fromImage)}&tag=${encodeURIComponent(tag)}`,
-                headers: { Host: "docker" },
-            },
-            res => {
-                if ((res.statusCode ?? 0) >= 300) {
-                    res.resume();
-                    res.on("end", () => reject(new Error(`拉取镜像失败 HTTP ${res.statusCode}`)));
-                    return;
-                }
-                // 进度流：逐行读，只为把 socket 读完（内容只用于报错）
-                let buf = "";
-                res.on("data", c => {
-                    buf += c.toString();
-                    if (buf.length > 1 << 20) buf = buf.slice(-4096);
-                });
-                res.on("end", () => {
-                    if (/"error"\s*:/.test(buf)) reject(new Error("拉取镜像时 daemon 报了错"));
-                    else resolve();
-                });
-            },
-        );
-        req.on("error", reject);
-        req.setTimeout(0);
-        req.end();
-    });
-}
-
-/**
- * 某个镜像引用（`repo:tag`）在当前 daemon 里的镜像 ID（`sha256:…`）。
- *
- * 用来回答一个很实际的问题：**这次拉取真的有新东西吗**。
- * 拉取失败 / 没有这个镜像时返回空串 —— 调用方按「不知道」处理，不拿它拦升级。
- * 路径里的 `/` 与 `:` 原样传：daemon 的 `/images/{name}/json` 认这种写法，
- * 编码成 %2F 反而会被当成镜像名的一部分。
- */
-async function dockerImageId(image: string): Promise<string> {
-    const res = await dockerApi("GET", `/images/${image}/json`).catch(() => null);
-    if (!res || res.status >= 300) return "";
-    try {
-        const id = (JSON.parse(res.body) as { Id?: string }).Id;
-        return typeof id === "string" ? id : "";
-    } catch {
-        return "";
-    }
-}
-
-/** 一次性 helper 容器的名字（daemon 里一眼能认出是升级用的，别和主容器混） */
-const UPGRADE_HELPER = `${UPGRADE_CONTAINER}-upgrader`;
-/** 从建 helper 到它退出的最长等待。重建一个单容器服务只要几秒，2 分钟兜慢盘 */
-const UPGRADE_HELPER_TIMEOUT_MS = 120_000;
-/** 宿主机 docker CLI 与 compose 插件（`docker compose` 是插件，不是内建命令） */
-const HOST_DOCKER_BIN = env("NAVIHIVE_HOST_DOCKER", "/usr/bin/docker");
-const HOST_DOCKER_PLUGINS = env("NAVIHIVE_HOST_DOCKER_PLUGINS", "/usr/libexec/docker/cli-plugins");
-
-/**
- * 升级过程的状态。**模块级**：POST 触发、GET 读取，两边必须看到同一份。
- * 进程被 compose 换掉后自然清零（成功后前端靠版本号判断，不靠它）。
- */
-const upgradeStatus: {
-    // rolled_back / rollback_failed 是「健康门禁没过、走了回滚」的两个终态：
-    // 与 spool 侧 state.json 同款相位，前端 upgradeWait 对它们有显式否决。
-    phase: "idle" | "pulling" | "recreating" | "failed" | "rolled_back" | "rollback_failed";
-    image: string;
-    error: string;
-    startedAt: number;
-    finishedAt: number;
-} = { phase: "idle", image: "", error: "", startedAt: 0, finishedAt: 0 };
-
-/** compose 部署坐标：工程名 / 工作目录 / 配置文件（全部来自容器标签，无需额外配置） */
-interface ComposeInfo {
-    project: string;
-    workingDir: string;
-    files: string[];
-    /**
-     * 本容器所在的网络名。只有代理模式才用得上：helper 必须和 docker-socket-proxy
-     * 在同一个网络里才能按名字解析到它（默认 bridge 网里没有 proxy 这个别名）。
-     */
-    network: string;
-}
-
-/**
- * 从容器标签里读出 compose 部署坐标。
- *
- * 为什么不要求用户配 `NAVIHIVE_COMPOSE_DIR`：compose 自己会在容器上打
- * `com.docker.compose.project{,.working_dir,.config_files}` 三个标签，直接读它
- * 比自己猜可靠得多。读不到（纯 `docker run` 起的）→ 返回 null，
- * 由调用方明确报错，不假装成功。
- *
- * ⚠️ `/compose` 是旧版（v4.3.0/v4.3.1）helper 的挂载点：那两版把目录挂在容器内的
- * `/compose`，compose 于是把 `/compose` 写进新容器的 working_dir 标签，宿主机上
- * 并没有这个目录。见到它就说明标签被污染了 —— 照它 bind 只会得到一个空目录，
- * 升级必然失败。此时宁可不升级，把话说明，让用户去宿主机 `docker compose up -d`
- * 把标签改回来（或在 compose 里设 `NAVIHIVE_COMPOSE_DIR`）。
- */
-function readComposeInfo(labels: Record<string, string>): ComposeInfo | null {
-    const fromEnv = process.env.NAVIHIVE_COMPOSE_DIR || "";
-    const workingDir = (fromEnv || labels["com.docker.compose.project.working_dir"] || "").replace(/\/+$/, "");
-    // 必须是绝对路径：空串（没标签）/ 相对路径都没法当 bind 源
-    if (!workingDir.startsWith("/")) return null;
-    if (!fromEnv && workingDir === "/compose") return null;
-    return {
-        project: labels["com.docker.compose.project"] || UPGRADE_CONTAINER,
-        workingDir,
-        files: (labels["com.docker.compose.project.config_files"] || "")
-            .split(",")
-            .map(s => s.trim())
-            .filter(Boolean),
-        network: "",
-    };
-}
-
-/**
- * helper 里跑 compose 用的路径。**必须和宿主机上的原路径一字不差**。
- *
- * ⚠️⚠️ 这是 v4.3.0/v4.3.1 线上「第一次升级成功、第二次必失败」的根因：
- * compose 会把自己运行时的工作目录写进新容器的
- * `com.docker.compose.project.working_dir` 标签，而那个标签是下一轮升级
- * 读坐标的**唯一**来源。早先把目录挂在 `/compose`（容器内路径），
- * 于是重建后标签变成 `/compose`；下一轮照着它 bind，源就变成宿主机上
- * 并不存在的 `/compose`，docker 还会顺手创建一个**空目录**挂进去 ——
- * compose 找不到配置文件，退出码 1，升级静默失败。
- * 挂在宿主原路径上，compose 记录的才是宿主的真实路径，下一轮才接得上。
- */
-function upgraderCommand(info: ComposeInfo): string {
-    const dir = info.workingDir;
-    const base = `${dir}/`;
-    // 只认落在工作目录里的配置文件
-    const inside = info.files.filter(f => f.startsWith(base)).map(f => `${dir}/${f.slice(base.length)}`);
-    const project = info.project;
-    // 健康门禁回滚用的第一个 compose 文件（bare 路径；无 -f 前缀）
-    const firstFile = inside[0] || `${dir}/docker-compose.yml`;
-    return [
-        `CFG="${inside.map(f => `-f ${f}`).join(" ")}"`,
-        'if [ -z "$CFG" ]; then',
-        `  for f in ${dir}/docker-compose.yml ${dir}/docker-compose.yaml ${dir}/compose.yml ${dir}/compose.yaml; do`,
-        `    if [ -f "$f" ]; then CFG="-f $f"; break; fi`,
-        "  done",
-        "fi",
-        `if [ -z "$CFG" ]; then echo "[upgrader] 在 ${dir} 里找不到 compose 配置文件（挂载目录不对？）"; exit 21; fi`,
-        'if [ ! -x /usr/bin/docker ]; then echo "[upgrader] 宿主机 docker CLI 不可用：/usr/bin/docker 没挂进来"; exit 22; fi',
-        `cd "${dir}"`,
-        // 升级前先把当前（旧）镜像记成回滚锚点：recreate 之后 latest 就是新镜像，
-        // 旧镜像只剩正在跑的这一份 ImageID，必须现在 inspect 下来 tag 住。
-        tagPreviousBeforeRecreate(UPGRADE_CONTAINER),
-        // 往宿主机的 compose 目录记一笔：重建会把容器自身的日志一起换掉，
-        // 出问题时这份文件是最后一份现场
-        `LOG="${dir}/.navihive-upgrade.log"`,
-        `echo "[upgrader] $(date -u +%FT%TZ) 开始 $CFG -p ${project}" >> "$LOG"`,
-        `echo "[upgrader] docker compose $CFG -p ${project} up -d --force-recreate"`,
-        // 不用管道：$? 必须来自 docker compose 本身
-        `OUT=$(docker compose $CFG -p ${project} up -d --force-recreate 2>&1) ; CODE=$?`,
-        'printf "%s\\n" "$OUT"',
-        'printf "%s\\n" "$OUT" >> "$LOG"',
-        'if [ "$CODE" -ne 0 ]; then',
-        `  echo "[upgrader] $(date -u +%FT%TZ) 失败（退出码 $CODE）" >> "$LOG"`,
-        '  echo "[upgrader] 重建失败：docker compose 返回非 0 退出码"',
-        "  exit 1",
-        "fi",
-        // 重建成功 ≠ 新容器能服务：探活，不健康就回滚 previous（#9 健康门禁）
-        // ⚠️ R05：门禁没过时下面这段会直接 exit 40/41（rolled_back / rollback_failed），
-        // 末尾两句「成功」只在 GUARD_OK 非空（门禁通过）时才跑得到 —— 回滚绝不能再报升级完成。
-        healthGuardAfterRecreate(UPGRADE_CONTAINER, project, firstFile),
-        `echo "[upgrader] $(date -u +%FT%TZ) 成功" >> "$LOG"`,
-        'echo "[upgrader] 完成：容器已按新镜像重建（健康门禁已通过）"',
-    ].join("\n");
-}
-
-/** 等 helper 退出。返回退出码；超时（多半是本进程已被换掉）返回 null */
-function waitForHelperExit(id: string): Promise<number | null> {
-    return new Promise(resolve => {
-        let settled = false;
-        const done = (code: number | null) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            resolve(code);
-        };
-        const timer = setTimeout(() => done(null), UPGRADE_HELPER_TIMEOUT_MS);
-        timer.unref?.();
-        dockerApi("POST", `/containers/${id}/wait?condition=not-running`).then(
-            res => {
-                if (res.status >= 300) return done(-1);
-                const code = (JSON.parse(res.body) as { StatusCode?: number }).StatusCode;
-                done(typeof code === "number" ? code : -1);
-            },
-            () => done(-1),
-        );
-    });
-}
-
-/** 读 helper 的日志尾巴（失败时把真实原因带给用户，而不是一句「升级失败」） */
-async function readHelperLogs(id: string): Promise<string> {
-    try {
-        const res = await dockerApi("GET", `/containers/${id}/logs?stdout=1&stderr=1&tail=200`);
-        if (res.status >= 300) return "";
-        // helper 带 Tty 创建：日志是纯文本（非 TTY 才是 8 字节头复用的多路流）
-        // 兜掉可能混进来的 NUL（eslint 的 no-control-regex 也不让写正则）
-        // ⚠️ 别在这里狠命截断：compose 的报错是排查的唯一线索，截太短等于没留。
-        // 上限 4000 字符（前端 Alert 撑得住），且**保留开头**——头几行往往就是原因。
-        return res.body.split("\u0000").join("").trim().slice(0, 4000);
-    } catch {
-        return "";
-    }
-}
-
-/**
- * 起一个一次性 helper 容器，让它在**容器外面**执行 `docker compose up -d --force-recreate`。
- *
- * 为什么必须是容器外：执行升级的进程就在被升级的这个容器里，任何「自己停/删自己」
- * 的动作都会把它当场杀死（见 dockerUpgradeSelf 的注释）。daemon 侧的 helper 不受影响。
- * 借用的只是新镜像的 `/bin/sh` + 宿主机挂进来的 docker CLI，
- * 所以镜像是 node:slim 也没关系（以前正是「容器里没有 docker 二进制」才走了纯 API）。
- */
-async function runUpgraderContainer(image: string, info: ComposeInfo): Promise<void> {
-    const name = UPGRADE_HELPER;
-    // 上一轮失败留下的 helper：先清掉，否则 create 会 409
-    await dockerApi("DELETE", `/containers/${name}?force=true`).catch(() => undefined);
-    const created = await dockerApi("POST", `/containers/create?name=${name}`, {
-        Image: image,
-        Entrypoint: ["/bin/sh", "-c"],
-        Cmd: [upgraderCommand(info)],
-        WorkingDir: info.workingDir,
-        // 和主容器同样的身份：sock 属 root:docker，非 root 连不上
-        User: "0:0",
-        Tty: true,
-        Labels: { "com.navihive.upgrader": "1" },
-        // 代理模式：helper 里的 docker CLI 也要走同一个代理，否则它回头去找
-        // /var/run/docker.sock（代理模式下根本没挂进去）而连不上 daemon。
-        ...(DOCKER_HOST ? { Env: [`DOCKER_HOST=${dockerCliHost()}`] } : {}),
-        // 同理，只有代理模式才需要显式加入 proxy 所在的网络（默认 bridge 里没有它）
-        ...(DOCKER_HOST && info.network
-            ? { NetworkingConfig: { EndpointsConfig: { [info.network]: {} } } }
-            : {}),
-        HostConfig: {
-            AutoRemove: false,
-            Binds: [
-                // 代理模式下**不挂 sock**：代理的意义就是别把 daemon 的完整控制权交出去
-                ...(DOCKER_HOST ? [] : [`${DOCKER_SOCK}:${DOCKER_SOCK}`]),
-                // ⚠️ 源和目标写成**同一个宿主路径**：见 upgraderCommand 上方的长注释。
-                // 挂在 /compose 会让 compose 把 /compose 写进新容器的 working_dir 标签，
-                // 下一轮升级就再也找不到真正的 compose 目录（线上实测：第二次必失败）。
-                `${info.workingDir}:${info.workingDir}`,
-                `${HOST_DOCKER_BIN}:/usr/bin/docker:ro`,
-                `${HOST_DOCKER_PLUGINS}:/usr/libexec/docker/cli-plugins:ro`,
-            ],
-        },
-    });
-    if (created.status >= 300) {
-        throw new Error(`创建升级容器失败 HTTP ${created.status} ${created.body.slice(0, 200)}`);
-    }
-    const id = (JSON.parse(created.body) as { Id?: string }).Id || name;
-    const started = await dockerApi("POST", `/containers/${id}/start`);
-    if (started.status >= 300 && started.status !== 304) {
-        throw new Error(`启动升级容器失败 HTTP ${started.status} ${started.body.slice(0, 200)}`);
-    }
-
-    const code = await waitForHelperExit(id);
-    if (code === null) {
-        // 收不到结果：本进程已经在 compose 重建时被换掉了 —— 这正是成功的样子
-        return;
-    }
-    const logs = await readHelperLogs(id);
-    await dockerApi("DELETE", `/containers/${id}?force=true`).catch(() => undefined);
-    if (code !== 0) {
-        // 40/41 是「健康门禁没过、已走回滚」的终态退出码。把退出码挂在 error 上，
-        // POST 的失败分支才能如实报 rolled_back / rollback_failed（见 upgradeHealth.ts），
-        // 而不是把「已回滚」混成一句普通失败、更不是误报「完成」。
-        const error = new Error(`重建容器失败（退出码 ${code}）：${logs || "helper 没有输出"}`) as Error & {
-            helperExitCode?: number;
-        };
-        error.helperExitCode = code;
-        throw error;
-    }
-}
-
-/**
- * 把**这个容器**升级到新镜像：拉镜像 → 交给 compose 用新镜像重建本容器。
- *
- * ⚠️⚠️ 两段都踩过线上坑，别再退回任何一段：
- *
- * ① 「容器内自己 stop → rm → create → start」：执行升级的 Node 进程就在被升级的
- *    容器里。`POST /containers/{name}/stop` 一发出去容器收到 SIGTERM、本进程立刻死，
- *    后面的 DELETE / CREATE / START **一行都不会执行**。线上症状：
- *    点「更新」后长时间无反应、刷新变 502，容器停在 `Exited (0)`。
- *
- * ② 「restart」（2026-10-19 为了绕开①改用）：restart 是 stop + start，由 daemon
- *    完成、不依赖容器内进程活着，看起来完美 —— 但它**按容器创建时记录的 ImageID
- *    启动**，不重新解析 `:latest` 标签。于是 `docker pull` 明明拉到了新镜像、
- *    容器也确实重启了，跑的还是旧代码。线上症状（2026-10-20 用户报）：
- *    「点击更新长时间无反应，刷新后还是原来版本」。
- *
- * 结论：换镜像必须由**容器外面的进程**做 → helper 容器执行 `docker compose up -d
- * --force-recreate`（顺便把 compose 里新增的配置项也带上，restart 做不到这点）。
- *
- * 顺序上先把所有可能失败的都做完（读规格、拉镜像），最后才动容器：
- * 拉取失败、读不到 compose 坐标，都绝不去碰容器，旧容器继续服务。
- */
-async function dockerUpgradeSelf(image: string): Promise<void> {
-    const name = UPGRADE_CONTAINER;
-    const { status, body } = await dockerApi("GET", `/containers/${name}/json`);
-    if (status >= 300) throw new Error(`读不到容器 ${name}（HTTP ${status}）`);
-    const info = JSON.parse(body) as {
-        Config?: { Labels?: Record<string, string> };
-        NetworkSettings?: { Networks?: Record<string, unknown> };
-        /** 容器当前在跑的镜像 ID（sha256:…）—— 升级成功与否的**唯一硬判据** */
-        Image?: string;
-    };
-    const runningImageId = info.Image || "";
-    const labels = info.Config?.Labels ?? {};
-    const compose = readComposeInfo(labels);
-    if (!compose) {
-        // 两种读不到坐标的情况给不同的处方：被旧版污染 vs 根本不是 compose 起的
-        const polluted = labels["com.docker.compose.project.working_dir"] === "/compose";
-        throw new Error(
-            polluted
-                ? "compose 目录标签被旧版写成 /compose（v4.3.0/v4.3.1 的已知问题）：" +
-                      "请到宿主机进入 compose 目录执行 docker compose up -d --force-recreate 修正标签，" +
-                      "或在 compose 的 environment 里加 NAVIHIVE_COMPOSE_DIR 指向真实目录。"
-                : "读不到 compose 部署信息（容器标签里没有 com.docker.compose.*）：本容器不是 docker compose 启动的。" +
-                      "网页一键升级只支持 compose 部署，请到宿主机执行 docker compose up -d --force-recreate。"
-        );
-    }
-    // 网络名从本容器身上读：helper 要跟它在同一个网里才解析得到代理。
-    // 有多个网时取第一个 —— 代理模式的标准形态是单网。
-    compose.network = Object.keys(info.NetworkSettings?.Networks ?? {})[0] ?? "";
-    if (DOCKER_HOST && !compose.network) {
-        throw new Error(
-            "配了 NAVIHIVE_DOCKER_HOST 但读不到本容器的网络名：helper 会进默认 bridge，" +
-                "解析不到代理地址。请确认本容器在 compose 网络里（docker inspect 看 NetworkSettings.Networks）。"
-        );
-    }
-    upgradeStatus.phase = "pulling";
-    await dockerPull(image);
-
-    // ⚠️⚠️ 拉完先比一次镜像 ID（2026-10-21 用户报「点更新又长时间没反应」，线上排查
-    // 发现：点了之后容器确实重建过，但**跑的还是旧镜像**，页面等满两分钟才报「没检测到
-    // 新版本」）。根因是「有新版本」这个判断来自仓库里的 package.json，而镜像要在
-    // GHCR 上构建好几分钟 —— 于是存在一个窗口：
-    //   仓库里已经是 5.1.0（前端说「发现新版本」）→ registry 上 :latest 还是上一版 →
-    //   pull 拉到的还是旧的 → compose 重建了个一模一样的容器。
-    // 白等两分钟还是小事，站点白白抖一次才是。
-    // 这种情况**绝不能动容器**：直接如实说「镜像还没更新，容器没动，过几分钟再点」。
-    const pulledImageId = await dockerImageId(image);
-    if (pulledImageId && runningImageId && pulledImageId === runningImageId) {
-        upgradeStatus.phase = "idle";
-        throw new Error(
-            `镜像没有更新：registry 上的 ${image} 仍是当前运行的这一版。` +
-                "「发现新版本」比的是仓库里的 package.json，而镜像要在 GitHub 上构建（本仓库是 " +
-                "multi-arch，要模拟 arm64，**通常 10 分钟以上**）—— 版本号先到、镜像后到，这个空档里" +
-                "点「更新」只会拉回旧镜像。容器没有重建、站点没受影响；等镜像构建完成（GitHub → " +
-                "Actions → docker-publish 变绿）后再点一次。"
-        );
-    }
-
-    upgradeStatus.phase = "recreating";
-    await runUpgraderContainer(image, compose);
-
-    // ⚠️ helper「退出码 0」不等于升级成功：compose 可能认为无须重建直接退 0，
-    // `wait` 也可能拿不到结果被当成成功（见 runUpgraderContainer 的 null 分支）。
-    // 真正的判据只有一个 —— **容器现在跑的镜像变了没有**。没变就如实报失败，
-    // 别让前端去等一个永远不会变的版本号。
-    if (runningImageId) {
-        const after = await dockerApi("GET", `/containers/${name}/json`).catch(() => null);
-        if (after && after.status < 300) {
-            const afterImageId = (JSON.parse(after.body) as { Image?: string }).Image || "";
-            if (afterImageId && afterImageId === runningImageId) {
-                throw new Error(
-                    "容器重建后仍在跑旧镜像（compose 没有换成新镜像）。站点仍在服务，" +
-                        "请到宿主机 compose 目录执行 docker compose pull && docker compose up -d --force-recreate。"
-                );
-            }
-        }
-    }
-}
-
-/**
- * 升级后的兜底：确认容器真的在跑，不在就拉起来。
- *
- * 正常路径用不上（helper 失败时 compose 一般还没动到旧容器，我们还活着）；
- * 但「旧容器被停掉、新容器没起来」的那种半途状态只能靠它救 —— 而且只有在
- * 本进程侥幸没被杀（比如 compose 在 stop 之前就报错退出）时才轮得到它。
- * 站点停摆比升级失败严重得多，多这一跳不亏。
- */
-async function dockerEnsureRunning(): Promise<void> {
-    const name = UPGRADE_CONTAINER;
-    const { status, body } = await dockerApi("GET", `/containers/${name}/json`);
-    if (status >= 300) throw new Error(`读不到容器 ${name}（HTTP ${status}）`);
-    const state = (JSON.parse(body) as { State?: { Running?: boolean } }).State ?? {};
-    if (state.Running) return;
-    const started = await dockerApi("POST", `/containers/${name}/start`);
-    if (started.status >= 300 && started.status !== 304) {
-        throw new Error(`启动容器失败 HTTP ${started.status} ${started.body.slice(0, 200)}`);
-    }
-}
-
-/**
- * 启动时清掉上一轮升级留下的 helper 容器。
- *
- * 成功升级会把本进程连同容器一起换掉，helper 没机会自己收尾 —— 它会留下一个
- * 已退出的 `navihive-upgrader`。下次启动顺手删掉，daemon 里不留垃圾
- * （升级失败时另一条路径已经在 runUpgraderContainer 里删过了）。
- * 只管带 `com.navihive.upgrader=1` 标签、且**不在运行**的容器：
- * 删正在跑的那个会把升级现场弄丢，而删别人的容器是绝对不行的。
- *
- * ⚠️ 只在 docker-api 模式下有意义：spool 模式的收尾归宿主上的 upgrader 服务，
- * 本进程在那儿根本不会创建 helper 容器（见函数体内第一段注释）。
- */
-async function cleanupUpgraderContainer(): Promise<void> {
-    // spool 模式直接收工（2026-10-31 修）：本进程在 spool 模式下**从不创建** helper 容器 ——
-    // 带 `com.navihive.upgrader=1` 标签的只可能来自下面那条 Docker API 路径
-    // （runUpgraderContainer 创建时贴的 Labels）。spool 的收尾归宿主上的 upgrader 服务
-    // （docker-compose.yml 的 `upgrader`，长驻轮询 /spool/request，自己 rm 请求文件），
-    // 而它连标签都没有，就算连得上 daemon 也筛不出来。
-    //
-    // 为什么不能靠 `dockerAvailable()` 兜：它在 spool 模式下**恒为 true** —— 那是
-    // 「这个部署形态支不支持网页升级」的判据，不是「本进程连不连得上 daemon」的判据。
-    // 沿用它就会去连 compose 故意没挂进来的 /var/run/docker.sock，健康启动也刷一条
-    // `connect ENOENT /var/run/docker.sock` 的 warn —— 看起来像故障，实际只是走错了通道。
-    //
-    // 也不顺手清 /spool 里的文件：`request` 是「待执行命令」（升级器读走立刻 rm，
-    // 我们删掉等于静默取消一次升级）、`state.json` 是升级器写的进度（删了会让
-    // GET /api/system/upgrade 在升级中途退回 idle）、`request.tmp` 还可能与并发的
-    // 写入抢 rename。这三样都不归本进程管。
-    if (spoolEnabled()) return;
-    if (!dockerAvailable()) return;
-    try {
-        const filters = encodeURIComponent(JSON.stringify({ label: ["com.navihive.upgrader=1"] }));
-        const { status, body } = await dockerApi("GET", `/containers/json?all=1&filters=${filters}`);
-        if (status >= 300) return;
-        const list = JSON.parse(body) as { Id: string; State?: string }[];
-        for (const item of list) {
-            if (item.State === "running") continue;
-            await dockerApi("DELETE", `/containers/${item.Id}?force=true`).catch(() => undefined);
-            console.log(`[upgrade] 已清理上一轮升级的 helper 容器 ${item.Id.slice(0, 12)}`);
-        }
-    } catch (error) {
-        // 清理是顺手的家务，失败绝不阻断启动
-        console.warn("[upgrade] 清理 helper 容器失败（不影响运行）:", error);
-    }
-}
-
-
+// 实现在 server/upgrade/*。2026-11 从本文件拆出：原 entry.ts 1500+ 行里 Docker 自升级
+// 占了七成，而其中「compose 坐标解析」「helper 命令拼装」本来是纯函数，却因为和
+// 「连 socket」的代码混在一个文件里，单测碰不到 —— 覆盖率 0/0/0。
+//   · dockerApi.ts   —— Docker Engine API 最小客户端 + 目标容器/镜像坐标 + 可用性判据
+//   · spool.ts       —— 零 daemon 权限的请求文件通道（应用容器根本不碰 sock 的形态）
+//   · compose.ts     —— 从容器标签读部署坐标、拼 helper 命令（纯函数，有单测）
+//   · selfUpgrade.ts —— 拉镜像 / 起 helper / 重建 / 健康门禁后的状态机
+// 本文件只保留：路由编排、审计落库、客户端 IP 口径。**行为与拆分前完全等价**。
 /**
  * 访问日志里的客户端地址，与 worker 侧同口径：
  * 信任反代（NAVIHIVE_TRUST_XFF=1）时取 XFF 首段，否则只认 socket 对端
@@ -1078,6 +466,21 @@ async function writeUpgradeAudit(outcome: UpgradeOutcome, ip: string): Promise<v
         new NavigationAPI(serverEnv).writeAudit(action, actor, auditIp, detail)
     );
 }
+
+/**
+ * 请求上下文（P1-4 ②）：让全仓 80 多处 `logger.warn/error` 自动带上 rid。
+ *
+ * 为什么是 AsyncLocalStorage 而不是模块级 `let currentRid`：Node 是单线程 + 大量交错
+ * await，模块级变量会被后一个请求覆盖 —— 日志就会挂上**别人的** rid，那比没有 rid
+ * 更坏（它会把人引到错误的请求上）。ALS 按异步调用链隔离，`ridStore.run(rid, fn)`
+ * 之后由这次请求派生的整条 Promise 链都能读回自己的 rid。
+ *
+ * ⚠️ 注入点为什么在这里：`shared/logger.ts` 同时被 worker（Cloudflare）使用，而
+ * workerd 里没有 `node:async_hooks` —— 所以那边留的是可注入的 provider 钩子，
+ * Node 侧在这里把 ALS 接上去。worker 侧不注入：它每请求自带 rid 字段。
+ */
+const ridStore = new AsyncLocalStorage<string>();
+setRidProvider(() => ridStore.getStore());
 
 const server = createServer((req, res) => {
     const started = Date.now();
@@ -1134,7 +537,9 @@ const server = createServer((req, res) => {
         );
     });
 
-    void (async () => {
+    // P1-4：整条请求链跑在 rid 上下文里 —— 期间任何 logger.warn/error 都会自动带上它，
+    // 不用改 80 多个调用点（那既繁琐又必然漏）。隔离机制见 ridStore 的定义处。
+    void ridStore.run(rid, async () => {
         try {
             // POST /__cron：给外部定时器（systemd timer / crontab）用的触发口
             if (pathname === "/__cron" && method === "POST") {
@@ -1395,14 +800,23 @@ const server = createServer((req, res) => {
             // ⚠️ 原来这里只有 console.error("请求处理异常:", error)：pathname / method
             // 声明在 try 里面，catch 拿不到，日志里只剩一个裸异常 —— 不知道是哪个请求。
             // 现在把 rid / method / pathname 一起带上，和访问日志、worker 侧那条 500 对得上。
-            console.error("[server]", rid, method, pathname, error);
+            // P1-4：改走 logger —— Error 会在发射口转成 {name,message,stack,cause}，
+            // 与访问日志/审计同一套结构化格式；rid 也已由 ALS 上下文带上（这里显式再给一次，
+            // 因为 catch 分支是最需要它的地方，不能依赖上下文是否还活着）。
+            logger.error("[server] 请求处理异常", {
+                component: "server.entry",
+                rid,
+                m: method,
+                p: pathname,
+                err: error,
+            });
             if (!res.headersSent) {
                 res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" }).end("Internal Error");
             } else {
                 res.destroy();
             }
         }
-    })();
+    });
 });
 
 /**

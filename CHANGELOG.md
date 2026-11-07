@@ -12,6 +12,19 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-07 · 安全/重构：独立审计第二批（P2-2 兼容契约 + 拆自升级 + 日志三件事 + 切批 + 口令策略 + compose 硬化）（33.0.0）
+
+> 审计第二批 5 项全部落地，外加被暂缓的 P2-2。要点：
+>
+> - **P2-2 兼容契约（保住 Firefox 111–120 / ESR115）**：基线维持 `firefox >= 111`，改为给 `:has()` 补兼容路径 —— 卡片键盘焦点环、卡片操作条、分组工具条三处，`:has()` 全部单独成规则并包进 `@supports selector(:has(*))`，块外留 `:focus-within` 兜底（老浏览器唯一代价：鼠标点一下浮层也会亮）；`--accent-wash` 补静态降级值（不支持 `color-mix()` 的 FF111–112 用默认强调色的 10% 染色）。新增 `tests/cssBaselineGuard.test.ts` 把契约钉进 CI：裸写 `:has()` 即红（反向变异验证过守卫真的会咬人）。顺手删了三处无人引用的死规则（`nav-fade-up` / `nav-drop-hint` / `navAurora` 残留），偿还了本批吃掉的首屏预算。
+> - **拆 `server/entry.ts` 的 Docker 自升级**（约 1,100 行 → `server/upgrade/{dockerApi,spool,compose,selfUpgrade}.ts`，entry 只留路由编排与审计落库，行为逐字等价）：纯函数（compose 坐标解析、helper 命令拼装）第一次有了真执行覆盖（`tests/upgradeCompose.test.ts`）。
+> - **日志三件事（P1-4）**：① `logger` 发射口把 `Error` 序列化成 `{name,message,stack,cause}` 的普通对象（不再混进宿主 inspect 格式，`jq` 可查）；② Node 侧 `AsyncLocalStorage` 注入 rid，80+ 处 `warn/error` 自动带上请求 ID，不用改任何调用点；③ 新增 `shared/metrics.ts` 四计数（请求 / 5xx / 429 / 慢请求 >1s）+ `/api/ops/metrics`（仅 owner），worker 侧出口只对 5xx/慢请求逐条记日志（CF 形态逐行计量）。
+> - **切批与配额租约（P2-3/P2-4）**：`notesTag.ts` / `recycle.ts` 的 `IN (...)` 与 `VALUES (?,?)` 批写改走 `chunkByParamBudget`（D1 单语句 100 参数上限，本机 SQLite 32766 测不出来）；附件配额租约 key 改按用户（以前全局一把锁，A 传图 B 直接 409），并把租约提升到路由层包住「校验 + 写对象 + 写 D1」全程（以前判完就放，并发下 1GB 配额能写出 1.1GB）。
+> - **口令策略（P2-6/P2-7）**：注册 / 改密 / `auth/credentials` 三处并入 `validatePasswordStrength`（≥12 位 + 拒绝同字符重复），不再「注册能设 6 位、改密却要 12 位」；登录时用户名不存在也对固定假哈希跑一次满迭代 PBKDF2（堵用户名枚举的计时侧信道）。前端注册框提示同步改「至少 12 位」。
+> - **compose 硬化 + TRUST_XFF 告警（P2-9/P1-2）**：`docker-compose.yml` 补 `cpus:1.0` / `pids_limit:128` / `read_only:true`（可写面只剩数据卷、/spool、/tmp） / `cap_drop:ALL` / `no-new-privileges`；入口检测到「请求带 XFF 但 TRUST_XFF=0」时每进程强告警一次；`clientBucket` 增加共享桶第三态（`login:global`，socket 对端为回环且无受信头）—— 该桶下登录宽限提到 20 次、锁定期不硬拒改软节流（每请求最多多等 10s）：自托管没开 TRUST_XFF 时，一个人连错 12 次把全站登录锁 30 分钟的 DoS 从此不成立。
+>
+> 本地门禁全绿：build / `check:budget`(37/37) / 单测+DOM(4117 通过，1 跳) / lint(0 error) / `check:strict-idx`(366/62/62) / `audit:contrast` / `audit:a11y` / smoke。
+
 ## 2026-11-07 · 修复：独立审计第一批（文档失真 / 崩溃页暗色 / SW 预缓存收紧）（32.5.0）
 
 > 一轮**不采信既有结论**的全维度独立审计之后，先落地「改动小、收益直接」的第一批。除错误兜底页配色外不改产品行为：
