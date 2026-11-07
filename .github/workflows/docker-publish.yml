@@ -303,7 +303,7 @@ jobs:
         # ⚠️ tag 必须带 `v` 前缀（v0.28.0）：写裸 0.28.0 会在 job 准备阶段
         #    "Unable to resolve action" —— action 解析失败不受 continue-on-error
         #    保护，会连带整条 merge job 红、镜像发布失败（33.1.0 首发踩过）。
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ghcr.io/zwjttztt/navihive:latest
           format: table
