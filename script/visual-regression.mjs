@@ -182,7 +182,8 @@ const BASE_SELECTORS = [
     ".nav-card-icon",
     ".nav-card-actions",
     ".nav-star-btn",
-    ".nav-header-compact",
+    // `.nav-header-compact` 已于 2026-11 删除（紧凑态只改字号、不再挂 CSS 类），
+    // 从采样清单同步移除；基线里它一直是空数组，删除无数据损失。
     ".nav-header-divider",
     ".nav-settings-btn",
     ".nav-tag-bar",

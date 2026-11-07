@@ -290,6 +290,36 @@ export default function SettingsWorkspaceDialog({
                     sx: {
                         // 纸面材质走全站唯一真源（圆角 / 底色 / 描边 / 阴影 / 模糊）
                         ...dialogPaperTokens,
+                        // ⚠️ **这一个**纸面不要毛玻璃（2026-11，用户实测：切换左栏面板时
+                        // 左缘冒出一抹白色圆角浮框）。必须写在这行 spread **之后**才生效：
+                        // 同一份 sx 对象里后面的键覆盖前面的。
+                        //
+                        // 根因：dialogPaperTokens（以及 theme 的
+                        // `MuiDialog.styleOverrides.paper`，取值同源）给的是
+                        // `backdrop-filter: blur(14px) saturate(1.4)` + 半透明底
+                        // `var(--surface-modal)`（= rgba(255,255,255,.94)）+ 22px 圆角。
+                        // 换面板会把右栏子树整体重建，浏览器于是要把这块纸面提成独立
+                        // 合成层、**重新采样一次背景**；重新采样那一帧里「半透明底 +
+                        // 圆角边缘 + 底下 rgba(0,0,0,.52) 遮罩」三层没按顺序合成，
+                        // 圆角外侧漏出后面的亮色页面 —— 肉眼就是左缘那一抹白色圆角浮框
+                        // （只在切换的瞬间出现，切完就没了）。
+                        //
+                        // 修法：不透明底 + 显式关掉模糊。底色不透明 ⇒ 浏览器不需要为它
+                        // 采样背景，也就没有「重新采样」那一帧，浮框消失；顺带视觉上更对：
+                        // 设置中心是一整屏表单/列表，身后那层页面透出来只是噪音。
+                        // 同一套规则**只加在这里**，全站弹窗的玻璃材质（dialogShell 与
+                        // theme）不动 —— 别的弹窗没有「切面板重建整块纸面」这个动作。
+                        //
+                        // ⚠️ 底色必须是**不透明**色，别写回 `var(--surface-modal)`
+                        // （0.94 alpha 会原样复发）。background.paper 亮 #fff / 暗 #121212，
+                        // 都已是不透明色，跟着亮暗主题走。
+                        backdropFilter: "none",
+                        WebkitBackdropFilter: "none",
+                        // 写成 sx 的主题回调（与 notes/NotesPageShell.tsx 同一写法），
+                        // **不硬编码色值**：深色模式下必须有对应的不透明底，
+                        // 写死 #fff 会得到白底配浅字。
+                        backgroundColor: (t: { palette: { background: { paper: string } } }) =>
+                            t.palette.background.paper,
                         // DialogCloseButton 是 absolute 定位，基准必须是纸面本身
                         position: "relative",
                         display: "flex",

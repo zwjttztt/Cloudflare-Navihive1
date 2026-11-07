@@ -10,7 +10,9 @@ import Typography from "@mui/material/Typography";
 export interface SiteListHeaderProps {
     /** 站名（settings 里配的 site.name） */
     siteName: string;
-    /** 向下滚动后是否进入紧凑模式（改字号与间距） */
+    /** 向下滚动后是否进入紧凑模式（**只改字号，不改间距/盒高**）。
+     *  紧凑态**不再通过 CSS 类表达**（原来的 `.nav-header-compact` 已删）：
+     *  唯一表现是下面标题的 fontSize 三元，理由见容器 sx 的注释。 */
     headerCompact: boolean;
     /** 第一层右侧：时钟。窄屏自己隐藏，这里只管位置。
      *  compact 也由 App 直接传进 HeaderClock，这里不关心。 */
@@ -28,15 +30,35 @@ export default function SiteListHeader({
     return (
         <Box
             component="header"
-            className={headerCompact ? "nav-header-compact" : undefined}
             sx={{
                 display: "flex",
                 flexDirection: "column",
-                // 两层之间：常态 12px，收紧 8px
-                gap: headerCompact ? 1 : 1.5,
-                mb: headerCompact ? 2.5 : 3.5,
-                pt: headerCompact ? 0 : 0.5,
-                transition: "margin .25s ease",
+                // ⚠️ 间距**不跟随** headerCompact 变化（历史版本这里是三处三元）。
+                //
+                // 为什么必须拍平：间距一变，头部盒子高度就跟着变 —— 三处一起收时
+                // 整页文档高度少 ~21px，滚动位置相对内容整体平移，于是滚动条 thumb
+                // 重算、吸顶元素重新吸附、列表整体跳一下。而间距是在**滚动过程中**
+                // 变的，这个平移正好发生在用户手指还在滚的时候，看起来就是「抖」。
+                //
+                // F1 的滞回（useViewportUi 的 160/130）已经把「临界点逐帧翻面」按住了，
+                // 但「不产生位移」永远优于「产生位移再用滞回兜住」：滞回能防住来回抽搐，
+                // 防不住那一次性的 21px 位移。所以这里直接把位移的源头去掉。
+                //
+                // 字号那处三元**保留**（见下面 Typography）：字号变化只改字形、行盒由
+                // line-height 撑，不会改变盒高，因此不产生任何位移 —— 视觉效果还在。
+                //
+                // 同时**不再挂 `.nav-header-compact` 这个 class**（2026-11 删）：
+                // 它那条 `transition: padding / background` 全是死声明（padding 已恒定、
+                // background 从没人改过），留在头上只会让人以为「CSS 里还藏着一段收紧逻辑」。
+                // 现在紧凑态的唯一表现就是标题字号 —— 盒高恒定是零位移的前提，刻意如此。
+                gap: 1.5,
+                mb: 3.5,
+                pt: 0.5,
+                // 这里原来有一句 `transition: "margin .25s ease"`，现已删除：
+                // margin / padding 三处都成了常量，不可能再变化，这条过渡是**死声明**；
+                // 留着会误导后来人以为「间距还在动，只是被滞回兜住了」。
+                // 现在唯一还在过渡的属性是标题的 font-size，它自带
+                // `transition: "font-size .25s ease"`（见下方 Typography）。
             }}
         >
             {/* 第一层：站名 + 时钟。站名不再和工具抢同一行的宽度 */}

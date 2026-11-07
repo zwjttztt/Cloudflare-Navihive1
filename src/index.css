@@ -1124,12 +1124,9 @@ html.nav-touch .nav-group-tools {
     width: 4px;
 }
 
-/* 滚动时头部收缩：标题变小、间距收紧 */
-.nav-header-compact {
-    transition:
-        padding var(--dur-base) ease,
-        background var(--dur-base) ease;
-}
+/* 注：`nav-header-compact` 类已于 2026-11 删除 —— 它只剩一条 padding/background
+   的死过渡（间距拍平后 padding 恒定，background 从未被改）。头部收紧现在只
+   影响标题字号，由 SiteListHeader 的内联 sx 承担，不经过 CSS 类。 */
 
 /* 字号档位：只缩放正文，不影响图标尺寸 */
 .nav-root[data-font-scale="compact"] {

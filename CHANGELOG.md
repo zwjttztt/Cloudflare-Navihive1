@@ -12,6 +12,20 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-07 · 修复：导航站持续闪烁（滚动滞回 / 头部零位移 / 渲染引用稳定）+ 设置中心切换面板白框（34.1.0）
+
+> 34.0.0 上线后用户复测：笔记页白块已消失，但**停留在导航站首页**仍有持续闪烁 —— 鼠标移上卡片不停闪、顶部进度条与右侧滚动条逐帧闪；点设置左栏面板时右缘冒出一圈白色圆角浮框。这一批逐项收口。
+>
+> - **首页持续闪烁（P0）**：根因是 `useViewportUi.ts` 的 `setHeaderCompact(y > 阈值 && y > lastY + 2)` —— 这是**滚动差分判定**，临界点上头部一收紧、文档高度变化又让 `scrollY` 反向跳一帧，下一页判定翻回 `false`，形成逐帧 true/false 翻面（顶栏 / 进度条 / 滚动条跟着逐帧重排）。改用**双阈值滞回**（`HEADER_COMPACT_ON = 160` / `HEADER_COMPACT_OFF = 130`，中间带保持上一次状态），判定抽成可导出纯函数 `resolveHeaderCompact(prev, y)`，由 8 条拐点断言直接驱动。同时**把位移源头去掉**：`SiteListHeader` 的 `gap/mb/pt` 三处原随 `headerCompact` 一同收缩（合计约 21px 文档高度差 → 整页平移 → 滚动条 thumb 重算），现拍平为常量，**头部盒高恒定**，紧凑态只保留标题字号变化（字号只改字形、行盒由 line-height 撑，不改盒高）。滞回因此不再需要「宽于 21px 位移」，但**不取消、也不退化成单点阈值** —— `scrollY` 在惯性滚动、`overscroll` 边界回弹、移动端地址栏伸缩下本来就会在临界点来回抖几像素，中间带正是为这种抖动留的。
+> - **死代码清理（同一根因的收尾）**：间距拍平后 `.nav-header-compact` 这个类和它的 `className` 挂载彻底失效（只剩一条 `transition: padding / background`，两个属性都不再变），一并删除并留说明注释；同步移除 `script/visual-regression.mjs` 采样清单里的该选择器，以及 27 个视觉基线里对应的空数组 key（逐文件按各自真实行尾精确删行，零数据损失 —— 它从来没采到过元素）。
+> - **整列表重渲染的独立成因**：`App.tsx` / `GroupCard.tsx` 的 dnd-kit `sensor options` 写成内联对象字面量，每次渲染新建引用 → `sensors` 每次变 → 下游 memo 组件的 props 浅比较永远失败（看起来「数据没动」却全量重渲染）。两处 options 提为模块级常量；**两份数值刻意不同**（App 触摸 100ms / 容差 3px，卡片 250ms / 5px —— 卡片更小更易误触，策略更保守），不为「去重」硬合成一份。
+> - **设置中心切换面板白框**：`SettingsWorkspaceDialog` 的 Paper 走全站共用的 `dialogPaperTokens`（`backdrop-filter: blur(...) saturate(1.4)` + 半透明底 + 22px 圆角）。设置中心是唯一「左栏常驻 + 右栏整块切换」的弹窗，换面板会让右栏子树整体重绘、浏览器被迫为纸面**重新采样背景**；采样那一帧里半透明底与圆角抗锯齿带把底下浅色页面漏出来，就是那道白框。修法只针对这一个纸面：`backdropFilter: "none"` + 底色换 `theme.palette.background.paper`（亮 `#fff` / 暗 `#121212`，均不透明、跟随主题），`dialogShell.ts` 的全站真源**一个字未动** —— 其余 31 个弹窗的玻璃材质不受影响。
+> - **F4/F5 刻意未做**：`content-visibility: auto` + 420px 估算占位、以及卡片 hover `translateY(-6px)`，这两处是「放大器」，只在主链被触发时放大问题；F1/F2 修好后事件链已断，放大器没有机会被触发。它们分别有长列表滚动性能与交互观感的实际代价，故留作后续观测项，不在本轮无证据地先把代价赔进去。
+>
+> 新增守卫（均做**反向变异自证**，改回旧写法必须变红）：`scrollHysteresis`（8 条：六个拐点 + 滞回带内连续微抖不翻转 + 越线后可再次收紧）、`headerLayoutStability`（5 条：间距不得跟随 headerCompact / 必须拍平在常态档 / 字号三元保留 / 死 transition 已删 / 死类不得回挂）、`sensorRefStability`（4 条：options 必须是模块级常量且不得内联字面量）、`settingsPaperOpaque`（静态 3 条 + 运行时 1 条 —— 读 emotion 注入 `<head>` 的规则文本自己算级联赢家，**不读** jsdom 的 `getComputedStyle`，那对 `var()` 返回空串会写出假绿）。
+>
+> 本地门禁全绿：`tsc -b`(0 error) / lint(0 error，23 条 react-refresh 基线 warning) / 全量单测(4195 通过，0 失败，1 跳) / build / `check:budget`(37/37，首屏 index 258.22 KB，与基线 258.23 KB 持平) / `check:strict-idx`(366/62/62) / `audit:a11y`(0 项不合格) / `audit:contrast`(亮暗各 0 处，含设置中心暗色态) / smoke(全部通过)。`audit:visual` 实测 5/27 一致：**主站 home 场景（`desktop-home-light/dark`）完全一致**，印证 F1/F2 对静止页的几何与颜色零影响；其余 22 条差异全部来自任务 A 的笔记停绘与本次设置中心不透明底，属基线过期，观察期内未跑 `--update`。
+
 ## 2026-11-07 · 修复：一整批实测交互与渲染缺陷（保险库自动填充 / WebDAV 删除要点几次 / 胶囊误撤 / 首页抖动卡片消失白块）（34.0.0）
 
 > 一批用户实测报障，覆盖提交 `75d2873`、`c5b1e4f` 与本次一并推送。逐项给根因与修法（都不改表象、只修根因）：

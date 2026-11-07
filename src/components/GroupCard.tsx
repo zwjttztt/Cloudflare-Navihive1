@@ -87,6 +87,14 @@ interface GroupCardProps {
 // 卡片多的分组先渲染一批，滚到底再补，避免一次铺几百张卡拖慢首屏
 const PAGE_SIZE = 40;
 
+// dnd-kit 的 sensor options 必须是**模块级常量**：内联字面量每次渲染都新建一份，
+// options 变 → sensors 变 → 下游 memo 组件的 props 浅比较永远失败，整列表重渲染。
+// ⚠️ 这份与 App.tsx 的数值**不同**（触摸延迟 250ms / 容差 5px，卡片更小更易误触，
+// 所以更保守），是两套独立策略 —— 别为了「去重」硬合成一份。
+const GROUP_POINTER_SENSOR_OPTS = { activationConstraint: { distance: 5 } };
+const GROUP_TOUCH_SENSOR_OPTS = { activationConstraint: { delay: 250, tolerance: 5 } };
+const GROUP_KEYBOARD_SENSOR_OPTS = { coordinateGetter: sortableKeyboardCoordinates };
+
 const GroupCard: React.FC<GroupCardProps> = ({
     group,
     sortMode,
@@ -297,22 +305,13 @@ const GroupCard: React.FC<GroupCardProps> = ({
         data: { type: "group" },
     });
 
-    // 配置传感器，支持鼠标、触摸和键盘操作
+    // 配置传感器，支持鼠标、触摸和键盘操作。
+    // options 用模块级常量（GROUP_*）——内联字面量会让 sensors 引用每次渲染都变，
+    // 拖垮下游 memo 列表的 props 浅比较。
     const sensors = useSensors(
-        useSensor(PointerSensor, {
-            activationConstraint: {
-                distance: 5, // 5px 的移动才激活拖拽，防止误触
-            },
-        }),
-        useSensor(TouchSensor, {
-            activationConstraint: {
-                delay: 250, // 延迟250ms激活，防止误触
-                tolerance: 5, // 容忍5px的移动
-            },
-        }),
-        useSensor(KeyboardSensor, {
-            coordinateGetter: sortableKeyboardCoordinates,
-        })
+        useSensor(PointerSensor, GROUP_POINTER_SENSOR_OPTS),
+        useSensor(TouchSensor, GROUP_TOUCH_SENSOR_OPTS),
+        useSensor(KeyboardSensor, GROUP_KEYBOARD_SENSOR_OPTS)
     );
 
     // 站点拖拽结束处理函数

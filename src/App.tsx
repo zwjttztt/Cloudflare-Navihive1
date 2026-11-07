@@ -222,6 +222,16 @@ wrapMutations(api as unknown as MutationApi);
 // ---- 顶部工具栏的统一尺寸 ----
 // 之前搜索框（40px）比按钮（32px）高一截，一行里高矮不齐；现在统一成一个高度、一个圆角。
 // 主题模式（ThemeMode）定义在 ThemeToggle 里，这里直接引用，避免两处联合类型各写一份。
+
+// dnd-kit 的 sensor options 必须是**模块级常量**。
+// 之前它们写成内联对象字面量，每次渲染都新建一份 —— options 变 → sensors 变 →
+// 下游 memo 组件的 props 浅比较永远失败，看起来「数据没动」却整列表重渲染。
+// 引用稳定性是 memo 生效的前提，和激活阈值本身是多少无关。
+// （PointerSensor 的 distance: 5 是提高激活阈值，避免点击链接/按钮时误触发拖拽。）
+const POINTER_SENSOR_OPTS = { activationConstraint: { distance: 5, delay: 0 } };
+const TOUCH_SENSOR_OPTS = { activationConstraint: { delay: 100, tolerance: 3 } };
+const KEYBOARD_SENSOR_OPTS = { coordinateGetter: sortableKeyboardCoordinates };
+
 function App() {
 
     // 只读数据层切片：分组 / 加载中 / 错误状态与 bootstrap 落地逻辑已抽到 useSites，
@@ -442,23 +452,13 @@ function App() {
     // overflow 锁定 / 还原（避免背景在任意弹层打开时还能被滚轮滚动）。
     useOverlayScrollLock();
 
-    // 配置传感器，支持鼠标、触摸和键盘操作
+    // 配置传感器，支持鼠标、触摸和键盘操作。
+    // options 用模块级常量（POINTER_/TOUCH_/KEYBOARD_SENSOR_OPTS）——内联字面量会让
+    // sensors 引用每次渲染都变，拖垮下游 memo 列表的 props 浅比较。
     const sensors = useSensors(
-        useSensor(PointerSensor, {
-            activationConstraint: {
-                distance: 5, // 提高激活阈值，避免点击链接/按钮时误触发拖拽
-                delay: 0, // 移除延迟
-            },
-        }),
-        useSensor(TouchSensor, {
-            activationConstraint: {
-                delay: 100, // 降低触摸延迟
-                tolerance: 3, // 降低容忍值
-            },
-        }),
-        useSensor(KeyboardSensor, {
-            coordinateGetter: sortableKeyboardCoordinates,
-        })
+        useSensor(PointerSensor, POINTER_SENSOR_OPTS),
+        useSensor(TouchSensor, TOUCH_SENSOR_OPTS),
+        useSensor(KeyboardSensor, KEYBOARD_SENSOR_OPTS)
     );
 
     // 新增状态管理

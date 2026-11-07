@@ -16,8 +16,44 @@ import type { Dispatch, SetStateAction } from "react";
 
 /** 判定「当前分组」的视口高度线：越过这条线的最后一个分组算当前分组 */
 const ACTIVE_GROUP_LINE = 160;
-/** 头部收紧的门槛：往下滚、离顶超过这么多像素、且比上一次又往下了才算 */
-const HEADER_COMPACT_THRESHOLD = 90;
+
+/**
+ * 头部收紧的**双阈值**（滞回 / Schmitt trigger）：
+ *   · 往下滚到 ON 线（含）以上 → 收紧；翻上去就不再回头
+ *   · 回到 OFF 线（含）以下 → 才放开
+ *   · 两条线之间 → 保持上一次的状态，谁也不翻转
+ *
+ * 为什么必须是两条线而不是一条：
+ * `scrollY` 在临界点附近从来不是单调的 —— 触控板惯性滚动、`overscroll-behavior`
+ * 边界回弹、移动端地址栏伸缩改变视口高度，都会让它在同一个位置来回抖几个像素。
+ * 单点阈值下这种抖动就是逐帧 true/false 翻面，表现为头部持续抽搐、顶栏和列表
+ * 跟着上下抖。双阈值把这段抖动区间整体吞进「保持原状态」的中间带，翻面只可能
+ * 发生在真的越过 ON 或 OFF 线时。
+ * 带宽取值：太窄会被抖动幅度吃掉（照样翻面），太宽用户会觉得「滚了半天不收」。
+ * 取 160 / 130（差 30px）是实测抖动幅度与手感之间的折中 —— 不是随手取的魔数。
+ *
+ * ⚠️ 历史：曾经 `gap/mb/pt` 三处都随 headerCompact 收缩，会产生约 21px 位移，
+ * 逼得滞回带必须宽于它；2026-11 已把三处拍平（见 SiteListHeader），位移归零。
+ * 滞回**不因此取消** —— 上面那三类抖动源与位移无关，仍在。
+ */
+const HEADER_COMPACT_ON = 160;
+const HEADER_COMPACT_OFF = 130;
+
+/**
+ * 滞回判定：给定上一次的状态和当前滚动位置，算出这一次该是收紧还是放开。
+ *
+ * 纯函数、不读 window，方便单测直接喂数值把六个拐点全部钉住
+ * （tests/scrollHysteresis.test.ts）。
+ *
+ * @param prev 上一次的收紧状态
+ * @param y    当前 `window.scrollY`
+ * @returns 这一次的收紧状态
+ */
+export function resolveHeaderCompact(prev: boolean, y: number): boolean {
+    if (y >= HEADER_COMPACT_ON) return true;
+    if (y <= HEADER_COMPACT_OFF) return false;
+    return prev;
+}
 
 export interface ViewportUiParams {
     /** 数据还在加载：加载完才有分组锚点可算，要重跑一次 */
@@ -32,7 +68,7 @@ export interface ViewportUiState {
     setNavCenterOpen: Dispatch<SetStateAction<boolean>>;
     /** 当前视口里的分组（左栏高亮 / 「新增」按钮的目标分组都看它） */
     activeGroupId: number | null;
-    /** 向下滚动后头部收紧 */
+    /** 向下滚动后头部收紧（双阈值滞回，见 resolveHeaderCompact） */
     headerCompact: boolean;
     /** 「分组」菜单的锚点（底栏与窄桌面顶栏共用同一个菜单） */
     mobileGroupsAnchor: HTMLElement | null;
@@ -64,14 +100,14 @@ export function useViewportUi({ loading, groupCount }: ViewportUiParams): Viewpo
     // 滚动：更新头部收缩状态 + 当前分组高亮
     useEffect(() => {
         let raf = 0;
-        let lastY = window.scrollY;
 
         const update = () => {
             raf = 0;
             const y = window.scrollY;
-            // 往下滚且已经离开顶部一段距离才收紧，避免刚滚一点就跳
-            setHeaderCompact(y > HEADER_COMPACT_THRESHOLD && y > lastY + 2);
-            lastY = y;
+            // 双阈值滞回：中间带里保持原状态，只有真的越过 ON / OFF 线才翻转。
+            // 原来的写法是「比上一帧更往下 + 超过 90px」，属于滚动差分判定 ——
+            // 临界点上两帧之间来回一点点就会翻面，头部因此持续抽搐。
+            setHeaderCompact(prev => resolveHeaderCompact(prev, y));
 
             const nodes = document.querySelectorAll<HTMLElement>("[data-group-anchor]");
             if (nodes.length === 0) return;
