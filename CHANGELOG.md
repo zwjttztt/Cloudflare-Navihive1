@@ -12,6 +12,28 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-07 · 修复：对比度审计补 camelCase 别名 + 编辑器 IME 合成期守卫 + 迁移 updated_at 运行层断言（32.4.2）
+
+> 32.4.1 发布后的三处小修，全部是「防回归 / 补覆盖漏洞」，产品行为无变化：
+> - 对比度审计 `watched` 关键帧属性集合原只写 kebab-case（`background-color`/`border-top-color`…），但真 Chrome 的 `getKeyframes()` 返回 **camelCase**（`backgroundColor`/`borderTopColor`），对 CSSAnimation 关键帧分支匹配不上 —— 潜在缺口（32.4.1 那次事故走 `transitionProperty` 分支未受影响，但缺口还在）。本轮给 `watched` 并列补 camelCase 别名堵死。
+> - `NoteEditorLivePreview` 的 90ms `refreshEffect` 在中文/日文输入期间（`view.composing`）未防护，防抖刷新会触发整块重渲染、吞输入。补 `if (this.view.composing) return;`。
+> - `copyBlockRemoved` 静态禁令只有静态一层，真 SQLite 里没有「迁移前后被清洗笔记 `updated_at` 相等」的运行层断言（变异测试证明是覆盖漏洞）。补一条真实 SQLite 运行层断言钉死。
+>
+> 顺带把 32.4.1 那轮漏写的「34ms 竞态 + 修因不放宽预算」注释口径补进 `contrast-audit.mjs`。
+>
+> ⚠️ 首屏 gzip 余量已薄到 ~16 B（285.6982 / 285.7143 KB）：本轮实测先量后改，**mui-core 已无安全可缩余量**（React/emotion/MUI 全单实例、桶导入已正常 tree-shake、156 图标全深导入且进首屏的 51 个都必需、`@mui/system`/`@mui/utils` 单实例），强行收只会触发风险或把已懒加载的 66+ chunk 拖回首屏（伤 FCP）。故**不偿还首屏预算**，依赖现有 `check:budget` 卡回归。
+
+### 改了什么
+
+- **对比度等待判据 `watched` 补 camelCase 别名**（`script/contrast-audit.mjs`）：保留原有 kebab 项，并列加 `backgroundColor`/`borderColor`/`borderTopColor`/`borderRightColor`/`borderBottomColor`/`borderLeftColor`；不动 `transitionProperty` 分支、`watched.has(p)` 逻辑、静态守卫（`tests/contrastScanner.test.ts` 仍 12/12）。
+- **编辑器 IME 合成期守卫**（`src/components/NoteEditorLivePreview.ts`）：`livePreview()` 的 `update()` 在 `clearTimeout` 之后、`setTimeout` 排程 90ms 刷新之前加 `if (this.view.composing) return;`，合成中输入期间不排程刷新。
+- **迁移 `updated_at` 运行层断言**（`tests/copyCalloutMigrationRealSql.test.ts`）：新增断言「真实 SQLite 迁移前后被清洗笔记的 `updated_at` 必须相等」，钉死 `copyBlockRemoved` 静态禁令的实际效果（变异测试证明静态层会被写回语句形状先红、执行不到 `updated_at` 分支）。
+- **注释口径补齐**：`script/contrast-audit.mjs` 补 34ms 竞态说明与「修因不放宽 `ATTACHMENTS_CONTRAST_BUDGET=0`」声明。
+
+### 验收
+
+本地 9/9 门禁全绿：typecheck / lint（0 error）/ 全量单测 4087 用例 4086 通过 / build / check:budget（首屏 gzip 285.6982 KB，余 16.4 B）/ smoke / audit:a11y（0 项）/ audit:contrast（18 面 0 处）/ check:strict-idx（无新文件未判空）。
+
 ## 2026-11-07 · 修复：对比度审计补等颜色过渡，避免量到补间帧（32.4.1）
 
 > 紧接 32.4.0 的次日修复。**产品代码零改动**：改的是审计脚本自己的采样判据 ——

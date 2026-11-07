@@ -323,12 +323,18 @@ async function waitAnimationsSettled(limitMs = 6000) {
         const running = await evaluate(`(() => {
             try {
                 // 关键帧动画里会改观感的属性（CSSTransition 不走这条分支）。
-                // 边框色写成四个方向，是因为 Chrome 的 getKeyframes() 会把
-                // border-color 拆成 border-*-color 返回。
+                // ⚠️ 键名两套都要写：Chrome 的 AnimationEffect.getKeyframes() 返回
+                // **camelCase**（backgroundColor / borderTopColor …），所以 CSSAnimation
+                // 改背景/边框色必须用 camelCase 才匹配得上；kebab 项保留是为了兼容
+                // 少数返回 kebab 的实现（以及作为可读的对照）。单词属性
+                //（opacity/color/fill/stroke/filter）两种写法同名，天然命中。
+                // 非属性键（offset/easing/composite/computedOffset）不是 watched 目标。
                 const watched = new Set([
                     'opacity', 'filter', 'color', 'background-color', 'border-color',
                     'border-top-color', 'border-right-color', 'border-bottom-color',
                     'border-left-color', 'fill', 'stroke',
+                    'backgroundColor', 'borderColor',
+                    'borderTopColor', 'borderRightColor', 'borderBottomColor', 'borderLeftColor',
                 ]);
                 return document.getAnimations().filter(a => {
                     if (a.playState !== 'running') return false;

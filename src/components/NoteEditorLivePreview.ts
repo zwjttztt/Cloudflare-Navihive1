@@ -289,7 +289,12 @@ export function livePreview(render: LiveRenderer): Extension {
                 constructor(readonly view: EditorView) {}
                 update(update: { docChanged: boolean }) {
                     if (!update.docChanged) return;
+                    // 合成输入（中文 / 日文 IME）期间**不要**让防抖刷新触发：每个按键都会改
+                    // doc，90ms 计时器会在合成还没结束时炸响，把正在输入的那块整块重渲染、
+                    // 光标乱跳。合成结束时的最后一次 doc 变更 `composing` 必为 false，那时才
+                    // 正常排程。合成中都只清不排，避免任何挂起的计时器在合成中途炸响。
                     window.clearTimeout(this.timer);
+                    if (this.view.composing) return;
                     this.timer = window.setTimeout(() => {
                         this.view.dispatch({ effects: refreshEffect.of(true) });
                     }, 90);

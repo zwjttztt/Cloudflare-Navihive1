@@ -163,6 +163,37 @@ test("真实 SQLite：没有标记的笔记正文与 rev 都不动（预筛捞�
     assert.equal((await readNote(db, dirty.id!))!.content, "> 乙", "脏的那条要洗干净");
 });
 
+/**
+ * 运行层断言（钉住静态那条 `UPDATE notes SET … updated_at` 禁令的**实际效果**）。
+ *
+ * 静态守卫（`copyBlockRemoved.test.ts` 那条）只防「换名以外」的原样贴回，
+ * 变异测试暴露它会被「写回语句形状」那条先红、永远执行不到 updated_at 分支 ——
+ * 也就是说静态层**没有真正验证过**「迁移不碰 updated_at」。这条在真库上把
+ * 迁移前后那一条被清洗的笔记的 updated_at 抓出来比对：CD 会重排笔记列表排序，
+ * 洗数据不该顺手把用户的笔记顺序打乱一遍。
+ */
+test("真实 SQLite：迁移前后被清洗笔记的 updated_at 必须相等（运行层断言）", async () => {
+    const { db, api } = await fresh();
+    const note = await api.createNote({ title: "脏数据", content: "> [!COPY]\n> 甲" });
+    const beforeRaw = await db
+        .prepare("SELECT updated_at FROM notes WHERE id = ?")
+        .bind(note.id!)
+        .first<{ updated_at: string | null }>();
+
+    await downgradeTo29(db);
+    await makeRealApi(db).migrate();
+
+    const afterRaw = await db
+        .prepare("SELECT updated_at FROM notes WHERE id = ?")
+        .bind(note.id!)
+        .first<{ updated_at: string | null }>();
+    assert.equal(
+        afterRaw?.updated_at,
+        beforeRaw?.updated_at,
+        "迁移不许改 updated_at —— 那会把用户的笔记列表顺序重排一遍"
+    );
+});
+
 test("真实 SQLite：第二次跑迁移不再改动任何东西（幂等 + 已记账就跳过）", async () => {
     const { db, api } = await fresh();
     const note = await api.createNote({ title: "脏", content: "> [!COPY]\n> 甲" });
