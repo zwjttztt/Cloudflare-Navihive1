@@ -229,6 +229,31 @@ function getEditor(): NoteEditorHandle {
     return editorHandle(EditorView.findFromDOM(dom)!);
 }
 
+/**
+ * 侧边编辑器（「在侧边打开」的第二台）的句柄。
+ * ⚠️ 必须限定在 [data-side-editor='1'] 里找 .cm-content —— 全页 querySelector
+ *    会拿到主编辑器那台，测的就不是 NotesSidePane 那份独立的 useEditorTools 了。
+ */
+function getSideEditor(): NoteEditorHandle {
+    const side = document.querySelector<HTMLElement>("[data-side-editor='1']")!;
+    const dom = side.querySelector<HTMLElement>(".cm-content")!;
+    return editorHandle(EditorView.findFromDOM(dom)!);
+}
+
+/** 只点侧边工具栏上的那颗胶囊按钮（两处接线各有一颗，不能误点主编辑器的） */
+async function clickSideClipChip() {
+    const side = document.querySelector<HTMLElement>("[data-side-editor='1']")!;
+    const btn = side.querySelector<HTMLElement>('button[data-tool="clip-chip"]')!;
+    await act(async () => {
+        btn.click();
+    });
+}
+
+/** jsdom 里右键：React 18 走根级委托，派发一个冒泡的 contextmenu 即可 */
+function rightClick(el: Element) {
+    el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+}
+
 /** 挂一整页记事本（与 notes.dom.test.tsx 同款最小 props 集，只用得到的那几个） */
 function mountPanel(notes: Note[], handlers: Record<string, unknown> = {}) {
     host = document.createElement("div");
@@ -298,13 +323,127 @@ test("工具栏「复制胶囊」：选中文字包成语法，再点一次摘�
     assert.equal(afterUndo, "第一段第二段", "再点一次应当只摘掉标记、正文原样留下");
 });
 
-test("工具栏「复制胶囊」：没有选区时插入占位符", async () => {
+test("工具栏「复制胶囊」：没有选区时是 no-op（正文一字不变、不新增占位符）", async () => {
     mountPanel([note({ content: "正文" })]);
     const editor = getEditor();
+    const before: string = editor.value;
     act(() => editor.setSelectionRange(1, 1)); // 光标落在「文」后面，没有选区
     await clickClipChip();
-    const inserted: string = editor.value;
-    assert.equal(inserted.includes("{{clip:要复制的内容}}"), true, `没选中时该插占位符，实际：${inserted}`);
+    const after: string = editor.value;
+    // 占位符对胶囊是坏默认：会生成一枚「点了复制得到占位文字」的空壳，
+    // 还会把 lastInsertRef 重新 armed。空选区就该什么都不做。
+    assert.equal(after, before, `空选区不该动正文，实际：${after}`);
+    assert.equal(after.includes("{{clip:"), false, "空选区不该新增任何胶囊语法（含占位符）");
+});
+
+test("回归：包 A → 改选 B → 再点胶囊，A 与 B 必须同时存在（选区闸门）", async () => {
+    // 数据损坏 bug 的最小复现。修复前 insertAtCursor 的 ① 撤销分支**完全不看当前选区**：
+    // 包完 A 改选 B 后，sameTool 仍为真、A 的片段还躺在旧偏移上，于是命中「连点第二下
+    // 取消」，把 A 的定界符摘掉并 return，B 一个字都没被处理。
+    mountPanel([note({ content: "第一段第二段第三段" })]);
+    const editor = getEditor();
+    act(() => editor.setSelectionRange(3, 6)); // 选中 A =「第二段」
+
+    await clickClipChip();
+    assert.equal(editor.value, "第一段{{clip:第二段}}第三段", "先把 A 包成胶囊");
+
+    // 改选 B =「第三段」：与上次插入落地后留下的选区（A 的 body 区间）已经不同
+    act(() => editor.setSelectionRange(15, 18));
+    await clickClipChip();
+
+    const after: string = editor.value;
+    assert.equal(after.includes("{{clip:第二段}}"), true, `A 的胶囊被误撤了：${after}`);
+    assert.equal(after.includes("{{clip:第三段}}"), true, `B 没有被包成胶囊：${after}`);
+    assert.equal(
+        after,
+        "第一段{{clip:第二段}}{{clip:第三段}}",
+        "其它字节必须原样保留：A 不丢、前缀不丢、不乱插占位符"
+    );
+});
+
+test("回归：正文已有胶囊 + 空选区点胶囊 → 正文一字不变", async () => {
+    // 这一条单独钉住「胶囊空选区 no-op」：此场景 lastInsertRef 本来就是 null
+    // （这一会话里没插入过），所以 ① 撤销分支不可能命中，红只可能来自占位符被插进来。
+    mountPanel([note({ content: "前言 {{clip:甲}} 结语" })]);
+    const editor = getEditor();
+    const before: string = editor.value;
+    act(() => editor.setSelectionRange(1, 1)); // 空选区
+    await clickClipChip();
+    assert.equal(
+        editor.value,
+        before,
+        "空选区点胶囊必须是 no-op：既不摘掉已有胶囊，也不新增占位符"
+    );
+    assert.equal(editor.value.includes("{{clip:甲}}"), true, "已有胶囊必须原样保留");
+});
+
+test("回归：包 A → 点预览胶囊复制 → 空选区再点胶囊 → A 仍在（复制不是致因）", async () => {
+    // 用户实测的完整时序。点预览胶囊只写剪贴板，不改正文 / 不碰编辑器选区 /
+    // 不复位 lastInsertRef —— 修复前 armed 状态留着，空选区再点按钮就误命中 ① 撤掉 A。
+    stubClipboard("ok");
+    mountPanel([note({ id: 1, title: "甲", content: "第一段第二段" })]);
+    // 打开这篇笔记，让预览区渲染出来（markdown-it 走动态 import，下面轮询等它）
+    await act(async () => {
+        (document.querySelector('[data-note-list] [role="button"]') as HTMLElement).click();
+    });
+    const editor = getEditor();
+
+    act(() => editor.setSelectionRange(3, 6)); // A =「第二段」
+    await clickClipChip();
+    const armed: string = editor.value;
+    assert.equal(armed, "第一段{{clip:第二段}}", "先把 A 包成胶囊（lastInsertRef 处于 armed 状态）");
+
+    let chip: HTMLElement | null = null;
+    for (let i = 0; i < 40 && chip === null; i++) {
+        await act(async () => {
+            await new Promise(resolve => setTimeout(resolve, 25));
+        });
+        chip = document.querySelector<HTMLElement>("[data-preview-content='1'] [data-clip-chip]");
+    }
+    assert.equal(chip === null, false, "预览区里没渲染出刚包好的胶囊");
+    await act(async () => {
+        chip!.click();
+    });
+    await flush();
+    assert.equal(editor.value, armed, "点胶囊只是复制，正文一个字都不该变");
+
+    // 用户把光标挪成空选区再点按钮 —— 修复前这一步会把 A 的定界符摘掉。
+    act(() => editor.setSelectionRange(1, 1));
+    await clickClipChip();
+    assert.equal(editor.value, armed, "空选区再点胶囊，A 必须原样保留");
+    assert.equal(editor.value.includes("{{clip:第二段}}"), true, "A 的胶囊语法完好");
+});
+
+test("回归：侧边编辑器（NotesSidePane 那份 onInsertCopyChip）同样 A/B 共存", async () => {
+    // 两处接线（NotesEditorPane 主 / NotesSidePane 侧）各实例化一次 useEditorTools，
+    // 各有独立的 lastInsertRef。闸门修在通用 hook 里，两台编辑器都必须跟着生效。
+    mountPanel([
+        note({ id: 1, title: "甲", content: "主正文" }),
+        note({ id: 2, title: "乙", content: "第一段第二段第三段" }),
+    ]);
+    await act(async () => {
+        rightClick(document.querySelector("[data-note-list] [data-note-id='2']")!);
+    });
+    await act(async () => {
+        (document.querySelector("[data-row-op='open-side']") as HTMLElement).click();
+    });
+    assert.equal(
+        document.querySelector("[data-side-editor='1']") === null,
+        false,
+        "侧边编辑器要先打开"
+    );
+
+    const side = getSideEditor();
+    act(() => side.setSelectionRange(3, 6)); // A =「第二段」
+    await clickSideClipChip();
+    assert.equal(side.value, "第一段{{clip:第二段}}第三段", "侧边先把 A 包成胶囊");
+
+    act(() => side.setSelectionRange(15, 18)); // 改选 B =「第三段」
+    await clickSideClipChip();
+    const after: string = side.value;
+    assert.equal(after.includes("{{clip:第二段}}"), true, `侧边把 A 的胶囊误撤了：${after}`);
+    assert.equal(after.includes("{{clip:第三段}}"), true, `侧边没把 B 包成胶囊：${after}`);
+    assert.equal(after, "第一段{{clip:第二段}}{{clip:第三段}}", "侧边正文其它字节原样保留");
 });
 
 test("复制胶囊是工具栏上的独立按钮（单入口：不打开任何菜单就能点到）", async () => {

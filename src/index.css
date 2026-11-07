@@ -871,14 +871,21 @@ html.dark .nav-skip-link {
     }
 }
 
-/* 入场动画用 backwards：
-   延迟期间先保持隐藏（避免闪一下），动画结束回到基础样式，
-   这样悬停的抬升 transform 才不会被动画的 fill 状态压住 */
+/* 卡片入场：只在**首次挂载**那一批播，数据刷新时不重播。
+   SiteCard 给组件实例第一次渲染加 .nav-card-first-in，同实例后续重渲染会摘掉它 ——
+   animation 从有到无是「立刻回到最终态」，绝不会重新走进 backwards 的 opacity:0 帧。
+   （那一帧按列递增 animationDelay，未轮到的列是透明空白，间距正好是网格列宽，
+     就是用户截图里笔记界面下半部那三根窄竖条。）
+   首屏首次进入不受影响：effect 只改 ref、不触发重渲染，动画能完整播完。
+   入场动画用 backwards：延迟期间先保持隐藏（避免闪一下），动画结束回到基础样式，
+   这样悬停的抬升 transform 才不会被动画的 fill 状态压住。 */
 .nav-card-in {
-    animation: navCardIn 0.42s var(--ease-out) backwards;
     /* 隔离每张卡片的布局：某张卡片内部变化不会把整页拖进重排。
        这里刻意不加 paint —— 快捷条会探出卡片边界，加了会被裁掉。 */
     contain: layout style;
+}
+.nav-card-in.nav-card-first-in {
+    animation: navCardIn 0.42s var(--ease-out) backwards;
 }
 
 /* 长列表渲染优化：滚出视口的分组整块跳过渲染，滚动条高度按 420px 估算占位。
@@ -886,6 +893,39 @@ html.dark .nav-skip-link {
 .nav-group-panel[data-sort-mode="None"] {
     content-visibility: auto;
     contain-intrinsic-size: auto 420px;
+}
+
+/* 记事本打开期间：背景主页面整块停绘。
+   NotesOverlay 是叠在 .nav-root 之上的 fixed 层（不是 Portal），背景一直留在 DOM 里；
+   上面那条 content-visibility:auto 离屏时会让浏览器跳过子树绘制、只留一个
+   420px 的方形占位（用户实测的「一整块方形白块」），滚动条槽那道缝里还会漏出
+   底下主界面。这里三刀一起下：
+     ① .nav-root visibility:hidden —— 保留布局与滚动位置（不能用 display:none，
+        那会丢滚动位置并让分组的 IntersectionObserver 复位），关闭笔记时自动复原；
+     ② 分组面板 content-visibility:visible —— 明确禁止跳过绘制，420px 占位不再出现；
+     ③ 卡片 animation:none + 不透明 —— 背景里绝不再有 backwards 的透明帧。
+   特异性刻意压过上面那条单类规则；不用 :has()，不需要 @supports 保护。
+   ⚠️ 根因边界：上游 setGroups / applyConfigs 的全量替换本身只造成重渲染，
+   白块 / 灰点 / 卡片空白是它下游的条件分支切换与层级错位造成的。这里关掉的是
+   「背景层始终在 DOM 里、层级又压不过笔记层」这个放大环节，不是靠重挂载把谁重置。 */
+html[data-notes-open] .nav-root {
+    visibility: hidden;
+}
+/* visibility 可继承，但子元素显式声明 visible 就能盖过继承来的 hidden。
+   ⚠️ 笔记层（data-notes-root）在 App.tsx 里是挂在 .nav-root **内部**的兄弟，
+   不是 Portal —— 漏了这一条会把记事本自己一起藏掉。加载骨架同理，只在懒块
+   真正挂起时存在，让它继续当「正在打开」的结构信号。 */
+html[data-notes-open] [data-notes-root],
+html[data-notes-open] [role="status"][aria-label="记事本加载中"] {
+    visibility: visible;
+}
+html[data-notes-open] .nav-group-panel[data-sort-mode="None"] {
+    content-visibility: visible;
+}
+html[data-notes-open] .nav-card-in {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
 }
 
 /* 悬停抬升放在外层容器上：卡片本体 + 右上角设置按钮 + 右下角快捷条会一起动 */

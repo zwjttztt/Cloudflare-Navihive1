@@ -128,6 +128,14 @@ const GroupCard: React.FC<GroupCardProps> = ({
         sortMode !== "None" || filterActive || group.sites.length === 0
     );
     const panelRef = useRef<HTMLDivElement | null>(null);
+    // 条数用 ref 读：下面的懒挂载 effect 不依赖它，9→10 这种数据抖动不会重建
+    // IntersectionObserver（重建 = 重新 observe、把 mount task 重新排进分帧队列，
+    // 进而让 sitesMounted 三元切分支 —— 那才会**真卸载 / 真挂载** SiteCard，图标 state
+    // 随之丢掉、退回 Skeleton 灰点，是卡片忽隐忽现的来源）。
+    // ⚠️ 这是下游「条件分支切换造成的真卸载」，不是上游 App 全量替换 groups 带来的重挂载：
+    // 后者只造成重渲染（同位置同类型复用同一实例），useRef / useState 不会被清空。
+    const sitesCountRef = useRef(group.sites.length);
+    sitesCountRef.current = group.sites.length;
     useEffect(() => {
         // 三种情况不懒、直接全量挂：
         //   1. 排序模式 —— DndContext / SortableContext 需要完整树，拖拽落点才算得准；
@@ -135,7 +143,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
         //      锚点跳转 / 键盘焦点导航撞上占位符；
         //   3. 空分组 —— 挂的只是几节点的引导空状态，直接挂还能避免
         //      120px 占位换成 250px 真身时把下面整列内容顶得跳一下。
-        if (sortMode !== "None" || filterActive || group.sites.length === 0) {
+        if (sortMode !== "None" || filterActive || sitesCountRef.current === 0) {
             setSitesMounted(true);
             return;
         }
@@ -156,16 +164,45 @@ const GroupCard: React.FC<GroupCardProps> = ({
         );
         io.observe(el);
         return () => io.disconnect();
-    }, [sortMode, filterActive, group.sites.length]);
+        // 依赖里刻意不放 group.sites.length：只认分组身份与模式，数据刷新不重建观察者。
+    }, [group.id, sortMode, filterActive]);
+
+    // 条数变成 0（筛选 / 删除后本组清空）时直接补挂空状态。
+    // 单独一个 effect，不重建上面的 IntersectionObserver；setSitesMounted(true) 幂等，
+    // 一旦为 true 就再也不会因为后续刷新回退成 false。
+    useEffect(() => {
+        if (group.sites.length === 0) setSitesMounted(true);
+    }, [group.sites.length]);
+
+    // 「占位 → 真身」那一次切换跳过 Collapse 的高度过渡：占位高度只是粗估，
+    // 叠上 250ms 动画会把下面整列内容顶得跳一下。之后用户手动收起 / 展开仍走 250ms。
+    const [skipEntryTransition, setSkipEntryTransition] = useState(false);
+    const mountedSeenRef = useRef(sitesMounted);
+    useEffect(() => {
+        if (mountedSeenRef.current === sitesMounted) return;
+        mountedSeenRef.current = sitesMounted;
+        setSkipEntryTransition(true);
+        const timer = window.setTimeout(() => setSkipEntryTransition(false), 0);
+        return () => window.clearTimeout(timer);
+    }, [sitesMounted]);
 
     // 未挂载时的占位高度：按「一行约 3 张、每张约 150px」粗估，
-    // 与 content-visibility 的 contain-intrinsic-size 思路一致，滚动条不会大幅跳动
-    const placeholderHeight = useMemo(() => {
+    // 与 content-visibility 的 contain-intrinsic-size 思路一致，滚动条不会大幅跳动。
+    // ⚠️ 只在「首次挂载 / 换分组 / 换视图 / 换密度」时算一次并记住 —— 原来每次
+    // group.sites.length 变化都重算，9→10 直接改变高度，配合 Collapse 的过渡就是
+    // 用户实测的「网页多次抖动」。Math.max(120, …) 的下限保留。
+    const placeholderRef = useRef<{ key: string; height: number } | null>(null);
+    const placeholderKey = `${group.id}|${viewMode}|${density}`;
+    if (placeholderRef.current === null || placeholderRef.current.key !== placeholderKey) {
         const count = group.sites.length || 1;
         const perRow = viewMode === "list" ? 1 : 3;
         const cardH = viewMode === "list" ? 64 : metrics.groupCardHeight;
-        return Math.max(120, Math.ceil(count / perRow) * cardH);
-    }, [group.sites.length, viewMode, metrics.groupCardHeight]);
+        placeholderRef.current = {
+            key: placeholderKey,
+            height: Math.max(120, Math.ceil(count / perRow) * cardH),
+        };
+    }
+    const placeholderHeight = placeholderRef.current.height;
     // 列表视图下卡片挨得更紧，分组内间距同步收一档
     const gridGap = viewMode === "list" ? (metrics.gridGap === -1 ? 0 : -0.25) : metrics.gridGap;
     // 添加本地状态来管理站点排序
@@ -346,7 +383,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
             return (
                 <Box ref={setGroupDropRef} sx={{ width: "100%" }}>
                     <SortableContext
-                        items={group.sites.map((site, idx) => `site-${site.id || idx}`)}
+                        items={group.sites.map(site => `site-${site.id}`)}
                         strategy={horizontalListSortingStrategy}
                     >
                         <Box
@@ -371,7 +408,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                         >
                             {group.sites.map((site, idx) => (
                                 <Box
-                                    key={site.id || idx}
+                                    key={site.id}
                                     sx={{
                                         // 列宽必须和普通模式保持一致（GroupCard 顶部的 cardItemSx）：
                                         // 否则一点「编辑排序」列数就变（3→2 列 / 5→4 列），卡片会整体跳一下
@@ -425,7 +462,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
             // 拖到分组末尾时播报「移动到 <分组名> 的位置」而不是冷冰冰的 group-xxx。
             const dndItems = [
                 { id: `group-${group.id}`, label: group.name },
-                ...sitesToRender.map((site, index) => ({ id: `site-${site.id || index}`, label: site.name })),
+                ...sitesToRender.map(site => ({ id: `site-${site.id}`, label: site.name })),
             ];
             return (
                 <DndContext
@@ -448,7 +485,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                             >
                                 {sitesToRender.map((site, idx) => (
                                     <Box
-                                        key={site.id || idx}
+                                        key={site.id}
                                         sx={{
                                             width: CARD_VIEW_WIDTH,
                                             padding: metrics.cellPadding, // 内部间距，更均匀的分布
@@ -645,15 +682,20 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 WebkitBackdropFilter: "blur(var(--blur-md)) saturate(1.3)",
                 border: "1px solid var(--border-subtle)",
                 boxShadow: "var(--shadow-2)",
-                // backdrop-filter 单独钉成 0s：这个属性一旦参与补间，浏览器就得逐帧
-                // 重新采样面板背后的像素，圆角边界采样补不齐会透出一圈暗边（像「外圈变黑」）。
-                // 其余属性照旧走 all 的 0.3s；CSS 过渡里同名属性以最后一条为准。
+                // ⚠️ 不写 all：原来 `all 0.3s` + hover 的 scale(1.005) 会把整块面板
+                // （连同 backdrop-filter / border-color / box-shadow）一起拉进补间，
+                // 数据刷新时分组框闪一下蓝色高亮、整列轻微缩放就是它 —— 用户实测的抖动。
+                // 现在只补间真正会变的两项，时长压到 0.16s，且不再有任何 transform。
+                // backdrop-filter 继续单独钉成 0s：这个属性一旦参与补间，浏览器就得
+                // 逐帧重新采样面板背后的像素，圆角边界采样补不齐会透出一圈暗边。
                 transition:
-                    "all 0.3s ease-in-out, backdrop-filter 0s, -webkit-backdrop-filter 0s",
-                "&:hover": {
-                    boxShadow: "var(--shadow-3)",
-                    borderColor: (theme) => theme.palette.primary.main,
-                    transform: sortMode === "None" ? "scale(1.005)" : "none",
+                    "box-shadow 0.16s ease, border-color 0.16s ease, backdrop-filter 0s, -webkit-backdrop-filter 0s",
+                // 触屏设备没有真正的 hover，别让点击后的粘滞 :hover 把蓝框钉在面板上
+                "@media (hover: hover)": {
+                    "&:hover": {
+                        boxShadow: "var(--shadow-3)",
+                        borderColor: (theme) => theme.palette.primary.main,
+                    },
                 },
             }}
         >
@@ -916,8 +958,19 @@ const GroupCard: React.FC<GroupCardProps> = ({
             </Box>
 
             {/* 站点卡片区域（收起时隐藏） */}
-            <Collapse in={!isCollapsed} timeout={250} unmountOnExit={false}>
-                {sitesMounted ? renderSites() : <Box sx={{ height: placeholderHeight }} />}
+            <Collapse
+                in={!isCollapsed}
+                timeout={skipEntryTransition ? 0 : 250}
+                unmountOnExit={false}
+            >
+                {sitesMounted ? (
+                    renderSites()
+                ) : (
+                    <Box
+                        data-placeholder-height={placeholderHeight}
+                        sx={{ height: placeholderHeight }}
+                    />
+                )}
             </Collapse>
 
             {/* 编辑分组弹窗

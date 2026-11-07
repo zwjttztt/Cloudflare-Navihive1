@@ -75,6 +75,15 @@ export function useEditorTools(
         hadSelection: boolean;
         before: string;
         after: string;
+        /**
+         * 插入落地时**实际写回编辑器的选区**（即 writeBack 的 caret / selEnd 实参）。
+         * 撤销分支拿它当闸门：只有当前选区与它完全一致，才说明用户没挪过光标、
+         * 这一下确实是「连点第二下取消」。少了这层校验，包完 A 改选 B（或空选区）
+         * 再点同一按钮会误命中撤销、把 A 的定界符摘掉，而 B 一个字都没被处理。
+         * 见 tests/markdownClipChip.dom.test.tsx 的 A/B 共存回归。
+         */
+        selStart: number;
+        selEnd: number;
     } | null>(null);
 
     /** 「链接与引用」上一次插入的位置，用于「再点一次撤掉」 */
@@ -179,8 +188,9 @@ export function useEditorTools(
 
     /**
      * 在光标处插入一段 Markdown 语法 —— **同名按钮是开关**。
-     * 三条路径：① 连点同一个按钮 → 撤销上一次插入（真实选区只拆标记留正文）；
-     * ② 选区已带标记 → 摘掉；③ 其余 → 包一层（没有选区就放占位符）。
+     * 三条路径：① 连点同一个按钮（且选区仍是上次插入落地后的选区）→ 撤销上一次插入
+     * （真实选区只拆标记留正文）；② 选区已带标记 → 摘掉；③ 其余 → 包一层
+     * （没有选区就放占位符）。
      */
     const insertAtCursor = useCallback(
         (before: string, after: string, placeholder: string) => {
@@ -200,10 +210,23 @@ export function useEditorTools(
                 setDraft(d => (d ? { ...d, content: next } : d));
             };
 
-            // ① 连点**同一个**按钮 → 撤销上一次插入（用户要的「第二下取消」）
+            // ① 连点**同一个**按钮 → 撤销上一次插入（用户要的「第二下取消」）。
+            //    ⚠️ 选区一致性闸门（数据损坏修复）：除「同一对定界符 + 上次那段还在旧偏移」
+            //    外，还要求**当前选区就是这次插入落地后留下的选区**。lastInsertRef 是 hook
+            //    实例级的隐藏状态，选区变化 / 换笔记 / 复制 / 失焦都不会自动清它；只靠前两个
+            //    判据，包完 A 改选 B（或改成空选区）再点同一按钮会误命中这里、把 A 的定界符
+            //    摘掉，B 完全没被处理 —— 正文被改坏。这是惰性判据（与 sameTool / 片段校验
+            //    同一风格），不引入 effect / 选区订阅 / 新 React state。
+            //    边界：用户手动把光标移回并精确选中 A 的 body（恰好等于记录的选区）仍会触发
+            //    这里 —— 那是合理的「再点一次取消」，不是 bug；切笔记后 content 变了，
+            //    content.slice(last.start, …) 通常对不上，会自动落到 ③ 自愈，无需清 ref。
             const last = lastInsertRef.current;
             const sameTool = last && last.before === before && last.after === after;
-            if (sameTool && content.slice(last.start, last.start + last.snippet.length) === last.snippet) {
+            if (
+                sameTool &&
+                start === last.selStart && end === last.selEnd &&
+                content.slice(last.start, last.start + last.snippet.length) === last.snippet
+            ) {
                 const at = last.start;
                 lastInsertRef.current = null;
                 if (last.hadSelection) {
@@ -249,6 +272,17 @@ export function useEditorTools(
             const selected = seg || placeholder;
             const next =
                 content.slice(0, start) + before + selected + after + content.slice(end);
+            // 先把要交给 writeBack 的选区实参算准，同一份值既写进 ref 又真正落到编辑器：
+            // ① 撤销分支的闸门比对的就是它，两处各算一次很容易漂移。
+            //   有选区 → 选回 body 区间；无选区 → 占位符之后的 collapsed 光标。
+            const nextCaret =
+                seg.length > 0
+                    ? start + before.length
+                    : Math.min(next.length, start + before.length + selected.length + after.length);
+            const nextSelEnd =
+                seg.length > 0
+                    ? Math.min(start + before.length + selected.length, next.length)
+                    : nextCaret;
             lastInsertRef.current = {
                 start,
                 snippet: before + selected + after,
@@ -256,17 +290,10 @@ export function useEditorTools(
                 hadSelection: seg.length > 0,
                 before,
                 after,
+                selStart: nextCaret,
+                selEnd: nextSelEnd,
             };
-            // 有选区时把刚包上的正文重新选上（再点一下「取消」要靠它）
-            if (seg.length > 0) {
-                const bodyFrom = start + before.length;
-                writeBack(next, bodyFrom, Math.min(bodyFrom + selected.length, next.length));
-            } else {
-                writeBack(
-                    next,
-                    Math.min(next.length, start + before.length + selected.length + after.length)
-                );
-            }
+            writeBack(next, nextCaret, nextSelEnd);
         },
         [textareaRef, setDraft]
     );
@@ -631,11 +658,18 @@ export function useEditorTools(
      * 复用 insertAtCursor 那套「before/after 包裹 + 再点一次摘掉 + lastInsertRef 记忆」，
      * 不另发明机制 —— 加粗 / 斜体 / ==高亮== / 行内公式都走同一条路，
      * 胶囊只是换了一对定界符，撤销与「选区已带标记就摘掉」的语义自动继承。
-     * 没有选区时落占位符（和「标签 / 双链 / 隐藏注释」一致）。
+     *
+     * ⚠️ 空选区直接 no-op（数据损坏修复）：占位符 `{{clip:要复制的内容}}` 对胶囊是坏默认
+     * —— 生成一枚「点了复制得到占位文字」的空壳，还会把 lastInsertRef 重新 armed。
+     * 改动只落在**胶囊专属**入口，不动通用 insertAtCursor 的空选区分支：粗体 `****`
+     * 这类让用户现场填的占位符，对另外 10 个行内工具是合理设计。
      */
     const onInsertCopyChip = useCallback(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        if ((el.selectionStart ?? 0) === (el.selectionEnd ?? 0)) return;
         insertAtCursor(CLIP_CHIP_OPEN, CLIP_CHIP_CLOSE, CLIP_CHIP_PLACEHOLDER);
-    }, [insertAtCursor]);
+    }, [insertAtCursor, textareaRef]);
 
     /** 插入折叠块 `> [!FOLD] 标题` */
     const onInsertFold = useCallback(() => {

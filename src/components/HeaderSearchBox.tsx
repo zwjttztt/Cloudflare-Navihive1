@@ -21,6 +21,7 @@ import Tooltip from "@mui/material/Tooltip";
 import CloseIcon from "@mui/icons-material/Close";
 import type { Site } from "../API/http";
 import { HEADER_CONTROL_H, HEADER_RADIUS } from "../constants";
+import { SECRET_IGNORE_ATTRS } from "../utils/secretInput";
 
 /** 下拉面板里的一条结果：卡片本体 + 它所在的分组名（面板里要显示分组） */
 export interface SearchResult {
@@ -205,6 +206,9 @@ export default function HeaderSearchBox({
                         onMouseDown: unlockAutofill,
                         onTouchStart: unlockAutofill,
                         onKeyDown: unlockAutofill,
+                        // 第三方密码管理器扩展的「别管我」标记，作为加固：
+                        // 只挂在原生 input 上，不动上面那把 readOnly 锁与解锁逻辑。
+                        ...SECRET_IGNORE_ATTRS,
                     }
                 }} />
 

@@ -20,6 +20,7 @@ import {
     FormControlLabel,
     IconButton,
     List,
+    ListItem,
     ListItemButton,
     ListItemText,
     Stack,
@@ -316,39 +317,58 @@ export default function RestoreTab({
                             }}
                         >
                             {remoteFiles.map(file => (
-                                <ListItemButton
+                                /* 2026-11 修「点删除图标第一次没反应」：
+                                   原来 IconButton 嵌在 ListItemButton 里面 ——
+                                   · 嵌套可点元素是无效结构，读屏会念成「按钮里的按钮」；
+                                   · onClick 的 stopPropagation 只挡 click，挡不住先到的
+                                     mousedown / pointerdown：外层 ButtonBase 那一步会抢焦点、
+                                     起涟漪、甚至在同一帧重渲染把 click 吞掉。
+                                   改成 ListItem + secondaryAction：删除按钮与 ListItemButton
+                                   是**兄弟节点**，事件根本不会经过可点行，第一次点就命中删除。 */
+                                <ListItem
                                     key={file.name}
-                                    selected={selectedRemote === file.name}
-                                    onClick={() => setSelectedRemote(file.name)}
                                     dense
+                                    disablePadding
+                                    secondaryAction={
+                                        <IconButton
+                                            edge='end'
+                                            size='small'
+                                            color='error'
+                                            // 删除中的那条已经被移出列表了，这里只是兜底防连点
+                                            disabled={deletingFiles.has(file.name)}
+                                            // 双保险：即便将来有人把按钮挪回可点区域，
+                                            // 这三层也保证选中态不被误触发。
+                                            onMouseDown={event => event.stopPropagation()}
+                                            onPointerDown={event => event.stopPropagation()}
+                                            onClick={event => {
+                                                event.stopPropagation();
+                                                void handleDeleteRemote(file.name);
+                                            }}
+                                            aria-label={`删除 ${file.name}`}
+                                        >
+                                            {deletingFiles.has(file.name) ? (
+                                                <CircularProgress size={16} />
+                                            ) : (
+                                                <DeleteIcon fontSize='small' />
+                                            )}
+                                        </IconButton>
+                                    }
                                 >
-                                    <ListItemText
-                                        primary={file.name}
-                                        secondary={
-                                            selectedRemote === file.name
-                                                ? `已选中 · ${formatSize(file.size)} · ${formatTime(file.lastModified)}`
-                                                : `${formatSize(file.size)} · ${formatTime(file.lastModified)}`
-                                        }
-                                    />
-                                    <IconButton
-                                        edge='end'
-                                        size='small'
-                                        color='error'
-                                        // 删除中的那条已经被移出列表了，这里只是兜底防连点
-                                        disabled={deletingFiles.has(file.name)}
-                                        onClick={event => {
-                                            event.stopPropagation();
-                                            void handleDeleteRemote(file.name);
-                                        }}
-                                        aria-label={`删除 ${file.name}`}
+                                    <ListItemButton
+                                        selected={selectedRemote === file.name}
+                                        onClick={() => setSelectedRemote(file.name)}
+                                        dense
                                     >
-                                        {deletingFiles.has(file.name) ? (
-                                            <CircularProgress size={16} />
-                                        ) : (
-                                            <DeleteIcon fontSize='small' />
-                                        )}
-                                    </IconButton>
-                                </ListItemButton>
+                                        <ListItemText
+                                            primary={file.name}
+                                            secondary={
+                                                selectedRemote === file.name
+                                                    ? `已选中 · ${formatSize(file.size)} · ${formatTime(file.lastModified)}`
+                                                    : `${formatSize(file.size)} · ${formatTime(file.lastModified)}`
+                                            }
+                                        />
+                                    </ListItemButton>
+                                </ListItem>
                             ))}
                         </List>
                     )}

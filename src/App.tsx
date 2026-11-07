@@ -189,6 +189,12 @@ import ChunkBoundary from "./components/ChunkBoundary";
 // 因此不计入首屏预算（那条 5% 余量红线盯的是首屏字节，骨架只在打开记事本时才按需下载）。
 // 由 ChunkBoundary 的 loadingFallback 引用——见 ChunkBoundary 头注。
 const NotesLoadingFallback = lazy(() => import("./components/NotesLoadingFallback"));
+// ⚠️ 模块级**稳定元素**：原来写成 `loadingFallback={<NotesLoadingFallback />}`，
+// 每次 App 重渲染都会新建一个 React element，Suspense 的 fallback 因而每次都换，
+// 重新挂起时那层 zIndex:2000 的纯白骨架就会在笔记界面上重新闪一次（用户实测的
+// 「下半部一整块方形白块」之一）。提成常量后 fallback 引用不变，只在懒块真正
+// 首次挂起时出现一次。创建 element 不会触发那个 lazy chunk 的下载（渲染才下载）。
+const NOTES_LOADING_FALLBACK = <NotesLoadingFallback />;
 // 局部渲染兜底：拦在「站点列表 / 登录页」这一层，别让一张卡片崩了整页变成错误页
 // （见 components/RenderBoundary.tsx 头注）。刻意不用 ChunkBoundary：它的文案是给
 // 「chunk 没下载下来」写的，对渲染期异常是误导。
@@ -833,18 +839,25 @@ function App() {
 
     // 拉取全量数据：一次 bootstrap 请求搞定（原来要 1 次分组 + 每个分组一次站点 + 1 次配置）
     // silent=true 时不显示全屏 loading、不弹错误提示，用于修改后的后台同步
-    // fetchData 每次渲染都是新函数（useSites 里没包 useCallback），直接进 deps 会让下面两个
-    // effect 每渲染重跑一遍 —— 反复重装 online 监听、反复重放队列。用 ref 拿最新的一份，
-    // 既不留过期闭包，也不重复注册。
+    // P2-13 之后 fetchData 已是空依赖 useCallback 的**稳定引用**（useSites 里用 depsRef
+    // 读最新 api / 回调），不再是「每次渲染都是新函数」。这里仍留一层 ref：下面这些
+    // 长期存活的事件回调 / memo 要的是一个永远不换的入口，省得它们跟着 hook 返回值
+    // 的实现细节一起变；同时避免把 fetchData 列进依赖后反复重装 online 监听、重放队列。
     const fetchDataRef = useRef(fetchData);
     useEffect(() => {
         fetchDataRef.current = fetchData;
     });
 
-    // 离线期间入队的写入，恢复连接后自动重放；重放完顺手后台刷新一次本地数据
+    // 离线期间入队的写入，恢复连接后自动重放；重放完顺手后台刷新一次本地数据。
+    // 收敛入口：本次会话只要已经落地过一份 bootstrap（groupsRef 非空），重放只是把
+    // 本地乐观写入补到服务端，再刷一次纯属多余 —— 上游去重后虽然连 groups 引用都不换，
+    // 但 onRemoteExtras 仍会重算配置 / 偏好，整树白重渲染一遍。挂载期那几条刷新源
+    // 交错落地正是抖动的来源，这里能少一条是一条。真需要刷时仍走 fetchData 的
+    // 请求序号 + in-flight 闸门，不会各发各的请求。
     useEffect(() => {
         installOnlineListener(api as unknown as MutationApi, (done) => {
             notify(`已恢复连接，自动同步了 ${done} 项离线改动`, "success");
+            if (groupsRef.current.length > 0) return;
             void fetchDataRef.current({ silent: true });
         });
     }, [notify]);
@@ -858,6 +871,7 @@ function App() {
         void flushOfflineQueue(api as unknown as MutationApi).then(done => {
             if (done > 0) {
                 notify(`已自动同步 ${done} 项离线改动`, "success");
+                if (groupsRef.current.length > 0) return;
                 void fetchDataRef.current({ silent: true });
             }
         });
@@ -1176,6 +1190,33 @@ function App() {
     /** 顶栏菜单上那个「记事本（N）」的 N。进面板时由 NotesOverlay 回报。 */
     const [notesCount, setNotesCount] = useState(0);
 
+    // 记事本打开期间给 <html> 打标记，交给 index.css 把背景主页面整块停绘。
+    //
+    // 为什么需要：NotesOverlay 只是 `{notesOpen && ...}` 叠加的一层 fixed div，
+    // 不是 Portal / MUI Modal —— 底下的 .nav-root 全程留在 DOM 里，
+    // content-visibility:auto 的 420px 占位、navCardIn 的透明 backwards 帧、
+    // 以及 scrollbar-gutter 那道缝里漏出来的主界面都照常跑（笔记界面下半部的
+    // 方形白块 + 三根窄竖条就是这么来的）。
+    //
+    // ⚠️ 根因边界：上游 setGroups / applyConfigs 的全量替换**只造成重渲染，不是重挂载**
+    // （NotesOverlay 的 ChunkBoundary 与 ThemeProvider 都复用同一实例，ref/state 不清空）。
+    // 这里停绘针对的是「始终在 DOM 里的背景层」，不是靠重挂载把谁的状态刷掉；
+    // 全量替换本身只造成重渲染，白块 / 灰点 / 卡片空白是它下游的条件分支切换与层级错位。
+    //
+    // 用 visibility:hidden 而不是 display:none：后者会丢滚动位置、让分组的
+    // IntersectionObserver 复位，关掉笔记后主页面必须从原处接着显示。
+    // 只改这一个属性，useOverlayScrollLock 管的 html overflow / padding / gutter
+    // 完全不碰，关闭时属性一摘，visibility 与滚动位置一起复原。
+    useEffect(() => {
+        const root = document.documentElement;
+        if (notesOpen) {
+            root.setAttribute("data-notes-open", "");
+        } else {
+            root.removeAttribute("data-notes-open");
+        }
+        return () => root.removeAttribute("data-notes-open");
+    }, [notesOpen]);
+
     /**
      * 记事本里「这篇笔记属于哪个站点」的反查（#477 双向绑定的笔记那一侧）。
      *
@@ -1478,8 +1519,9 @@ function App() {
     // context value 记忆化：只有相关配置真正变化时才通知消费方，避免无谓重渲染
     // notesBridge 的写操作（绑定 / 新建并绑定）落库后要重取一次卡片数据，否则
     // 同一屏上「原来绑着这篇笔记的那张卡」还挂着旧标题。取数据复用上面那个
-    // fetchDataRef（它就是为了「fetchData 每次渲染都是新函数」而存在的）——
-    // 直接把 fetchData 放进下面的依赖数组会让 appConfigValue 每渲染一次就变。
+    // fetchDataRef —— 它是一个永远不换的入口（P2-13 之后 fetchData 本身也是空依赖
+    // useCallback 的稳定引用，不再「每次渲染都是新函数」），放进依赖数组不会让
+    // appConfigValue 每渲染一次就变；留 ref 是为了让这些长期存活的回调彻底无依赖。
     const appConfigValue = useMemo(
         () => ({
             iconApi: configs["site.iconApi"] || "",
@@ -1940,9 +1982,14 @@ function App() {
                         </RenderBoundary>
                     )}
 
-                    {/* 新增分组对话框（与「编辑分组」共用同一套样式与尺寸）
-                        两个都是 lazy chunk，套一层 Suspense 兜住首次打开时的加载间隙 */}
-                    <ChunkBoundary when={openAddGroup || openAddSite}>
+                    {/* 新增分组 / 新增站点：两个 lazy 弹窗各挂各的 ChunkBoundary。
+                        ⚠️ 原来挤在同一个 `when={openAddGroup || openAddSite}` / 同一个 Suspense 下：
+                        关掉其中一个时另一个仍被挂载，MUI Dialog 的退出过渡（~195ms）与
+                        ChunkBoundary 的 320ms 延迟卸载叠在一起，会在屏幕上留下一块
+                        MuiDialog-paper 的白色残影（用户实测「弹窗中部被大白块盖住」）。
+                        拆开之后 `when` 各自只认自己的开关，互不留残影。
+                        UNMOUNT_DELAY_MS 的语义不动。 */}
+                    <ChunkBoundary when={openAddGroup}>
                         <EditGroupDialog
                             open={openAddGroup}
                             group={null}
@@ -1950,7 +1997,9 @@ function App() {
                             onClose={handleCloseAddGroup}
                             onSave={group => handleCreateGroup(group.name)}
                         />
+                    </ChunkBoundary>
 
+                    <ChunkBoundary when={openAddSite}>
                         <AddSiteDialog
                             open={openAddSite}
                             onClose={handleCloseAddSiteWithAiReset}
@@ -2055,7 +2104,18 @@ function App() {
                         // （ChunkBoundary 的 loadingFallback，默认仍是 null）。
                         // 原本内层那个 <Suspense fallback={null}> 是冗余的 ——
                         // ChunkBoundary 自带 Suspense，删掉让骨架直接由它兜住。
-                        <ChunkBoundary loadingFallback={<NotesLoadingFallback />}>
+                        //
+                        // ⚠️ 外层 `{notesOpen && ...}` 必须保留：NotesOverlay 是全屏普通 div，
+                        // 没有 MUI 退出过渡，点关闭就该立刻消失；若改成常驻 ChunkBoundary
+                        // 只靠 when 控制，UNMOUNT_DELAY_MS=320 会让笔记层在关闭后多留 320ms。
+                        // `when={notesOpen}` 只显式声明挂载条件（state.mounted 初始即 true），
+                        // **不用于清空任何状态**：这条链上没有「靠重挂载 / 换 key 顺手甩掉隐藏状态」
+                        // 这种修法，useRef / useState 的生命周期不受 App 重渲染影响。
+                        // loadingFallback 用模块级常量，App 重渲染时不再换 fallback 引用。
+                        <ChunkBoundary
+                            when={notesOpen}
+                            loadingFallback={NOTES_LOADING_FALLBACK}
+                        >
                             <NotesOverlay
                                 api={api}
                                 // 站点设置里点「相关笔记」时带上目标笔记 id

@@ -182,8 +182,40 @@ export function BackupPanel({
 
     const [remoteFiles, setRemoteFiles] = useState<WebDavFile[]>([]);
     const [listLoading, setListLoading] = useState(false);
-    // 正在删除的远端备份文件名：乐观更新后这条已经从列表里消失，用它防重复点击
+    // 删除中的远端备份文件名：只用来给按钮画转圈 / 兜底 disable。
+    // 乐观更新后那条已经从列表里消失，真正的防连点靠下面的 ref（同步生效），
+    // 不能靠这个可能异步批处理的 state。
     const [deletingFiles, setDeletingFiles] = useState<Set<string>>(new Set());
+    /**
+     * 删除状态机的核心（ref，读写同步）：
+     *  · 点下去立刻 add —— 同一帧里的第二次点击、紧接着的校准都能立刻看到，
+     *    不会被 React 的异步批处理漏掉；
+     *  · 静默校准（silent）拿回来的列表要按它过滤：部分 WebDAV 服务 / CDN
+     *    的 PROPFIND 有缓存或最终一致性，DELETE 明明成功了却仍把旧文件列回来，
+     *    整表覆盖就会让刚删的文件「复活」—— 这正是「要点好几次才删掉」的主因；
+     *  · 校准确认服务端也不再列出该名字时才 delete（撤掉屏蔽）；用户主动点
+     *    「查看远端备份」(非 silent) 时只放开**不在途**的名字，以服务端真相为准
+     *    —— 在途的由 inFlightDeleteRef 保护，见下面那条注释。
+     *
+     * 用 ref 而不是 state：删除动作发生在事件处理里，必须在下一次渲染之前
+     * 就能被同一个 tick 的第二次点击与校准读到。
+     */
+    const pendingDeletedRef = useRef<Set<string>>(new Set());
+    /**
+     * DELETE 请求还在飞的名字（同步 ref，与 pendingDeletedRef 配套）。
+     *
+     * QA 在 75d2873 上复现的 P1：主动刷新（非 silent）会清空 pendingDeletedRef；
+     * 若此刻 DELETE 还没 settle，屏蔽被提前撤掉，随后 success 的静默校准拿到
+     * 陈旧 PROPFIND 就过滤失效，刚删成功的文件被写回并一直留着 —— 又要点第二次。
+     * 在途名字不许被主动刷新清掉；DELETE settle 后（finally，静默校准之前）
+     * 从这里移除，下一次主动刷新才恢复「以服务端真相为准」。
+     */
+    const inFlightDeleteRef = useRef<Set<string>>(new Set());
+    /**
+     * 列目录的「代」。DELETE 失败会把那一条放回列表，此前发出的列目录结果
+     * 都已过期，回来得再晚也不许覆盖界面（会盖掉刚放回的那一条）。
+     */
+    const listEpochRef = useRef(0);
     const [selectedRemote, setSelectedRemote] = useState<string>("");
 
     const [localFile, setLocalFile] = useState<File | null>(null);
@@ -311,17 +343,56 @@ export function BackupPanel({
     // 否则连着删几份时界面一直在转圈、提示一条接一条
     const loadRemoteFiles = async (cfg: WebDavConfig, options?: { silent?: boolean }) => {
         const silent = options?.silent === true;
+        const epoch = listEpochRef.current;
+        // 本次列目录要屏蔽的名字 = 「请求开始时」的快照 ∪ 「响应回来时」的 pending。
+        //   · 非 silent 刷新会在 await 之前放开不在途的屏蔽，若只看响应那一刻，
+        //     这次刷新本身就会把刚删的文件写回界面（QA 复现序列第 3 步）；
+        //   · 请求飞行期间也可能正好点了一次删除，响应回来时它已经进了 pending。
+        const shieldedNames = new Set(pendingDeletedRef.current);
+        if (!silent) {
+            // 用户主动刷新 = 给已经 settle 的删除一个「以服务端真相为准」的出口，
+            // 避免服务端长期陈旧时把同名新备份永久屏蔽。
+            // ⚠️ 必须在 try / await 之前：列表请求抛异常也照样放开（QA 已验的
+            //    「永久屏蔽不存在」不能改坏）。
+            // ⚠️ DELETE 还在飞的名字绝不能放：放掉后 success 的静默校准遇上陈旧
+            //    PROPFIND 就没有屏蔽可过滤，文件会「删了又冒出来」，还得再点一次。
+            //
+            // 两步语义（由 tests/webdavDelete.dom.test.tsx ⑥b 钉死）：本次刷新**自己**
+            // 仍按 shieldedNames 快照隐藏已删名字，清除只影响**下一次**刷新；下一次才
+            // 真正以服务端列表为准。既不会「删了又冒出来」，也不会在服务端长期陈旧时
+            // 把同名新备份永久屏蔽。
+            for (const name of [...pendingDeletedRef.current]) {
+                if (!inFlightDeleteRef.current.has(name)) {
+                    pendingDeletedRef.current.delete(name);
+                }
+            }
+        }
         if (!silent) setListLoading(true);
         try {
             const result = await client.webdavList(cfg);
+            // DELETE 失败会把那一条放回；这期间发出的列目录结果已经过期，
+            // 回来得再晚也不许覆盖界面（否则会盖掉刚放回的那一条）。
+            if (epoch !== listEpochRef.current) return;
             if (result.success) {
-                setRemoteFiles(result.data || []);
-                if (!silent && (!result.data || result.data.length === 0)) {
+                const listed = result.data || [];
+                const listedNames = new Set(listed.map(item => item.name));
+                // 服务端已经不再列出某条 = DELETE 对列目录生效了，可以撤掉屏蔽；
+                // 仍列着的那条（缓存 / 最终一致性）继续屏蔽，绝不让它自己冒回来。
+                // 两条路径都做：主动刷新拿到已生效的目录时也顺势解锁。
+                for (const name of [...pendingDeletedRef.current]) {
+                    if (!listedNames.has(name)) pendingDeletedRef.current.delete(name);
+                }
+                for (const name of pendingDeletedRef.current) shieldedNames.add(name);
+                // 按文件名增删的最小更新：以服务端列表为准，但把「本次已成功删除 /
+                // 正在删除」的名字排除掉。不再用整表旧快照回滚，连续删两条互不覆盖。
+                setRemoteFiles(listed.filter(item => !shieldedNames.has(item.name)));
+                if (!silent && listed.length === 0) {
                     onNotify("远端暂无备份文件", "info");
                 }
             } else {
                 onNotify(result.message || "获取备份列表失败", "error");
-                setRemoteFiles([]);
+                // 静默校准失败时保留现有列表：把整张表清空会让用户以为全删光了
+                if (!silent) setRemoteFiles([]);
             }
         } catch (error) {
             if (!silent) {
@@ -492,34 +563,74 @@ export function BackupPanel({
         }
     };
 
+    /** ① 失败时按文件名把这一条放回去：最小更新，不碰其它并发删除的结果 */
+    const restoreDeletedFile = (filename: string, entry: WebDavFile | null) => {
+        if (!entry) return;
+        setRemoteFiles(prev =>
+            prev.some(file => file.name === filename) ? prev : [...prev, entry]
+        );
+    };
+
     // 删除远端备份
     // 原来是「DELETE 回来 → 再 PROPFIND 重新列一遍目录 → 才更新界面」，
     // 两个 WebDAV 往返下来界面要卡几秒（中途整个列表还在转圈）。改成乐观更新：
     // 点下去先从列表里摘掉，删除请求在后台跑，跑完再静默校准一次真实列表。
+    //
+    // 2026-11 修「点删除图标有时要点好几次」：四条叠加根因一次修完 ——
+    //   ① 失败时 setRemoteFiles(snapshot) 把整表旧快照塞回去，随后 finally 的
+    //      校准又异步覆盖一次，两次竞态让文件「复活」；且连续删两条时各自闭包里的
+    //      旧快照会互相把对方已删的条目带回来 → 改成只按文件名放回这一条。
+    //   ② DELETE 已成功但 PROPFIND 有缓存 / 最终一致性，仍返回旧目录，整表覆盖
+    //      把刚删的文件又加回来 → 校准按 pendingDeletedRef 过滤。
+    //   ③ 嵌套 IconButton 的 stopPropagation 只挡 click，不挡 mousedown /
+    //      pointerdown（RestoreTab 里一并修，并把按钮移出可点区域）。
+    //   ④ 防连点用 state Set（异步批处理）→ 改用 ref，同步生效。
+    //   ⑤（QA 追补的 P1）DELETE 在途时主动刷新会 clear() 掉屏蔽，陈旧 PROPFIND
+    //      再把刚删成功的文件写回 → 用 inFlightDeleteRef 保护在途名字，刷新本身
+    //      也按屏蔽快照过滤。见 loadRemoteFiles 头部与 tests/webdavDelete.dom.test.tsx ⑥。
     const handleDeleteRemote = async (filename: string) => {
-        const snapshot = remoteFiles;
+        // ④ 同步防连点：同一帧里的双击 / 两个事件都会在第二行被挡掉，
+        //   webdavDelete 只会被调一次。
+        if (pendingDeletedRef.current.has(filename)) return;
+        // 失败时只把这一条按名字放回去，不用整表快照（见 ①）
+        const removed = remoteFiles.find(file => file.name === filename) ?? null;
+        pendingDeletedRef.current.add(filename);
+        inFlightDeleteRef.current.add(filename);
+        setDeletingFiles(prev => new Set(prev).add(filename));
+        // 乐观移除：按文件名摘掉这一条，不动其它行
         setRemoteFiles(prev => prev.filter(file => file.name !== filename));
         if (selectedRemote === filename) setSelectedRemote("");
-        setDeletingFiles(prev => new Set(prev).add(filename));
         try {
             const result = await client.webdavDelete(filename, config);
             if (result.success) {
                 onNotify(result.message || "已删除备份", "success");
+                // ② 成功后名字**继续留在** pendingDeletedRef：静默校准的 PROPFIND
+                //    可能还带着旧列表，撤早了文件会自己冒回来。等校准看到服务端
+                //    也不再列它时再撤（loadRemoteFiles）；主动刷新只放开不在途的名字。
             } else {
-                // 没删成就把这条放回去，别让界面和服务器对不上
-                onNotify(result.message || "删除失败", "error");
-                setRemoteFiles(snapshot);
+                const reason = result.message || "服务端未确认删除";
+                pendingDeletedRef.current.delete(filename);
+                listEpochRef.current += 1;
+                restoreDeletedFile(filename, removed);
+                onNotify(`删除「${filename}」失败：${reason}，文件已保留在列表中`, "error");
             }
         } catch (error) {
-            onNotify(error instanceof Error ? error.message : "删除失败", "error");
-            setRemoteFiles(snapshot);
+            const reason = error instanceof Error ? error.message : "网络或服务异常";
+            pendingDeletedRef.current.delete(filename);
+            listEpochRef.current += 1;
+            restoreDeletedFile(filename, removed);
+            onNotify(`删除「${filename}」失败：${reason}，文件已保留在列表中`, "error");
         } finally {
+            // DELETE 已 settle：在途标记必须在静默校准之前撤掉，
+            // 让它不再挡住下一轮主动刷新的「以服务端真相为准」出口。
+            inFlightDeleteRef.current.delete(filename);
             setDeletingFiles(prev => {
                 const next = new Set(prev);
                 next.delete(filename);
                 return next;
             });
-            // 后台校准：silent 模式不置 loading、也不弹「暂无备份」，免得打断连续删除
+            // 后台校准：silent 模式不置 loading、也不弹「暂无备份」，免得打断连续删除。
+            // 回来的列表会被 pendingDeletedRef 过滤，不会让刚删的复活（见 ②）。
             void loadRemoteFiles(config, { silent: true });
         }
     };

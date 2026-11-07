@@ -1531,6 +1531,34 @@ test("换一个按钮不会被误判成「取消」（点完粗体再点斜体�
     );
 });
 
+test("通用回归：粗体包 A → 改选 B → 再点粗体，A 的粗体仍在", () => {
+    // 「包 A → 改选 B → 点同一按钮 → A 被撤」不是胶囊专属：insertAtCursor 被 11 个
+    // 行内工具共用，lastInsertRef 是单个 ref（靠 before/after 区分工具）。选区闸门必须
+    // 修在通用层，粗体/斜体/双链同样要绿 —— 这条专门证明修的是通用 toggle 缺陷。
+    mountPanel([note({ id: 1, title: "甲", content: "第一段第二段第三段" })]);
+    const ta = getEditor();
+    const bold = document.querySelector('button[data-tool="bold"]') as HTMLElement | null;
+    assert.ok(bold, "工具栏要有「B（粗体）」按钮");
+
+    act(() => {
+        ta.focus();
+        ta.setSelectionRange(3, 6); // A =「第二段」
+    });
+    act(() => bold!.click());
+    assert.equal(ta.value, "第一段**第二段**第三段", "第一下：把 A 加粗");
+
+    act(() => ta.setSelectionRange(10, 13)); // 改选 B =「第三段」，与上次落地选区不同
+    act(() => bold!.click());
+    const after = ta.value;
+    assert.equal(after.includes("**第二段**"), true, `A 的粗体被误撤了：${after}`);
+    assert.equal(after.includes("**第三段**"), true, `B 没有被加粗：${after}`);
+    assert.equal(
+        after,
+        "第一段**第二段****第三段**",
+        "正文其它字节原样保留（A 不丢、不乱插占位符）"
+    );
+});
+
 test("标题/内容块/分隔线等按钮：第二次点击要真的取消（2026-10-06 补）", () => {
     // 之前只有强调/代码/列表（走 insertAtCursor）与脚注有开关语义，
     // 其余全是「点了就往上叠」：连点两下标题得到 `## ## 标题`、

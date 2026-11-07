@@ -142,6 +142,86 @@ export function pickDeletedIds(items: { id: number; recycleId?: number }[]): num
 }
 
 /**
+ * 逐字段浅值比较（O(n)，不引入深比较库）。
+ *
+ * 只遍历 `next` 自己的键：服务端每次 bootstrap 都会重新解析出全新的对象，
+ * 拿引用比会永远判「变了」，结构共享就失效了；而 `prev` 上可能有本机写入时
+ * 顺带带上的额外字段（本地乐观更新合并出来的），那些不该让它一直判为不同。
+ * 值只认基本类型 / null / undefined；遇到对象或数组（本数据结构里没有）按引用
+ * 处理，引用不等就判变化 —— 刻意不做深比较。
+ */
+function shallowEqualByValue(prev: object, next: object): boolean {
+    if (prev === next) return true;
+    for (const key of Object.keys(next)) {
+        // sites 是数组，交给 groupContentEqual 单独按张比；这里按引用比会永远判「变了」
+        if (key === "sites") continue;
+        const a = (prev as Record<string, unknown>)[key];
+        const b = (next as Record<string, unknown>)[key];
+        if (a === b) continue;
+        // null 与 undefined 视为等价：服务端可能省略可选字段（note_id / updated_at …）
+        if (a == null && b == null) continue;
+        return false;
+    }
+    return true;
+}
+
+/**
+ * 一个分组的内容是否完全一致：顶层字段（id / name / order_num …）按值比，
+ * `sites` 按**顺序**逐张比（张数、id、order_num、标题、网址、图标、备注…）。
+ * 排序变了或增删了卡片都会判 false，这正是需要换引用的情况。
+ */
+function groupContentEqual(prev: GroupWithSites, next: GroupWithSites): boolean {
+    if (prev === next) return true;
+    if (!shallowEqualByValue(prev, next)) return false;
+    const aSites = prev.sites;
+    const bSites = next.sites;
+    if (aSites.length !== bSites.length) return false;
+    for (let i = 0; i < aSites.length; i++) {
+        if (!shallowEqualByValue(aSites[i]!, bSites[i]!)) return false;
+    }
+    return true;
+}
+
+/**
+ * 结构共享合并：把一次 bootstrap 构建好的分组数组与当前 state 比较。
+ *
+ * - 分组数量 / 顺序 / id 有变：直接用 next（该换就得换）；
+ * - 内容完全相同的分组：**沿用 prev 里的旧对象引用**，让被 memo 的 GroupCard
+ *   真正不重渲染（原来每次 setGroups(nextGroups) 都是全量新对象，整棵树白重渲染一遍）；
+ * - 全部相同：**原样返回 prev**，连数组引用都不换。
+ *
+ * ⚠️ 这是掐断「挂载期 4+ 条刷新源交错落地 → 计数 9↔10 跳变 / 卡片时隐时现」
+ * 的关键一环：内容没变就不产生任何新的 React 更新。调用方仍需自己保证
+ * 「只接受最新的那次响应」（见 useSites 的 requestSeqRef）。
+ *
+ * ⚠️ 这里减少的是**重渲染次数**，不是靠重挂载重置状态：上游 `setGroups` 的全量替换
+ * 本身只造成重渲染（同位置同类型复用同一实例，useRef / useState 不清空）。
+ * 白块 / 灰点 / 卡片空白来自重渲染之后下游的条件分支切换与层级错位，
+ * 不是「刷新把组件重新挂了一遍」。
+ */
+export function mergeGroupsPreservingRefs(
+    prev: GroupWithSites[],
+    next: GroupWithSites[]
+): GroupWithSites[] {
+    if (prev === next) return prev;
+    if (prev.length !== next.length) return next;
+
+    let changed = false;
+    const merged: GroupWithSites[] = new Array(next.length);
+    for (let i = 0; i < next.length; i++) {
+        const oldGroup = prev[i]!;
+        const newGroup = next[i]!;
+        if (oldGroup.id !== newGroup.id || !groupContentEqual(oldGroup, newGroup)) {
+            merged[i] = newGroup;
+            changed = true;
+        } else {
+            merged[i] = oldGroup;
+        }
+    }
+    return changed ? merged : prev;
+}
+
+/**
  * 重建卡片时按快照恢复本机偏好。
  * 返回 true 表示这一步真的写了东西（调用方据此决定要不要提示）。
  */

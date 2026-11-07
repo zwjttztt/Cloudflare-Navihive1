@@ -1,5 +1,5 @@
 // src/components/SiteCard.tsx
-import { useState, useEffect, memo, lazy, Suspense } from "react";
+import { useState, useEffect, useRef, memo, lazy, Suspense } from "react";
 import { Site } from "../API/http";
 import { prefetchChunk } from "../utils/lazyPrefetch";
 import { dialogChunks } from "../utils/dialogChunks";
@@ -97,6 +97,17 @@ const SiteCard = memo(function SiteCard({
     const [showNoteDialog, setShowNoteDialog] = useState(false);
     // 右键菜单的锚点位置（null 表示未打开）
     const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
+
+    // 一次性入场标记：组件实例第一次渲染时带 .nav-card-first-in（播 navCardIn），
+    // 同实例后续因数据刷新重渲染就摘掉它 —— CSS 里 animation 从有到无，卡片**立刻
+    // 回到最终态**，绝不会重播 backwards 那段 opacity:0 的透明帧（按列递增的
+    // animationDelay 会让未轮到的列留下正好一个网格列宽的空白 = 截图里的窄竖条）。
+    // effect 只改 ref、不触发重渲染，所以首屏首次进入的入场动画能完整播完。
+    const entryPhaseRef = useRef<"first" | "settled">("first");
+    const isFirstEntry = entryPhaseRef.current === "first";
+    useEffect(() => {
+        entryPhaseRef.current = "settled";
+    }, []);
 
     // 版式与密度：编辑模式始终用标准卡片，避免拖拽时尺寸乱跳
     const isList = viewMode === "list" && !isEditMode;
@@ -806,7 +817,7 @@ const SiteCard = memo(function SiteCard({
     // 卡片内容
     const cardContent = (
         <Box
-            className='nav-card-in'
+            className={`nav-card-in${isFirstEntry ? " nav-card-first-in" : ""}`}
             data-nav-card={isEditMode ? undefined : "true"}
             data-dragging={isDragging ? "true" : "false"}
             data-site-id={site.id}
@@ -832,7 +843,9 @@ const SiteCard = memo(function SiteCard({
                 borderRadius: "var(--card-radius)",
             }}
             style={{
-                animationDelay: `${Math.min(index, 12) * 35}ms`,
+                // 只有首次挂载那一批才按列错落入场；数据刷新后延迟归零，
+                // 配合摘掉的 .nav-card-first-in 让卡片立刻完整可见。
+                animationDelay: isFirstEntry ? `${Math.min(index, 12) * 35}ms` : "0ms",
                 ["--nav-hover-lift" as string]: isList ? "translateX(3px)" : "translateY(-6px)",
             }}
         >

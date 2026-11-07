@@ -75,6 +75,33 @@ interface Draft {
 
 const EMPTY_DRAFT: Draft = { id: null, title: "", username: "", password: "", url: "", notes: "" };
 
+/**
+ * 六个「主密码」输入框共用的防自动填充属性组。
+ *
+ * 用户实测（2026-11）：打开「设置 → 密码保险库」解锁弹窗时，主密码框被填进
+ * 浏览器保存的**导航站登录密码**，顶栏 / 设置搜索框被填进登录账号名。
+ * 根因：type='password' 一出现在页面上，Chromium 就把整页当登录表单，做
+ * 「用户名 + 密码」配对填充；autoComplete='off' / 'new-password' 都挡不住
+ * （utils/secretInput.ts 头部记了完整实测记录）。
+ *
+ * 唯一有效的解法是让浏览器**根本认不出这是密码字段**：
+ * type=text + CSS -webkit-text-security 遮蔽，Firefox 回退 type=password。
+ *
+ * ⚠️ SECRET_IGNORE_ATTRS 必须挂在 slotProps.htmlInput（原生 <input>）上；
+ * 挂在 <TextField> 顶层会被 MUI 摊到外层 FormControl 的 div 上，完全不起作用
+ * （本仓踩过两次，卡片条目密码框 L430-453 是正确的参照）。
+ *
+ * name 用各不相同的、不含 password / username 语义的值：浏览器靠
+ * 「name + type」猜登录表单，六个框同名也容易被当成一组凭据。
+ */
+const masterPwFieldProps = (name: string) => ({
+    type: secretInputType(false),
+    sx: secretInputSx(false),
+    name,
+    autoComplete: "off" as const,
+    slotProps: { htmlInput: { ...SECRET_IGNORE_ATTRS } },
+});
+
 export interface VaultPanelProps {
     /** 传输层：NavigationClient / MockNavigationClient 都满足 */
     client: VaultTransport;
@@ -286,15 +313,15 @@ export function VaultPanel({ client, onNotify, withDialog = false, onClose }: Va
                                 但恢复码仍对应旧密钥，建议改完后重新生成一份恢复码。
                             </Alert>
                             <TextField
-                                fullWidth size='small' type='password' label='新主密码（至少 8 位）'
+                                {...masterPwFieldProps("vault-master-change")}
+                                fullWidth size='small' label='新主密码（至少 8 位）'
                                 value={masterPw} onChange={e => setMasterPw(e.target.value)}
-                                autoComplete='new-password'
                                 disabled={busy}
                             />
                             <TextField
-                                fullWidth size='small' type='password' label='再输一次新主密码'
+                                {...masterPwFieldProps("vault-master-change-confirm")}
+                                fullWidth size='small' label='再输一次新主密码'
                                 value={masterPw2} onChange={e => setMasterPw2(e.target.value)}
-                                autoComplete='new-password'
                                 disabled={busy}
                                 error={masterPw2.length > 0 && masterPw !== masterPw2}
                                 helperText={
@@ -348,14 +375,14 @@ export function VaultPanel({ client, onNotify, withDialog = false, onClose }: Va
                                 也无法帮你找回——所以下一步会给你一份<b>恢复码</b>，务必妥善保存。
                             </Alert>
                             <TextField
-                                fullWidth size='small' type='password' label='主密码（至少 8 位）'
+                                {...masterPwFieldProps("vault-master-setup")}
+                                fullWidth size='small' label='主密码（至少 8 位）'
                                 value={masterPw} onChange={e => setMasterPw(e.target.value)}
-                                autoComplete='new-password'
                             />
                             <TextField
-                                fullWidth size='small' type='password' label='再输一次主密码'
+                                {...masterPwFieldProps("vault-master-setup-confirm")}
+                                fullWidth size='small' label='再输一次主密码'
                                 value={masterPw2} onChange={e => setMasterPw2(e.target.value)}
-                                autoComplete='new-password'
                             />
                             <Button variant='contained' onClick={doSetup} disabled={busy} startIcon={busy ? <CircularProgress size={16} /> : <VpnKeyIcon />}>
                                 创建保险库
@@ -383,10 +410,10 @@ export function VaultPanel({ client, onNotify, withDialog = false, onClose }: Va
                     {phase === "locked" && (
                         <>
                             <TextField
-                                fullWidth size='small' type='password' label='主密码'
+                                {...masterPwFieldProps("vault-master-unlock")}
+                                fullWidth size='small' label='主密码'
                                 value={masterPw} onChange={e => setMasterPw(e.target.value)}
                                 onKeyDown={e => { if (e.key === "Enter") void doUnlock(); }}
-                                autoComplete='current-password'
                             />
                             <Button variant='contained' onClick={doUnlock} disabled={busy} startIcon={busy ? <CircularProgress size={16} /> : <LockOpenIcon />}>
                                 解锁
@@ -396,11 +423,14 @@ export function VaultPanel({ client, onNotify, withDialog = false, onClose }: Va
                             <TextField
                                 fullWidth size='small' label='恢复码' value={recoverCode}
                                 onChange={e => setRecoverCode(e.target.value)} placeholder='XXXXX-XXXXX-…'
+                                autoComplete='off'
+                                name='vault-recovery-code'
+                                slotProps={{ htmlInput: { ...SECRET_IGNORE_ATTRS } }}
                             />
                             <TextField
-                                fullWidth size='small' type='password' label='新主密码（至少 8 位）'
+                                {...masterPwFieldProps("vault-master-reset")}
+                                fullWidth size='small' label='新主密码（至少 8 位）'
                                 value={recoverNewPw} onChange={e => setRecoverNewPw(e.target.value)}
-                                autoComplete='new-password'
                             />
                             <Button variant='outlined' onClick={doRecover} disabled={busy}>
                                 用恢复码重置并解锁

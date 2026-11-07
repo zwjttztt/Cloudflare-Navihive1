@@ -12,6 +12,18 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-07 · 修复：一整批实测交互与渲染缺陷（保险库自动填充 / WebDAV 删除要点几次 / 胶囊误撤 / 首页抖动卡片消失白块）（34.0.0）
+
+> 一批用户实测报障，覆盖提交 `75d2873`、`c5b1e4f` 与本次一并推送。逐项给根因与修法（都不改表象、只修根因）：
+>
+> - **保险库/搜索框被浏览器自动填充登录账号密码**：根因是 `VaultDialog.tsx` 六个主密码框用 `type='password'` + `current-password`/`new-password`，Chromium 把整页当登录表单做「用户名+密码」配对，把保存的账号灌进搜索框、密码灌进主密码框（`autoComplete=off`/`new-password` 实测都挡不住）。全部改走 `utils/secretInput.ts` 既有方案（`type=text` + `-webkit-text-security:disc` 遮蔽、Firefox 回退 `type=password`），六个 name 互不重复且不含 password/username 语义，`SECRET_IGNORE_ATTRS` 严格挂 `slotProps.htmlInput`（原生 input，挂顶层会被摊到外层 div 白做）；设置左栏「搜索设置」框补同款防填，顶栏搜索框加固（`readOnly` 解锁三路径一行未动）。
+> - **WebDAV 恢复列表「删除要点好几次」**：主因是 DELETE 成功后 `finally` 的静默校准整表 `setRemoteFiles(listed)`，部分 WebDAV/PROPFIND 缓存仍返回旧目录 → 文件复活，用户只能再点。改法：`pendingDeletedRef` 同步状态机（点击即屏蔽、校准按名过滤陈旧结果、确认服务端不再列出才解除）+ 删除按钮从 `ListItemButton` 内嵌改为 `ListItem + secondaryAction` 兄弟结构并补 `onMouseDown/onPointerDown/onClick` 三层 `stopPropagation`（原来只挡 click，第一次点击被外层选中吞掉）。QA 独立探针又抓到一个未测竞态（删除在途 + 用户点「查看远端备份」会把屏蔽清空 → 文件复活），按 P1 补 `inFlightDeleteRef`（在途名字不被非 silent 刷新清掉）+ `listEpochRef`（删除失败放回后丢弃过期列目录响应），并显式钉死「两步语义」：第 1 次主动刷新仍屏蔽陈旧 PROPFIND、第 2 次以服务端真相为准（避免「删了又冒出来」与「永久屏蔽同名新备份」两个极端）。
+> - **笔记「包成胶囊」改选/空选区误撤已有胶囊**：根因是 `useEditorTools.ts` 的 `insertAtCursor` ① 撤销分支只校验「同一对定界符 + 上次片段还在旧偏移」，**完全不读当前选区**；`lastInsertRef` 是实例级隐藏状态，改选/复制/失焦都不清 → 包完 A 再改选 B 或空选区点击被误判成「对 A 连点的第二下」，主动撤掉 A 的定界符。修法：给 ① 判据补 `start === last.selStart && end === last.selEnd` 选区闸门（惰性判据，不引入 effect/选区订阅/新 state，设计内「刚包完立刻再点第二下仍可撤」保留），并让胶囊专属入口对空选区 no-op（不改通用工具的空选区占位符行为）。这是**通用 toggle 缺陷**，同一处同时修好粗体/双链等 11 个行内工具的同类问题。
+> - **首页多次抖动 / 卡片时隐时现 / 白色矩形块（P0，笔记界面也受影响）**：唯一上游是 `useSites.applyRemoteData` 每次无条件全量替换 `groups`、`fetchData` 无请求序号/去重/取消 → 挂载期 ≥4 条自动刷新源交错落地，晚到的旧快照覆盖新快照（计数 9↔10 跳、整树重渲染）。修法：`fetchData` 加 `requestSeqRef`（只接受最新响应，旧响应不落地/不写缓存/不回调 extras/不碰 error）+ `inflightRef`（并发复用同一 Promise）+ `mergeGroupsPreservingRefs`（O(n) 按值浅比较，内容不变原样返回 prev，让 `GroupCard` memo 真正生效）。下游放大器逐条收口：`GroupCard` 占位高度去掉条数依赖（固定估值 + IO effect 去条数依赖 + 首次切换跳过 Collapse 过渡 + hover 只补间 box-shadow/border-color 并去掉 scale）、卡片入场动画只在首次挂载播（`navCardIn` 挪到 `.nav-card-first-in`，刷新不再重播 backwards 透明帧）、卡片 key/SortableContext items 统一 `site.id`；笔记界面白块用三刀：`notesOpen` 时给 `html` 加 `data-notes-open` 让背景 `.nav-root` 停绘（`visibility:hidden`，保留布局/滚动/IO 状态，不用 display:none）+ 背景分组 `content-visibility:visible`（关掉 420px 方形空白）+ 卡片动画 `none`，并补 `[data-notes-root]`/加载骨架豁免；`App.tsx` 拆共享 `ChunkBoundary`（`EditGroupDialog`/`AddSiteDialog` 各挂各的 when，消除关一个留另一个 320ms Paper 残影）、`NotesLoadingFallback` 提成模块级稳定常量（避免 z2000 纯白层重挂）。
+> - **首屏预算（index chunk）随 P0 修复上调**：上述修复在 6 个首屏文件净增约 2.56 KB 必需逻辑（去重状态机 / 结构共享合并 / 停绘 effect / 渲染层就地修法），逐项核过无可改 lazy 的赘肉。index `BUDGET_KB` 270 → 272、`BASELINE_KB` 255.67 → 258.23（实测 258.23 KB，余量 5.34%），按仓库既定「P0 必需首屏成本」例外连同理由与实测字节记录在案，不靠放宽过门禁。
+>
+> 本地门禁全绿：build / `check:budget`(37/37) / 全量单测(4174 通过，0 失败，1 跳) / `tsc -b`(0 error) / lint(0 error，23 条 react-refresh 基线 warning) / `check:strict-idx`(366/62/62) / `audit:a11y`(0 项不合格) / `audit:contrast`(亮暗各 0 处) / smoke(全部通过)。
+
 ## 2026-11-07 · 性能/修复/工程：独立审计第三批 · 增量 A（P2-8 快照节流 + P2-15 批量删补偿 + P2-14 离线孤儿 + P2-10 CI 供应链）（33.1.0）
 
 > 第三批（结构性）先落**风险低、收益直接**的四项；最险的 P1-5（App.tsx 拆 7 个 controller hook）单独放增量 B 后续。要点：

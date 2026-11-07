@@ -159,6 +159,38 @@ function cardOrder(): string[] {
     );
 }
 
+/** 造一批站点（每张 id / 名字都不同，方便数卡片） */
+function makeSites(count: number): Site[] {
+    return Array.from({ length: count }, (_, i) => makeSite(i + 1, `站点${i + 1}`));
+}
+
+/**
+ * 用**同一个 root** 换一份 group 数据重渲染：模拟上游 bootstrap 落地，
+ * 组件实例保留（这才是「数据刷新」的真实形态；重新 createRoot 那是重挂载）。
+ */
+function rerenderWith(group: GroupWithSites) {
+    act(() => {
+        root!.render(
+            <UIPrefsProvider>
+                <GroupCard
+                    group={group}
+                    sortMode="None"
+                    currentSortingGroupId={null}
+                    onUpdate={() => {}}
+                    onDelete={() => {}}
+                    onSaveSiteOrder={() => {}}
+                    onStartSiteSort={() => {}}
+                    onUpdateGroup={() => {}}
+                    onDeleteGroup={() => {}}
+                    searchQuery=""
+                    selectMode={false}
+                    selectedIds={[]}
+                />
+            </UIPrefsProvider>
+        );
+    });
+}
+
 test.afterEach(cleanup);
 
 test("分组标题与站点数渲染出来，视口外的卡片先不建", async () => {
@@ -315,4 +347,65 @@ test("多选模式下「全选本组」整组勾选，再点是取消", async ()
         );
     });
     assert.deepEqual(unpicked, [1, 2, 3], "再点一次应该整组取消");
+});
+
+// ---------------- 数据刷新时的抖动 / 计数与卡片一致性 ----------------
+
+test("条数 9→10→9 抖动：占位高度不变、IntersectionObserver 不重建", () => {
+    renderCard();
+    const placeholder = () =>
+        document
+            .querySelector<HTMLElement>("[data-placeholder-height]")
+            ?.getAttribute("data-placeholder-height") ?? null;
+    const initialHeight = placeholder();
+    assert.ok(initialHeight, "视口外应该只有一个占位块（还没建卡片）");
+    const observersAfterMount = ioCallbacks.length;
+    assert.equal(observersAfterMount, 1, "初次挂载应只建一个 IntersectionObserver");
+
+    for (const count of [9, 10, 9]) {
+        rerenderWith(makeGroup({ sites: makeSites(count) }));
+        assert.equal(
+            placeholder(),
+            initialHeight,
+            `${count} 张时占位高度变了 —— 原来 ceil(count/3)*cardH 会跟着条数跳，` +
+                "配合 Collapse 的 250ms 过渡就是用户实测的整列抖动"
+        );
+        assert.equal(
+            ioCallbacks.length,
+            observersAfterMount,
+            `${count} 张时重建了 IntersectionObserver（重新 observe / 重新排队挂载）`
+        );
+    }
+});
+
+test("分组计数 N 时必须真的渲染 N 张卡（钉死「计数 vs 卡片」双路径）", async () => {
+    renderCard({ group: makeGroup({ sites: makeSites(10) }) });
+    assert.match(document.body.textContent ?? "", /\(10\)/, "分组标题应显示计数 10");
+    await enterViewport();
+    assert.equal(
+        cardOrder().length,
+        10,
+        "计数写 10、卡片却少渲染了 —— 数据一张没丢也会出现「计数 10 却少一张卡」"
+    );
+
+    // 上游刷新成 9 张：计数与卡片必须一起变，且仍一一对应
+    rerenderWith(makeGroup({ sites: makeSites(9) }));
+    assert.match(document.body.textContent ?? "", /\(9\)/, "计数应跟着更新成 9");
+    assert.equal(cardOrder().length, 9, "卡片数必须跟上计数");
+});
+
+test("sitesMounted 一旦 true，后续刷新不得回退 false", async () => {
+    renderCard({ group: makeGroup({ sites: makeSites(3) }) });
+    await enterViewport();
+    assert.equal(cardOrder().length, 3, "进入视口后应补齐 3 张卡");
+
+    for (const count of [10, 9, 1]) {
+        rerenderWith(makeGroup({ sites: makeSites(count) }));
+        assert.equal(
+            document.querySelector("[data-placeholder-height]"),
+            null,
+            `${count} 张时退回了占位块（sitesMounted 被重置成 false）`
+        );
+        assert.equal(cardOrder().length, count, `${count} 张时卡片数不对`);
+    }
 });

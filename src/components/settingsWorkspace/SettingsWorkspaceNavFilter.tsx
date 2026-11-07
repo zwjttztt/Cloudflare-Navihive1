@@ -26,6 +26,7 @@ import TextField from "@mui/material/TextField";
 import type { SxProps, Theme } from "@mui/material/styles";
 import SearchIcon from "@mui/icons-material/Search";
 import CloseIcon from "@mui/icons-material/Close";
+import { SECRET_IGNORE_ATTRS } from "../../utils/secretInput";
 
 export interface WorkspaceNavFilterProps {
     value: string;
@@ -88,6 +89,20 @@ export default function WorkspaceNavFilter({
                 htmlInput: {
                     "aria-label": "搜索设置",
                     onKeyDown: handleKeyDown,
+                    // ── 防自动填充 ───────────────────────────────────────────────
+                    // 用户实测（2026-11）：打开「设置 → 密码保险库」解锁弹窗时，
+                    // 这个搜索框被填进了导航站登录账号名 zvj。根因不在本框 ——
+                    // 是同屏的 type=password 让 Chromium 把整页当登录表单，
+                    // 拿保存的账号去填「页面上第一个文本框」。主密码框已改用
+                    // secretInput（type=text + CSS 遮蔽）从源头消除配对源；
+                    // 这里三样一起补上，挡住浏览器与第三方密码管理器扩展：
+                    //   · autoComplete=off   · 不含 username/password 语义的 name
+                    //   · SECRET_IGNORE_ATTRS（data-lpignore 等）
+                    // ⚠️ 必须挂在 htmlInput（原生 <input>）上，挂 TextField 顶层
+                    //    会被摊到外层 FormControl 的 div 上，一点用都没有。
+                    autoComplete: "off",
+                    name: "settings-nav-filter",
+                    ...SECRET_IGNORE_ATTRS,
                 },
                 input: {
                     startAdornment: (
