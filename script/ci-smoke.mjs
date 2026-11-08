@@ -783,11 +783,14 @@ const realErrors = consoleErrors.filter(
 );
 check("页面无控制台 error", realErrors.length === 0, realErrors.slice(0, 3).join(" | "));
 
-// 7) 触屏兜底：手机上根本没有「悬停」，靠 hover 浮出的按钮等于点不到，浮层必须常显。
-//    这里守住两条血泪教训：
-//    - 一旦判成触屏，快捷条 / 设置按钮 / 未加星的星标必须**一起**常显。设置按钮曾经在
-//      组件里写死内联透明度，而 sx 是 emotion 运行时注入、排在 index.css 之后，
-//      于是只有快捷条亮起来 —— CI 报的 {"bar":1,"settings":0} 就是它；
+// 7) 触屏兜底：手机上根本没有「悬停」，靠 hover 浮出的按钮等于点不到，必须有常显入口。
+//    但常显范围按 2026-11-08 的需求收窄为「只留设置 + 笔记」：收藏（星标）与右下角
+//    快捷操作（复制账号 / 复制密码）在移动端一律隐藏，避免卡片控件过挤、误触。
+//    这里守住两条：
+//    - 一旦判成触屏，设置按钮 + 笔记入口必须常显（opacity 1）；星标与快捷条必须为 0
+//      （index.css 用 display:none 隐藏，opacity 也会被读到 0）。设置按钮曾经在组件里
+//      写死内联透明度，而 sx 是 emotion 运行时注入、排在 index.css 之后，于是只有快捷条
+//      亮起来 —— CI 报的 {"bar":1,"settings":0} 就是它的反面教训（现在快捷条反而要藏）。
 //    - 判定不能只看「指针能不能悬停」：无头浏览器 / 没有输入设备的容器也这么报。
 //      上面第 4 步跑的恰好就是那种环境（CI 天然 hover:none 且没有触摸点），
 //      那里断言了 touch=false、浮层隐形；这里再补一条真触屏。
@@ -796,8 +799,12 @@ await send("Page.reload", { ignoreCache: false });
 await sleep(3000);
 const onTouch = await overlay();
 check(
-    "触屏上浮层常显（快捷条 + 设置按钮 + 未加星的星标）",
-    onTouch?.touch === true && onTouch?.bar === 1 && onTouch?.settings === 1 && onTouch?.star === 1,
+    "触屏上浮层：仅保留设置与笔记（收藏与快捷操作隐藏）",
+    onTouch?.touch === true &&
+        onTouch?.settings === 1 &&
+        onTouch?.note === 1 &&
+        onTouch?.star === 0 &&
+        onTouch?.bar === 0,
     JSON.stringify(onTouch)
 );
 await send("Emulation.setTouchEmulationEnabled", { enabled: false });

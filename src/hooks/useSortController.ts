@@ -49,6 +49,9 @@ export function useSortController({
     const [currentSortingGroupId, setCurrentSortingGroupId] = useState<number | null>(null);
     // 进入站点排序时记录每个站点所属的原始分组，用于保存时识别跨组移动
     const siteOriginalGroupRef = useRef<Map<number, number>>(new Map());
+    // 进入站点排序那一刻的完整 groups 快照：取消排序时据此整体回滚，
+    // 不受中途多次拖拽影响（dragSnapshotRef 惰性、首次拖拽才赋值，多次拖拽后会丢失进入排序前的状态）。
+    const sortEntrySnapshotRef = useRef<GroupWithSites[] | null>(null);
 
     // 保存分组排序
     const handleSaveGroupOrder = async () => {
@@ -141,13 +144,22 @@ export function useSortController({
             });
         });
         siteOriginalGroupRef.current = map;
+        // 深拷贝一份进入排序前的完整状态，供取消时整体回滚
+        sortEntrySnapshotRef.current = groupsRef.current.map(g => ({
+            ...g,
+            sites: g.sites.map(s => ({ ...s })),
+        }));
     }, [groupsRef]);
 
-    // 取消排序
+    // 取消排序：整体回滚到进入排序前的顺序，并清掉拖拽快照
     const cancelSort = useCallback(() => {
+        const snapshot = sortEntrySnapshotRef.current;
+        sortEntrySnapshotRef.current = null;
+        dragSnapshotRef.current = null;
+        if (snapshot) setGroups(() => snapshot);
         setSortMode(SortMode.None);
         setCurrentSortingGroupId(null);
-    }, []);
+    }, [setGroups]);
 
     // 处理分组拖拽结束事件
     const handleDragEnd = useCallback(

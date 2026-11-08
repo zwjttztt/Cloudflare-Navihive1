@@ -1430,10 +1430,13 @@ html.nav-touch .nav-group-tools {
    在启动时判断，把 .nav-touch 挂到 <html> 上。
    选择器两段（0,2,0），顺带压过组件 sx 注入的单类样式 —— 之前设置按钮在 sx 里写了
    opacity:0，结果只有快捷条常显、它自己永远不显，就是这么来的。 */
-html.nav-touch .nav-card-actions {
-    opacity: 1;
-    transform: none;
-    pointer-events: auto;
+/* 移动端（触屏）：卡片上只保留「设置」与「笔记」两个按钮，
+   收藏（星标）与右下角快捷操作（复制账号 / 复制密码）一律隐藏。
+   理由：用户明确要求移动端卡片只留设置 + 笔记（2026-11-08）。
+   编辑模式下的拖动手柄不在其列 —— 它负责移动端排序，必须保留。 */
+html.nav-touch .nav-card-actions,
+html.nav-touch .nav-card-actions-always {
+    display: none;
 }
 html.nav-touch .nav-settings-btn {
     opacity: 1;
@@ -1441,10 +1444,8 @@ html.nav-touch .nav-settings-btn {
 html.nav-touch .nav-note-btn {
     opacity: 1;
 }
-html.nav-touch .nav-star-btn[data-starred="false"] {
-    opacity: 1;
-    transform: scale(1);
-    pointer-events: auto;
+html.nav-touch .nav-star-btn {
+    display: none;
 }
 
 /* 卡片上的标签小标：只做展示，不抢点击 */

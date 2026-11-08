@@ -282,3 +282,29 @@ test("保存单组站点排序：只提交这一组的卡片", async () => {
     assert.equal(text("groups"), "[[1,[11,10]],[2,[20]]]");
     cleanup();
 });
+
+test("站点排序：拖拽改变顺序后取消，整体回滚到进入排序前的顺序", async () => {
+    const { api } = makeApi();
+    mount(<Harness api={api} onClosed={() => {}} onError={() => {}} />);
+    await run(() => sort().startSiteSort(1));
+    await run(() => sort().handleSiteSortDragEnd({ active: { id: "site-10" }, over: { id: "group-2" } } as never));
+    assert.equal(text("groups"), "[[1,[11]],[2,[20,10]]]", "拖拽后顺序已变");
+    await run(() => sort().cancelSort());
+    assert.equal(text("mode"), "0");
+    assert.equal(text("groups"), "[[1,[10,11]],[2,[20]]]", "取消后必须整体回滚到进入排序前的顺序");
+    cleanup();
+});
+
+test("站点排序：多次拖拽后取消仍然回滚到进入排序前", async () => {
+    const { api } = makeApi();
+    mount(<Harness api={api} onClosed={() => {}} onError={() => {}} />);
+    await run(() => sort().startSiteSort(1));
+    await run(() => sort().handleSiteSortDragEnd({ active: { id: "site-10" }, over: { id: "group-2" } } as never));
+    assert.equal(text("groups"), "[[1,[11]],[2,[20,10]]]");
+    await run(() => sort().handleSiteSortDragEnd({ active: { id: "site-20" }, over: { id: "group-1" } } as never));
+    assert.equal(text("groups"), "[[1,[11,20]],[2,[10]]]", "第二次跨组拖拽后顺序再次变化");
+    await run(() => sort().cancelSort());
+    assert.equal(text("mode"), "0");
+    assert.equal(text("groups"), "[[1,[10,11]],[2,[20]]]", "多次拖拽后取消仍须回滚到进入排序前的顺序");
+    cleanup();
+});
