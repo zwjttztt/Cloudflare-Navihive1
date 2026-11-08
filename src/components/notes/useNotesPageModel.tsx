@@ -60,6 +60,7 @@ export function useNotesPageModel({
     onCreate,
     onUpdate,
     onDelete,
+    onDeleteMany,
     onTogglePin,
     trashedNotes,
     onLoadTrash,
@@ -111,6 +112,7 @@ export function useNotesPageModel({
         rowActionsSuppressed, setRowActionsSuppressed,
         tagPick, setTagPick, exportPick, setExportPick,
         bulkDeleteOpen, setBulkDeleteOpen, bulkBusy, setBulkBusy,
+        exitMultiSelect,
     } = rowActions;
     const { askName, closeNamePrompt, submitNamePrompt, submitRemove } = useNotesTaxonomy({ folderTags, setActiveFolder, setView, setActiveTag, namePrompt, setNamePrompt, removeTarget, setRemoveTarget });
     const [listCollapsed, setListCollapsed] = useState(false);
@@ -493,15 +495,25 @@ export function useNotesPageModel({
 
     const exportAllData = useCallback(async () => {
         const full = onLoadFullNotes ? await onLoadFullNotes() : notes;
-        exportAllNotesJson({ notes: full, folderTags, uploadApi, onNotify });
-    }, [notes, onLoadFullNotes, folderTags, uploadApi, onNotify]);
+        // 站点指纹按这次真正导出的 full 现算，不能用组件顶层的 notes：
+        // 没写 boundSites 时服务端会把 notes[].site_id 全部置 null（删笔记再导入就丢绑定）。
+        const ids = new Set(full.map(n => n.site_id).filter((id): id is number => typeof id === "number"));
+        const boundSites = (siteLinkApi?.list() ?? [])
+            .filter(s => typeof s.id === "number" && ids.has(s.id!))
+            .map(s => ({ id: s.id!, name: s.name || "", url: s.url || "" }));
+        exportAllNotesJson({ notes: full, folderTags, uploadApi, onNotify, boundSites });
+    }, [notes, onLoadFullNotes, folderTags, uploadApi, onNotify, siteLinkApi]);
 
     const exportAllZip = useCallback(async () => {
         const full = onLoadFullNotes ? await onLoadFullNotes() : notes;
-        await exportAllNotesZip({ notes: full, folderTags, uploadApi, onNotify });
-    }, [notes, onLoadFullNotes, folderTags, uploadApi, onNotify]);
+        const ids = new Set(full.map(n => n.site_id).filter((id): id is number => typeof id === "number"));
+        const boundSites = (siteLinkApi?.list() ?? [])
+            .filter(s => typeof s.id === "number" && ids.has(s.id!))
+            .map(s => ({ id: s.id!, name: s.name || "", url: s.url || "" }));
+        await exportAllNotesZip({ notes: full, folderTags, uploadApi, onNotify, boundSites });
+    }, [notes, onLoadFullNotes, folderTags, uploadApi, onNotify, siteLinkApi]);
 
-    const { checkedNotes, bulkArchive, bulkDelete } = useNotesBulkOps({ filtered, checked, onToggleArchive, onDelete, onNotify, setChecked, setBulkDeleteOpen, bulkBusy, setBulkBusy });
+    const { checkedNotes, bulkArchive, bulkDelete } = useNotesBulkOps({ filtered, checked, onToggleArchive, onDelete, onDeleteMany, onNotify, setChecked, setBulkDeleteOpen, bulkBusy, setBulkBusy });
 
     const importNotesFile = useCallback(
         (file: File, onProgress?: (p: NoteImportProgress) => void) =>
@@ -776,6 +788,13 @@ export function useNotesPageModel({
 
     const listHidden = folderFocus || middleHidden;
 
+    // 列表被藏起来（X 收起 / 折叠左栏 / 选中文件夹）就退出多选：
+    // 组件不卸载，state 会一直留着；集中在一条 effect 里覆盖三条隐藏路径，
+    // 免得每个入口各写一遍、漏掉一个就又「幽灵多选」。
+    useEffect(() => {
+        if (listHidden || listCollapsed) exitMultiSelect();
+    }, [listHidden, listCollapsed, exitMultiSelect]);
+
     const { emptyArt, emptyCopy } = useNotesEmptyState({ view, activeFolder, activeTag, notesLength: notes.length });
 
     const renderSearchField = useCallback((inputRef: React.RefObject<HTMLInputElement | null>) => (
@@ -918,7 +937,7 @@ export function useNotesPageModel({
         boundSite, boundSiteMissing, bp, bulkArchive, bulkDelete, bulkDeleteOpen,
         charCount, checked, checkedNotes, closeNamePrompt, closeRemove, closeRowMenu,
         closeSide, completionSources, copyText, dirty, draft, draggingNoteId,
-        emptyArt, emptyCopy, exportAllData, exportAllZip, exportAnchor, exportHtmlOne,
+        emptyArt, emptyCopy, exitMultiSelect, exportAllData, exportAllZip, exportAnchor, exportHtmlOne,
         exportOne, exportPdfOne, exportPick, exportTarget, filtered, folderCounts,
         folderTags, folders, handleAttach, handleOpenEmbedNote, handleSideToggleTask, handleToggleTask,
         handleUpload, highlightRanges, importNotesFile, jumpToNote, jumpToOffset, keyword,

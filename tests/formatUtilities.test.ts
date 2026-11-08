@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fmtAuditDateTime, fmtBytes, fmtDateTime, fmtRelative } from "../src/utils/format";
+import { beijingDateStamp, fmtAuditDateTime, fmtBytes, fmtDateTime, fmtRelative } from "../src/utils/format";
 import {
     AUTO_BACKUP_STALE_DAYS,
     daysSince,
@@ -46,18 +46,35 @@ test("审计UTC时间固定显示北京时间，跨日期边界且不依赖浏�
     assert.equal(fmtAuditDateTime(new Date(NaN), "—"), "—");
 });
 
-test("SQLite timestamps keep local wall time, including fractional seconds", () => {
-    assert.equal(fmtDateTime("2024-01-02 12:34:56", { style: "compact" }), "2024-01-02 12:34");
-    assert.equal(formatTime("2024-01-02 12:34:56.123"), "2024-01-02 12:34");
-    assert.equal(formatTime("2024-01-02T12:34"), "2024-01-02 12:34");
+// 新增断言①：形态①（SQLite 无时区 UTC 文本）固定显示为北京时间（+8h），且不受本地时区影响。
+// "2024-01-02 12:34:56" 是 UTC 12:34 → 北京 20:34。
+test("形态① UTC 文本 → 固定北京时间显示（紧凑 YYYY-MM-DD HH:MM）", () => {
+    assert.equal(fmtDateTime("2024-01-02 12:34:56", { style: "compact" }), "2024-01-02 20:34");
+    assert.equal(formatTime("2024-01-02 12:34:56.123"), "2024-01-02 20:34");
+    assert.equal(formatTime("2024-01-02T12:34"), "2024-01-02 20:34");
+    // 同一绝对时刻的另两种写法（带 Z / 带偏移）也落到同一个北京钟面
+    assert.equal(fmtDateTime("2024-01-02T12:34:56Z", { style: "compact" }), "2024-01-02 20:34");
+    assert.equal(fmtDateTime("2024-01-02T20:34:56+08:00", { style: "compact" }), "2024-01-02 20:34");
+    // 跨日：UTC 16:00 → 北京次日 00:00
+    assert.equal(fmtDateTime("2026-11-07 16:00:00", { style: "compact" }), "2026-11-08 00:00");
 });
 
-test("ISO offset and Z retain their instant and use local output", () => {
-    for (const value of ["2024-01-02T12:34:56Z", "2024-01-02T12:34:56+08:00"]) {
-        assert.equal(fmtDateTime(value), new Date(value).toLocaleString("zh-CN", { hour12: false }));
-        assert.equal(fmtDateTime(value, { style: "compact" }), fmtDateTime(new Date(value), { style: "compact" }));
-    }
-    assert.equal(fmtDateTime(0), new Date(0).toLocaleString("zh-CN", { hour12: false }));
+test("ISO offset / Z / epoch 固定按北京时间 locale 输出，不随本地时区漂移", () => {
+    // 期望值写死为北京钟面（toLocaleString("zh-CN",{hour12:false,timeZone:"Asia/Shanghai"}) 的结果），
+    // 与运行机器的本地时区无关。
+    assert.equal(fmtDateTime("2024-01-02T12:34:56Z"), "2024/1/2 20:34:56");
+    assert.equal(fmtDateTime("2024-01-02T12:34:56+08:00"), "2024/1/2 12:34:56");
+    // 字符串与等价 Date 走同一路径，输出一致
+    assert.equal(fmtDateTime("2024-01-02T12:34:56Z", { style: "compact" }), fmtDateTime(new Date("2024-01-02T12:34:56Z"), { style: "compact" }));
+    assert.equal(fmtDateTime(0), "1970/1/1 08:00:00");
+});
+
+test("beijingDateStamp：下载文件名用北京日期 YYYY-MM-DD（+8h 跨日也算北京）", () => {
+    // UTC 2026-01-02 17:00 → 北京 2026-01-03 01:00
+    assert.equal(beijingDateStamp(Date.UTC(2026, 0, 2, 17, 0, 0)), "2026-01-03");
+    // UTC 2026-01-02 02:00 → 北京同日 10:00
+    assert.equal(beijingDateStamp(Date.UTC(2026, 0, 2, 2, 0, 0)), "2026-01-02");
+    assert.match(beijingDateStamp(), /^\d{4}-\d{2}-\d{2}$/);
 });
 
 const now = new Date("2026-01-01T00:00:00Z");

@@ -15,6 +15,21 @@
 //      和 `"2026-10-05T11:05:18"`（有人把 T 带上却忘了带 Z —— 两种都按 UTC，
 //      否则同一个库里两条笔记会差 8 小时，比全都错更糟）。
 //   3. 解析不出（NaN / 空 / 垃圾串）→ 返回 null，上层决定怎么显示，绝不静默给 "Invalid Date"。
+//
+// ══ 显示 ══
+// 解析层已经把「绝对时刻」还原对了；但**给人看**的字符串一律固定换算成北京时间
+// （Asia/Shanghai），不再用 `getHours()` 这类浏览器本地时区的方法。这样用户在任何时区
+// 看到的都是同一份北京时间。「今天 / 昨天 / 本周」的日界也按北京当日 00:00 对应的
+// 绝对毫秒判定（见 beijingStartOfDay），而不是把 now 简单换算。
+import { beijingParts } from "./format";
+
+/** 北京当日 00:00 对应的绝对毫秒。Asia/Shanghai = UTC+8 且无夏令时，
+ *  所以「北京日历日 00:00」= `Date.UTC(y,m,d) - 8h`（如北京 11-08 00:00 = UTC 11-07 16:00）。 */
+const BEIJING_OFFSET_MS = 8 * 3600_000;
+function beijingStartOfDay(nowMs: number): number {
+    const { year, month, day } = beijingParts(new Date(nowMs));
+    return Date.UTC(year, month - 1, day) - BEIJING_OFFSET_MS;
+}
 
 /** 有没有时区信息（尾 Z，或 ±HH:mm / ±HHmm） */
 function hasTimezone(raw: string): boolean {
@@ -67,15 +82,16 @@ export function parseNoteTime(
 export function formatWhen(iso?: string | number | Date | null | undefined): string {
     const t = parseNoteTime(iso);
     if (!t) return "";
-    const now = new Date();
+    const bp = beijingParts(t);
+    const nowBp = beijingParts(new Date());
     const sameDay =
-        t.getFullYear() === now.getFullYear() &&
-        t.getMonth() === now.getMonth() &&
-        t.getDate() === now.getDate();
-    const hh = String(t.getHours()).padStart(2, "0");
-    const mm = String(t.getMinutes()).padStart(2, "0");
+        bp.year === nowBp.year &&
+        bp.month === nowBp.month &&
+        bp.day === nowBp.day;
+    const hh = String(bp.hour).padStart(2, "0");
+    const mm = String(bp.minute).padStart(2, "0");
     if (sameDay) return `${hh}:${mm}`;
-    return `${t.getMonth() + 1}月${t.getDate()}日`;
+    return `${bp.month}月${bp.day}日`;
 }
 
 /**
@@ -102,20 +118,22 @@ export function formatRelative(
     const minutes = Math.floor(diffMs / 60_000);
     if (minutes < 60) return `${minutes}分钟前`;
 
+    const bp = beijingParts(t);
+    const nowBp = beijingParts(now);
     const sameDay =
-        t.getFullYear() === now.getFullYear() &&
-        t.getMonth() === now.getMonth() &&
-        t.getDate() === now.getDate();
+        bp.year === nowBp.year &&
+        bp.month === nowBp.month &&
+        bp.day === nowBp.day;
     if (sameDay) return `${Math.floor(minutes / 60)}小时前`;
 
-    // 昨天：拿「今天零点 - 24h」当区间，比按 24 小时整减更贴近人的直觉
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    // 昨天：拿「北京今天零点 - 24h」当区间，比按 24 小时整减更贴近人的直觉
+    const todayStart = beijingStartOfDay(now.getTime());
     if (t.getTime() >= todayStart - 86_400_000) return "昨天";
 
-    if (t.getFullYear() === now.getFullYear()) {
-        return `${t.getMonth() + 1}月${t.getDate()}日`;
+    if (bp.year === nowBp.year) {
+        return `${bp.month}月${bp.day}日`;
     }
-    return `${t.getFullYear()}年${t.getMonth() + 1}月${t.getDate()}日`;
+    return `${bp.year}年${bp.month}月${bp.day}日`;
 }
 
 /**
@@ -129,9 +147,10 @@ export function formatRelative(
 export function formatWhenFull(iso?: string | number | Date | null | undefined): string {
     const t = parseNoteTime(iso);
     if (!t) return "";
-    const hh = String(t.getHours()).padStart(2, "0");
-    const mm = String(t.getMinutes()).padStart(2, "0");
-    return `${t.getFullYear()}年${t.getMonth() + 1}月${t.getDate()}日 ${hh}:${mm}`;
+    const bp = beijingParts(t);
+    const hh = String(bp.hour).padStart(2, "0");
+    const mm = String(bp.minute).padStart(2, "0");
+    return `${bp.year}年${bp.month}月${bp.day}日 ${hh}:${mm}`;
 }
 
 /**
@@ -152,21 +171,19 @@ export function groupLabel(
     const d = parseNoteTime(iso);
     if (!d) return "其他";
     const today = new Date(now);
-    const startOfToday = new Date(
-        today.getFullYear(),
-        today.getMonth(),
-        today.getDate()
-    ).getTime();
+    const bp = beijingParts(d);
+    const todayBp = beijingParts(today);
+    const startOfToday = beijingStartOfDay(now);
     const ts = d.getTime();
     if (ts >= startOfToday) return "今天";
     if (ts >= startOfToday - 24 * 3600_000) return "昨天";
-    // 本周：从周一开始算（跟 inkstone 的 isSameDay/previousDay 一样按自然日）
-    const weekday = (today.getDay() + 6) % 7;
+    // 本周：从周一开始算（北京日历日的星期，按自然日）
+    const weekday = (todayBp.weekday + 6) % 7;
     const startOfWeek = startOfToday - weekday * 24 * 3600_000;
     if (ts >= startOfWeek) return "本周";
-    if (d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth()) {
+    if (bp.year === todayBp.year && bp.month === todayBp.month) {
         return "本月";
     }
-    if (d.getFullYear() === today.getFullYear()) return `${d.getMonth() + 1} 月`;
-    return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月`;
+    if (bp.year === todayBp.year) return `${bp.month} 月`;
+    return `${bp.year} 年 ${bp.month} 月`;
 }

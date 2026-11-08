@@ -6,8 +6,19 @@
 // 是非标准写法，在 Safari / iOS 上得到 Invalid Date。这里统一收口，并让解析器同时接受
 // ISO（`2024-01-01T12:00:00`）和 D1 / 备份文件里常见的 `YYYY-MM-DD HH:MM:SS`。
 //
+// ⚠️ 全站「显示」固定为北京时间（Asia/Shanghai）：SQLite / D1 的 `CURRENT_TIMESTAMP`
+// 是无时区的 UTC 文本，解析时补 `Z` 按 UTC 还原成绝对时刻；所有给人看的输出再统一
+// 按北京时间（UTC+8，无夏令时）换算。这样无论用户 / 浏览器在哪个时区，看到的都是
+// 同一个北京时间。相对时间（fmtRelative）按绝对毫秒差计算，本身与时区无关。
+//
 // ⚠️ 不要在这里偷偷改输出格式：每个调用方对「长什么样」都有既定预期（locale 风格 vs
-// 紧凑 `YYYY-MM-DD HH:MM`），靠 options 切换，而不是各写一份。
+// 紧凑 `YYYY-MM-DD HH:MM`），靠 options 切换，而不是各写一份。时区改动只换「取值方式」，
+// 不改任何输出文案 / 位数。
+
+/** 全站显示时区：北京时间（UTC+8，无夏令时）。 */
+export const BEIJING_TIME_ZONE = "Asia/Shanghai";
+/** 北京是 UTC+8 定偏移（1991 年后无夏令时）：绝对时刻 + 8h 的 UTC 分量即北京墙上时钟。 */
+const BEIJING_OFFSET_MS = 8 * 3600_000;
 
 /** 人类可读的文件 / 字节大小。 */
 export function fmtBytes(n: number): string {
@@ -23,9 +34,12 @@ export function fmtBytes(n: number): string {
  * 同时接受：
  *   · Date 实例
  *   · 数字（毫秒时间戳；秒级时间戳请在调用方 ×1000）
- *   · ISO 字符串 `2024-01-01T12:00:00` / `2024-01-01T12:00`
- *   · 非标准但 D1 / 备份里常见的 `2024-01-01 12:00:00` / `2024-01-01 12:00`
- *     （空格换成 T 即可，保持「本地时区」语义，与旧代码一致；否则 Safari/iOS 会 Invalid Date）
+ *   · 带时区的 ISO / GMT 串（尾 `Z` 或 `±HH:mm`）—— 绝对时刻，原样交给 `new Date`
+ *   · SQLite / D1 的 `CURRENT_TIMESTAMP`：`YYYY-MM-DD HH:MM:SS`（或带 T、带小数秒），
+ *     **没有时区后缀** —— 这是 UTC 文本，补 `Z` 按 UTC 解析，避免 V8 按浏览器本地
+ *     时区解释导致差 8 小时；展示时再统一换算成北京时间（见 fmtDateTime）。
+ *
+ * 非标准的「空格分隔」写法先换成 `T`，否则 Safari / iOS 会得到 Invalid Date。
  */
 function toDate(input: Date | string | number): Date | null {
     if (input instanceof Date) {
@@ -37,12 +51,11 @@ function toDate(input: Date | string | number): Date | null {
     }
     const s = String(input).trim();
     if (s === "") return null;
-    // 仅当是「日期 时间」这种非标准空格写法时才把空格换成 T；
-    // 已经是 ISO（含 T）或纯日期（无时间）的不动。
-    const normalized = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)/.test(s)
-        ? s.replace(" ", "T")
-        : s;
-    const d = new Date(normalized);
+    // 完整「日期 + 时间」且末尾没有 Z / ±HH:mm → SQLite CURRENT_TIMESTAMP 的 UTC 文本：
+    // 补 Z 按 UTC 还原绝对时刻；顺带把非标准的空格分隔换成 T（Safari/iOS 兼容）。
+    // 带时区 / 纯日期 / 其它格式原样交给 new Date。
+    const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/.exec(s);
+    const d = new Date(m ? `${m[1]}T${m[2]}Z` : s);
     return Number.isNaN(d.getTime()) ? null : d;
 }
 
@@ -67,7 +80,46 @@ export interface FmtDateTimeOptions {
     fallback?: string;
 }
 
-/** 日期时间 → 给人看的字符串。 */
+/** 把绝对时刻换算成固定的北京时间（Asia/Shanghai）墙上时钟分量。 */
+export interface BeijingParts {
+    year: number;
+    /** 1-12 */
+    month: number;
+    /** 1-31 */
+    day: number;
+    /** 0-23 */
+    hour: number;
+    /** 0-59 */
+    minute: number;
+    /** 0=周日 … 6=周六（北京日历日的星期） */
+    weekday: number;
+}
+
+/** 取某个绝对时刻在北京时间下的年 / 月 / 日 / 时 / 分 / 星期。
+ *  UTC+8 定偏移，+8h 后的 UTC 分量就是北京墙上时钟，不必依赖 Intl 时区库。 */
+export function beijingParts(date: Date): BeijingParts {
+    const b = new Date(date.getTime() + BEIJING_OFFSET_MS);
+    return {
+        year: b.getUTCFullYear(),
+        month: b.getUTCMonth() + 1,
+        day: b.getUTCDate(),
+        hour: b.getUTCHours(),
+        minute: b.getUTCMinutes(),
+        weekday: b.getUTCDay(),
+    };
+}
+
+/**
+ * 北京日期 `YYYY-MM-DD`（用于下载 / 导出文件名）。
+ * 北京是 UTC+8 定偏移（无夏令时），把绝对时刻 +8h 后取 `toISOString()` 的 UTC 日期
+ * 即北京日期；不依赖 locale / Intl 时区库，避免 `en-CA` 之类的平台差异。
+ */
+export function beijingDateStamp(input: Date | number = Date.now()): string {
+    const ms = typeof input === "number" ? input : input.getTime();
+    return new Date(ms + BEIJING_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/** 日期时间 → 给人看的字符串（固定北京时间）。 */
 export function fmtDateTime(
     input: Date | string | number,
     opts: FmtDateTimeOptions = {}
@@ -77,22 +129,18 @@ export function fmtDateTime(
     if (!date) return fallback ?? String(input ?? "");
     if (style === "compact") {
         const p = (n: number) => String(n).padStart(2, "0");
-        return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())} ${p(
-            date.getHours()
-        )}:${p(date.getMinutes())}`;
+        const { year, month, day, hour, minute } = beijingParts(date);
+        return `${year}-${p(month)}-${p(day)} ${p(hour)}:${p(minute)}`;
     }
-    return date.toLocaleString(locale, { hour12 });
+    return date.toLocaleString(locale, { hour12, timeZone: BEIJING_TIME_ZONE });
 }
 
-/** 审计时间：SQLite 无时区时间按 UTC 解析，展示固定为北京时间。 */
+/**
+ * 审计时间。toDate 已把无时区的 SQLite UTC 文本补 Z 按 UTC 解析，
+ * fmtDateTime 的 locale 分支又固定按北京时间输出 —— 直接委托，避免两份逻辑漂移。
+ */
 export function fmtAuditDateTime(input: Date | string | number, fallback?: string): string {
-    const raw = typeof input === "string" ? input.trim() : input;
-    const normalized = typeof raw === "string" && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(raw)
-        ? `${raw.replace(" ", "T")}Z`
-        : raw;
-    const date = toDate(normalized);
-    if (!date) return fallback ?? String(input ?? "");
-    return date.toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" });
+    return fmtDateTime(input, { hour12: false, fallback });
 }
 
 export interface FmtRelativeOptions {

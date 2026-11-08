@@ -2,6 +2,7 @@ import { useCallback, useMemo } from "react";
 import type {
     Note
 } from "../../API/http";
+import { mapWithConcurrency } from "../../utils/concurrency";
 
 export interface NotesBulkOpsDeps {
     /** 当前列表（filtered）里的笔记 */
@@ -10,8 +11,10 @@ export interface NotesBulkOpsDeps {
     checked: Set<number>;
     /** 逐条走现有的归档（混选按「多数」取向） */
     onToggleArchive: (note: Note) => void | Promise<void>;
-    /** 逐条删除 */
+    /** 逐条删除（没有 onDeleteMany 时的降级路径） */
     onDelete: (note: Note) => void | Promise<void>;
+    /** 批量删除：一次请求删掉一批，返回没删掉的 id（勾选要保留在它们上） */
+    onDeleteMany?: (notes: Note[]) => Promise<{ failed: number[] }>;
     /** 回执 */
     onNotify?: (message: string, kind?: "success" | "error" | "info") => void;
     /** 清空勾选 */
@@ -26,7 +29,7 @@ export interface NotesBulkOpsDeps {
 
 
 export function useNotesBulkOps(deps: NotesBulkOpsDeps) {
-    const { filtered, checked, onToggleArchive, onDelete, onNotify, setChecked, setBulkDeleteOpen, bulkBusy, setBulkBusy } = deps;
+    const { filtered, checked, onToggleArchive, onDelete, onDeleteMany, onNotify, setChecked, setBulkDeleteOpen, bulkBusy, setBulkBusy } = deps;
 
     const checkedNotes = useMemo(
         () => filtered.filter(n => n.id !== undefined && checked.has(n.id)),
@@ -37,16 +40,16 @@ export function useNotesBulkOps(deps: NotesBulkOpsDeps) {
         if (bulkBusy) return;
         setBulkBusy(true);
         try {
-            // 逐条走现有的归档：混选（有归档有没归档）时按「多数」取向 ——
-            // 只要还有没归档的就全部归档，否则全部取回，避免一次点完变成「反的」
+            // 并发走现有的归档（mapWithConcurrency，并发度 6），不再串行 await 每一条：
+            // 混选（有归档有没归档）时按「多数」取向 —— 只要还有没归档的就全部归档，
+            // 否则全部取回，避免一次点完变成「反的」。
+            // ⚠️ 判据仍是「当前状态 === 目标」就跳过（已经归档的不用再归档一次），
+            // 且每条依旧单独调 onToggleArchive，单条语义一点没变。
             const target = checkedNotes.some(n => !n.archived);
-            for (const n of checkedNotes) {
-                // ⚠️ 判据是「当前状态 === 目标」就跳过（已经归档的不用再归档一次）。
-                // 写成 !== 会把**所有**条目都跳过：批量归档变成「点了没反应」
-                //（用例里 archived 一直是空数组才抓出来的）。
-                if (Boolean(n.archived) === target) continue;
+            await mapWithConcurrency(checkedNotes, 6, async n => {
+                if (Boolean(n.archived) === target) return;
                 await onToggleArchive(n);
-            }
+            });
             onNotify?.(
                 target ? `已归档 ${checkedNotes.length} 条` : `已取回 ${checkedNotes.length} 条`,
                 "success"
@@ -63,16 +66,27 @@ export function useNotesBulkOps(deps: NotesBulkOpsDeps) {
         if (bulkBusy) return;
         setBulkBusy(true);
         try {
-            for (const n of checkedNotes) await onDelete(n);
-            onNotify?.(`已删除 ${checkedNotes.length} 条（可在回收站里还原）`, "success");
-            setChecked(new Set());
+            let failed: number[] = [];
+            if (onDeleteMany) {
+                // 一次请求 + 一次 setState：界面一下清空，不再一条条消失
+                failed = (await onDeleteMany(checkedNotes)).failed ?? [];
+            } else {
+                // 降级：老调用方没接批量接口时保留原来的逐条循环
+                for (const n of checkedNotes) await onDelete(n);
+            }
+            const deletedCount = checkedNotes.length - failed.filter(id =>
+                checkedNotes.some(n => n.id === id)
+            ).length;
+            onNotify?.(`已删除 ${deletedCount} 条（可在回收站里还原）`, "success");
+            // 没删掉的保留勾选，别无条件清空
+            setChecked(new Set(failed));
             setBulkDeleteOpen(false);
         } catch (error) {
             onNotify?.("批量删除失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
         } finally {
             setBulkBusy(false);
         }
-    }, [bulkBusy, checkedNotes, onDelete, onNotify, setBulkBusy, setBulkDeleteOpen, setChecked]);
+    }, [bulkBusy, checkedNotes, onDelete, onDeleteMany, onNotify, setBulkBusy, setBulkDeleteOpen, setChecked]);
 
     return { checkedNotes, bulkArchive, bulkDelete };
 }

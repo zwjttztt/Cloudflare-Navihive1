@@ -602,6 +602,45 @@ export const backupMethods: Pick<NotesApi,
                 }
             }
 
+            // ── 老备份 / 前端手动导出的「同库有效 id」兜底（需求 4，2026-11）──
+            // 前端手动导出的 JSON/ZIP 从来不写 boundSites，只有服务端整库备份带指纹。
+            // 这类文件没有站点指纹，跨库导入时 site_id 会重排，本该一律置空；
+            // 但「同一个库里删掉绑定笔记、再重新导入」是完全不同的场景：站点没动过，
+            // 旧 site_id 依然指向那张卡片，无条件置空反而让站点反查不到笔记
+            //（UI 显示「已删除」）。折中：只有这个 id 在当前库确实存在、且还没被
+            // 别的笔记占用时才认它，两个条件缺一不可 ——
+            //   · 「站点存在」挡住跨库导入时旧 id 碰巧指向一个同号的无关站点；
+            //   · 「未被占用」挡住把它错绑到已经绑着别的笔记的站点上（那会造成
+            //     一站两绑，比断绑更糟，见 data.ts 的 SITE_SELECT_WITH_NOTE 相关子查询）。
+            // 有 boundSites 时**绝不介入**：指纹解析失败正说明这台机器的站点对不上，
+            // 这时认旧 id 会把笔记错绑到无关站点，违反「宁可断绑、不错绑」。
+            // 这两个集合是导入前的快照；同批多条笔记指向同一站点仍由下面提交循环
+            // 里既有的「解绑同站」语句先到先得，这里不再额外复杂化。
+            const existingSiteIds = new Set<number>();
+            const occupiedSiteIds = new Set<number>();
+            if (boundRefs.length === 0 && incoming.some(n => typeof n.site_id === "number")) {
+                const [siteRows, occupiedRows] = await Promise.all([
+                    this.db
+                        .prepare(`SELECT id FROM sites${this.scopeSql(false)}`)
+                        .bind(...this.scopeParams([]))
+                        .all<{ id: number }>(),
+                    this.db
+                        .prepare(`SELECT site_id FROM notes WHERE site_id IS NOT NULL${this.scopeSql(true)}`)
+                        .bind(...this.scopeParams([]))
+                        .all<{ site_id: number | null }>(),
+                ]);
+                for (const r of siteRows.results || []) existingSiteIds.add(Number(r.id));
+                for (const r of occupiedRows.results || []) {
+                    const id = Number(r.site_id);
+                    if (Number.isInteger(id)) occupiedSiteIds.add(id);
+                }
+            }
+            const fallbackSiteId = (id: number): number | null =>
+                Number.isInteger(id) && id > 0 &&
+                existingSiteIds.has(id) && !occupiedSiteIds.has(id)
+                    ? id
+                    : null;
+
             // ── noteTags：键是导出方笔记 id，先翻成「uuid → 标签名列表」──
             // 用标签**名**而不是本地数字 id 作稳定键，关联在提交阶段按名子查询解析。
             const noteTagsByUuid = new Map<string, string[]>();
@@ -642,13 +681,15 @@ export const backupMethods: Pick<NotesApi,
                         : undefined;
                 // 绑定：文件里没这个字段（很老的导出）→ 不动本地；有字段 → 按指纹解析
                 //（解析不了置 null）。新笔记没有「本地」可保持，置 null 就是最终态。
+                // 有 boundSites 时**完全**按解析结果（解析不了 = null，不许兜底救回来）；
+                // 没有 boundSites 的老备份才走上面的「同库有效 id」兜底。
                 const siteId =
                     n.site_id === undefined
                         ? undefined
                         : typeof n.site_id === "number"
-                          ? siteResolve.size > 0
+                          ? boundRefs.length > 0
                                 ? siteResolve.get(n.site_id) ?? null
-                                : null
+                                : fallbackSiteId(n.site_id)
                           : null;
                 // null = 该笔记在 noteTags 里没有条目（不重建关联，保留本地）；
                 // [] 或非空 = 有条目（先清空再按名重建，空数组就是清掉所有关联）

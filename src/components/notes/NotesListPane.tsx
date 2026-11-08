@@ -54,8 +54,8 @@ const listHeaderBtnSx = {
  */
 const LIST_TAG_VISIBLE = 2;
 
-export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" | "activeId" | "activeTag" | "bp" | "bulkArchive" | "checked" | "checkedNotes" | "dirty" | "draggingNoteId" | "emptyArt" | "emptyCopy" | "filtered" | "highlightRanges" | "keyword" | "lazyListGroups" | "listCollapsed" | "listGroups" | "listHidden" | "listW" | "menuClosing" | "multiSelect" | "narrowLayout" | "navInner" | "navW" | "noteTags" | "notes" | "notesCommands" | "onClose" | "onEmptyTrash" | "onPurgeTrashed" | "onRestoreTrashed" | "openNote" | "openTemplatePicker" | "pinnedCount" | "renderSearchField" | "reset" | "rowActionsSuppressed" | "rowMenu" | "searchRefNarrow" | "searchSnippets" | "selectAnchorRef" | "setBulkDeleteOpen" | "setChecked" | "setDraggingNoteId" | "setListCollapsed" | "setMiddleHidden" | "setMultiSelect" | "setRowActionsSuppressed" | "setRowMenu" | "setSortAnchor" | "startDrag" | "switchTo" | "tagColorByName" | "tags" | "toggleChecked" | "trashedNotes" | "uiSettings" | "view" | "visibleIds">) {
-    const { activeFolder, activeId, activeTag, bp, bulkArchive, checked, checkedNotes, dirty, draggingNoteId, emptyArt, emptyCopy, filtered, highlightRanges, keyword, lazyListGroups, listCollapsed, listGroups, listHidden, listW, menuClosing, multiSelect, narrowLayout, navInner, navW, noteTags, notes, notesCommands, onClose, onEmptyTrash, onPurgeTrashed, onRestoreTrashed, openNote, openTemplatePicker, pinnedCount, renderSearchField, reset, rowActionsSuppressed, rowMenu, searchRefNarrow, searchSnippets, selectAnchorRef, setBulkDeleteOpen, setChecked, setDraggingNoteId, setListCollapsed, setMiddleHidden, setMultiSelect, setRowActionsSuppressed, setRowMenu, setSortAnchor, startDrag, switchTo, tagColorByName, tags, toggleChecked, trashedNotes, uiSettings, view, visibleIds } = props;
+export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" | "activeId" | "activeTag" | "bp" | "bulkArchive" | "checked" | "checkedNotes" | "dirty" | "draggingNoteId" | "emptyArt" | "emptyCopy" | "exitMultiSelect" | "filtered" | "highlightRanges" | "keyword" | "lazyListGroups" | "listCollapsed" | "listGroups" | "listHidden" | "listW" | "menuClosing" | "multiSelect" | "narrowLayout" | "navInner" | "navW" | "noteTags" | "notes" | "notesCommands" | "onClose" | "onEmptyTrash" | "onPurgeTrashed" | "onRestoreTrashed" | "openNote" | "openTemplatePicker" | "pinnedCount" | "renderSearchField" | "reset" | "rowActionsSuppressed" | "rowMenu" | "searchRefNarrow" | "searchSnippets" | "selectAnchorRef" | "setBulkDeleteOpen" | "setChecked" | "setDraggingNoteId" | "setListCollapsed" | "setMiddleHidden" | "setMultiSelect" | "setRowActionsSuppressed" | "setRowMenu" | "setSortAnchor" | "startDrag" | "switchTo" | "tagColorByName" | "tags" | "toggleChecked" | "trashedNotes" | "uiSettings" | "view" | "visibleIds">) {
+    const { activeFolder, activeId, activeTag, bp, bulkArchive, checked, checkedNotes, dirty, draggingNoteId, emptyArt, emptyCopy, exitMultiSelect, filtered, highlightRanges, keyword, lazyListGroups, listCollapsed, listGroups, listHidden, listW, menuClosing, multiSelect, narrowLayout, navInner, navW, noteTags, notes, notesCommands, onClose, onEmptyTrash, onPurgeTrashed, onRestoreTrashed, openNote, openTemplatePicker, pinnedCount, renderSearchField, reset, rowActionsSuppressed, rowMenu, searchRefNarrow, searchSnippets, selectAnchorRef, setBulkDeleteOpen, setChecked, setDraggingNoteId, setListCollapsed, setMiddleHidden, setMultiSelect, setRowActionsSuppressed, setRowMenu, setSortAnchor, startDrag, switchTo, tagColorByName, tags, toggleChecked, trashedNotes, uiSettings, view, visibleIds } = props;
     return (
         <Box
             sx={{
@@ -315,8 +315,10 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                             aria-label={multiSelect ? "退出多选" : "多选"}
                             data-tool='multiselect'
                             onClick={() => {
-                                setMultiSelect(v => !v);
-                                setChecked(new Set());
+                                // 退出多选与「收起列表」共用同一处定义：一次清掉
+                                // multiSelect / 勾选 / 批量删除确认弹窗
+                                if (multiSelect) exitMultiSelect();
+                                else setMultiSelect(true);
                             }}
                             sx={{
                                 ...listHeaderBtnSx,
@@ -366,7 +368,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                             // 关掉列表列 = 屏幕上没有任何导航入口（inkstone 同）。
                             // tablet 关掉后左区让位给编辑区，导航走顶部 44px 栏的
                             // 「导航栏」按钮手动开（2026-10-09 用户明确：不要自动弹抽屉）。
-                            onClick={() => setMiddleHidden(true)}
+                            onClick={() => { setMiddleHidden(true); exitMultiSelect(); }}
                             sx={{ ...listHeaderBtnSx, ...(bp === "mobile" ? { display: "none" } : {}) }}
                         >
                             <CloseIcon fontSize='inherit' />
@@ -1015,9 +1017,10 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                 )}
             </Box>
 
-            {/* 批量条（2026-10-09，inkstone 的批量操作条）：只在多选态出现，
-                逐条走各自的 onToggleArchive / onDelete —— 不新造批量接口，
-                省得「批量归档成功一半」这种中间态没人处理。 */}
+            {/* 批量条（2026-10-09，inkstone 的批量操作条）：只在多选态出现。
+                2026-11 起批量删除走 onDeleteMany（一次请求 + 一次 setState，
+                部分失败按 failed 保留勾选），批量归档用 mapWithConcurrency 并发
+                （并发度 6）但仍逐条走 onToggleArchive 的单条语义。 */}
             {multiSelect && (
                 <Box
                     data-bulk-bar='1'

@@ -118,6 +118,7 @@ export default function NotesOverlay({
         createNote,
         updateNote,
         deleteNote,
+        deleteNotes,
         togglePin,
         toggleStar,
         folders,
@@ -156,7 +157,10 @@ export default function NotesOverlay({
     const handleDatasetChanged = useCallback(async () => {
         broadcastChange();
         await reloadRef.current();
-    }, [broadcastChange]);
+        // 导入可能重建了笔记的 site_id 绑定：站点侧的 note_id / note_title 是
+        // 查出来的子查询，不重取一次卡片，设置弹窗还拿着删除前的旧 id（显示「已删除」）。
+        siteLinkApi?.refresh();
+    }, [broadcastChange, siteLinkApi]);
 
     /** 冲突弹框的两个出口：覆盖 / 重新加载 */
     const resolveConflict = async (overwrite: boolean) => {
@@ -421,6 +425,7 @@ export default function NotesOverlay({
             onCreate={createNote}
             onUpdate={updateNote}
             onDelete={deleteNote}
+            onDeleteMany={deleteNotes}
             onTogglePin={togglePin}
             trashedNotes={trash}
             onLoadTrash={loadTrash}

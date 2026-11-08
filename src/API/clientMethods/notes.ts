@@ -29,6 +29,7 @@ import type {
     SoftDeleteResponse,
 } from "../responses";
 import type { ClientThis } from "../transport";
+import type { NoteBatchDeleteResult } from "../types";
 
 export const notesImpl = {
     async listNoteShares(this: ClientThis): Promise<NoteShareListItem[]> {
@@ -98,6 +99,17 @@ export const notesImpl = {
         });
         // 与 deleteGroup 同一套：HTTP 200 就说明删掉了，recycleId 是撤销凭据
         return { success: res?.success !== false, recycleId: res?.recycleId };
+    },
+    /**
+     * 多选删除：一次 POST，服务端切批 + 每批一个 db.batch，界面只需一次更新。
+     * ⚠️ 不逐条记本地删除（笔记侧轮询靠 note_tombstone 感知删除，与站点侧的
+     * markLocalSiteDeletes 不是同一套）；结果里的 failed 没删掉，客户端要保留勾选。
+     */
+    async deleteNotes(this: ClientThis, ids: number[]): Promise<NoteBatchDeleteResult> {
+        return this.request<NoteBatchDeleteResult>("notes/batch-delete", {
+            method: "POST",
+            body: JSON.stringify({ ids }),
+        });
     },
     async updateNoteOrder(this: ClientThis, orders: { id: number; order_num: number }[]): Promise<boolean> {
         const response = await this.request<{ success?: boolean }>("note-orders", {

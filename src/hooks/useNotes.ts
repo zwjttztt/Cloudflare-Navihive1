@@ -18,7 +18,7 @@ import type {
     NotesImportPayload,
     WebDavResult,
 } from "../API/http";
-import type { WebDavErrorCode } from "../API/types";
+import type { NoteBatchDeleteResult, WebDavErrorCode } from "../API/types";
 import { reportError } from "../utils/errorReporter";
 import { isNoteConflict } from "../utils/noteConflict";
 import {
@@ -89,6 +89,9 @@ export type NotesApiLike = {
     createNote(draft: Partial<Note>): Promise<Note>;
     updateNote(id: number, patch: Partial<Note>): Promise<Note | null>;
     deleteNote(id: number): Promise<{ success: boolean; recycleId?: number }>;
+    /** 批量删除（2026-11）：一次请求 + 一个事务，返回成功项与未删项。
+     *  ⚠️ 可选：老部署 / 老 mock 没有 notes/batch-delete 时退化成逐条 deleteNote。 */
+    deleteNotes?(ids: number[]): Promise<NoteBatchDeleteResult>;
     // 阶段三：回收站。⚠️ 这几个是**可选**的 —— 老 mock / 老调用方没实现时，
     // 记事本要能优雅降级成「回收站视图不可用」，而不是整个页面崩。
     getRecycleBin?(scope?: "nav" | "note"): Promise<{
@@ -756,6 +759,80 @@ export function useNotes({ api, onError, onNotify, onNoteConflict, firstDelayMs 
         [notes, api, onNotify, onError]
     );
 
+    /**
+     * 批量删除（2026-11）：一次乐观移除 + 一次 api.deleteNotes 请求。
+     *
+     * 与单条 deleteNote 的区别不是「循环调用」，而是：
+     *   · 界面只 setState 一次（SWR 镜像 effect 也只回写一次）；
+     *   · 服务端一个 batch 里把回收站 / 标签 / 分享 / 墓碑一起落库；
+     *   · 部分失败时按 before 快照把**没删掉的**放回列表，勾选保留在 failed 上。
+     */
+    const deleteNotes = useCallback(
+        async (targets: Note[]): Promise<{ deleted: number[]; failed: number[] }> => {
+            const ids = targets
+                .map(n => n.id)
+                .filter((id): id is number => typeof id === "number");
+            if (ids.length === 0) return { deleted: [], failed: [] };
+            const idSet = new Set(ids);
+            const before = notesRef.current;
+            // 一次把全部勾选项从列表里拿掉
+            setNotes(prev => prev.filter(n => n.id === undefined || !idSet.has(n.id)));
+            try {
+                let res: NoteBatchDeleteResult;
+                if (typeof api.deleteNotes === "function") {
+                    res = await api.deleteNotes(ids);
+                } else {
+                    // 老部署没有批量端点：退化成逐条，不让多选删除整个崩掉
+                    const outcomes = await Promise.all(
+                        ids.map(async id => {
+                            try {
+                                await api.deleteNote(id);
+                                return id;
+                            } catch {
+                                return null;
+                            }
+                        })
+                    );
+                    const ok = new Set(outcomes.filter((id): id is number => id !== null));
+                    res = {
+                        items: [...ok].map(id => ({ id })),
+                        failed: ids.filter(id => !ok.has(id)),
+                    };
+                }
+                const failed = new Set(Array.isArray(res.failed) ? res.failed : []);
+                const succeeded = new Set((res.items ?? []).map(item => item.id));
+                const notDeleted = ids.filter(id => failed.has(id) || !succeeded.has(id));
+                if (notDeleted.length > 0) {
+                    // 用 before 快照按 id 复原没删掉的，别把已删的又插回去
+                    const restoreIds = new Set(notDeleted);
+                    setNotes(prev => {
+                        const present = new Set(prev.map(n => n.id));
+                        const restored = before.filter(
+                            n => typeof n.id === "number" && restoreIds.has(n.id) && !present.has(n.id)
+                        );
+                        return restored.length > 0 ? [...prev, ...restored] : prev;
+                    });
+                }
+                const deleted = ids.filter(id => !notDeleted.includes(id));
+                // 一次广播 + 一次回执
+                broadcastRef.current?.postMessage({ type: "changed" });
+                onNotify(
+                    deleted.length > 0
+                        ? `已删除 ${deleted.length} 条（可在回收站里还原）`
+                        : "没有笔记被删除",
+                    "success"
+                );
+                return { deleted, failed: notDeleted };
+            } catch (error) {
+                reportError(error, { source: "note-batch-delete" });
+                setNotes(before);
+                onError("批量删除笔记失败: " + (error instanceof Error ? error.message : "未知错误"));
+                return { deleted: [], failed: ids };
+            }
+        },
+        [api, onNotify, onError]
+    );
+
     /** 拖拽排序后把新顺序写回去；失败不重排（服务端是唯一真相） */
     const saveOrder = useCallback(
         async (ordered: Note[]) => {
@@ -1294,6 +1371,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict, firstDelayMs 
         createNote,
         updateNote,
         deleteNote,
+        deleteNotes,
         togglePin,
         toggleStar,
         saveOrder,

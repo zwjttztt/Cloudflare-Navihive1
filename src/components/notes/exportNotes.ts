@@ -11,6 +11,7 @@
 //   1. 下载后 setTimeout(4000) 才 revokeObjectURL —— 立刻回收在部分浏览器会打断下载；
 //   2. ZIP 里的附件名是 `${id}__${filename}` —— 导入要靠前缀把正文里的旧 id 换成新 id。
 import type { Note, NoteFolder, NoteTag } from "../../API/types";
+import { beijingDateStamp } from "../../utils/format";
 import { createZip, type ZipEntry } from "../../utils/zip";
 
 /** 一起打进包里的分类数据。这里只做 JSON 序列化，不参与任何计算 */
@@ -28,6 +29,12 @@ export interface ExportNotesDeps {
         listAttachments?(): Promise<{ id: string; size: number; filename: string; mime: string }[]>;
     };
     onNotify?: (message: string, severity?: "success" | "error" | "info") => void;
+    /**
+     * 本次导出的 notes 引用到的站点指纹（id / name / url）。服务端 importNotesData 靠
+     * 「有没有这个键」区分新格式与老格式：老文件完全没写时才会把 notes[].site_id 全置 null，
+     * 所以哪怕一条都没绑也要写出空数组 —— 不能省键，否则「删笔记再导入」绑定就丢了。
+     */
+    boundSites?: Array<{ id: number; name: string; url: string }>;
 }
 
 /** 导出全部笔记（2026-10-08 设置→数据，照 inkstone 的导出）：JSON 一份
@@ -42,6 +49,7 @@ export function exportAllNotesJson(deps: ExportNotesDeps): void {
             folders: deps.folderTags?.folders ?? [],
             tags: deps.folderTags?.tags ?? [],
             noteTags: deps.folderTags?.noteTags ?? {},
+            boundSites: deps.boundSites ?? [],
         };
         const blob = new Blob([JSON.stringify(payload, null, 2)], {
             type: "application/json",
@@ -49,7 +57,7 @@ export function exportAllNotesJson(deps: ExportNotesDeps): void {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `notes-export-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = `notes-export-${beijingDateStamp()}.json`;
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -81,6 +89,7 @@ export async function exportAllNotesZip(deps: ExportNotesDeps): Promise<void> {
             folders: deps.folderTags?.folders ?? [],
             tags: deps.folderTags?.tags ?? [],
             noteTags: deps.folderTags?.noteTags ?? {},
+            boundSites: deps.boundSites ?? [],
         };
         const entries: ZipEntry[] = [
             {
@@ -118,7 +127,7 @@ export async function exportAllNotesZip(deps: ExportNotesDeps): Promise<void> {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `notes-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+        a.download = `notes-backup-${beijingDateStamp()}.zip`;
         document.body.appendChild(a);
         a.click();
         a.remove();

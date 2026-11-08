@@ -240,3 +240,82 @@ test("真实 SQLite：站点被删后笔记留下，site_id 变成悬空引用",
     assert.ok(kept);
     assert.equal(kept?.site_id, siteId);
 });
+
+test("真实 SQLite：删掉绑定笔记 → 用无 boundSites 的旧格式重新导入 → 站点重新带出 note_id / note_title", async () => {
+    resetMigrationCacheForTests();
+    const db = makeRealD1();
+    const api = makeApi(db);
+    await api.migrate();
+    api.setCurrentUser(null); // 单账号部署：sites.user_id 与 notes.user_id 都是 NULL
+
+    const siteId = await seedSite(api);
+    const note = await api.createNote({ title: "这个站的登录方式", content: "账号 admin", site_id: siteId });
+    assert.equal((await api.querySite(siteId))?.note_id, note.id, "前置：绑定已生效");
+
+    // 删掉笔记（进回收站，notes 表里的行被物理删除）→ 站点侧反查暂时回到 null。
+    // 回收站那条 data 里虽然还留着 site_id，但它在 recycle_bin 表，不算 notes 表的占用。
+    await api.deleteNote(note.id as number);
+    assert.equal((await api.querySite(siteId))?.note_id ?? null, null, "删掉笔记后站点暂时没有绑定");
+    assert.equal((await api.querySite(siteId))?.note_title ?? null, null);
+
+    // 前端手动导出 / 老备份就是这种形状：只有 notes，从来不写 boundSites。
+    // 同一个库里站点没动过，删笔记再导入时 site_id 依然指向那张卡 —— 服务端
+    // 的「同库有效 id」兜底要把它认下来，站点反查才能重新带出笔记（否则 UI 显示「已删除」）。
+    const stats = await api.importNotesData({
+        kind: "navihive-notes-backup",
+        notes: [
+            {
+                uuid: "reimported-1",
+                title: "这个站的登录方式",
+                content: "账号 admin",
+                site_id: siteId,
+                updated_at: "2026-11-08T00:00:00.000Z",
+            } as never,
+        ],
+    });
+    assert.equal(stats.created, 1);
+
+    const after = await api.querySite(siteId);
+    assert.ok(after?.note_id, "重新导入后站点要重新带出 note_id（不能还显示「已删除」）");
+    assert.equal(after?.note_title, "这个站的登录方式");
+    // 列表路径同样要带出来（卡片走 querySites，不是 querySite）
+    const list = await api.querySites();
+    assert.equal(list.length, 1);
+    assert.equal(list[0].note_title, "这个站的登录方式");
+});
+
+test("真实 SQLite（对照）：新格式带 boundSites、站点 id 已重排 → 按 URL 唯一命中重连", async () => {
+    resetMigrationCacheForTests();
+    const db = makeRealD1();
+    const api = makeApi(db);
+    await api.migrate();
+    api.setCurrentUser(null);
+
+    // 先建一张无关的卡占住旧 id，URL 唯一命中的目标站是后面新建、id 已重排的那张
+    const group = await api.createGroup({ name: "默认分组", order_num: 0 });
+    const oldSite = await api.createSite({
+        group_id: group.id as number, name: "占位站", url: "https://other.example.com",
+        icon: "", description: "", notes: "", order_num: 0,
+    });
+    const target = await api.createSite({
+        group_id: group.id as number, name: "改了名的示例站", url: "https://target.example.com",
+        icon: "", description: "", notes: "", order_num: 0,
+    });
+
+    const stats = await api.importNotesData({
+        kind: "navihive-notes-backup",
+        notes: [{ uuid: "new-format-1", title: "按 URL 重连的笔记", content: "正文", site_id: oldSite.id! } as never],
+        boundSites: [{ id: oldSite.id!, name: "随便一个名字", url: "https://target.example.com" }],
+    });
+    assert.equal(stats.created, 1);
+
+    // 站点反查带出笔记：绑定落到按 URL 命中的新 id 上，不是旧 id
+    const targetView = await api.querySite(target.id as number);
+    assert.ok(targetView?.note_id, "按 URL 重连后目标站带出笔记");
+    assert.equal(targetView?.note_title, "按 URL 重连的笔记");
+    const oldView = await api.querySite(oldSite.id as number);
+    assert.equal(oldView?.note_id ?? null, null, "旧 id 的占位站不该被错绑");
+    const notes = await api.listNotes();
+    assert.equal(notes[0].site_id, target.id, "笔记的 site_id 是重排后的新 id");
+    assert.notEqual(notes[0].site_id, oldSite.id);
+});

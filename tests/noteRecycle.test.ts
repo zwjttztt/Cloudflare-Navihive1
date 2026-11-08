@@ -164,3 +164,38 @@ test("deleteFolder 的「清关联 + 删文件夹」必须在同一个 batch 里
     // 顺序：先摘关联再删文件夹（反过来会短暂留下指向不存在文件夹的关联）
     assert.ok(updAt < delAt, "先清 notes.folder_id，再删文件夹");
 });
+
+test("reinsertNote：还原笔记的 site_id 已被别的笔记占用 → 本次还原置 null、占用者不受影响", () => {
+    const body = methodBody(recycleSrc, "reinsertNote: async");
+    const insertAt = body.indexOf("INSERT INTO notes");
+    assert.ok(insertAt >= 0, "没找到 reinsertNote 的 INSERT");
+
+    // 占用检查必须排在 INSERT 之前：待还原笔记这时还没进 notes 表，
+    // 查到的任何 site_id 占用者都一定是「别的笔记」。
+    const occupiedCheck = body.search(/SELECT\s+id\s+FROM\s+notes\s+WHERE\s+site_id\s*=\s*\?/);
+    assert.ok(
+        occupiedCheck >= 0 && occupiedCheck < insertAt,
+        "写回 site_id 前要先查当前库有没有别的笔记占着这个站点，否则还原会造成一站双绑"
+    );
+    // 账号隔离：这条查询走 scopeSql(true) / scopeParams 的既有写法
+    const checkBody = body.slice(occupiedCheck, insertAt);
+    assert.ok(
+        /scopeSql\(true\)/.test(checkBody) && /scopeParams\(/.test(checkBody),
+        "占用查询要带账号隔离（scopeSql(true) + scopeParams）"
+    );
+    // 只有正整数 site_id 才检查（null / 脏值不必动，站点已删的悬空引用也照旧保留）
+    assert.ok(/Number\.isInteger\(/.test(body), "只对正整数的 site_id 做占用检查");
+    // 命中占用 → 把「本次待写」的 site_id 置 null；只改局部变量，不去 UPDATE 别人的行，
+    // 所以占用者完全不受影响，导入后刚重连好的绑定也保得住。
+    assert.ok(/= null/.test(checkBody), "命中占用时把本次还原笔记的 site_id 置 null");
+    const insertBody = body.slice(insertAt);
+    assert.ok(
+        !/UPDATE\s+notes/.test(insertBody),
+        "还原路径不该去改别的笔记（占用者不受影响）"
+    );
+    // INSERT 的 VALUES 绑的必须是那个「查过占用、可能被置空」的值，不能照抄回收站里的原始 site_id
+    assert.ok(
+        !/\(\s*note\.site_id\s+as\s+number/.test(insertBody),
+        "site_id 要绑「可能被置空」的那个值，不能照抄回收站里的原始 site_id"
+    );
+});

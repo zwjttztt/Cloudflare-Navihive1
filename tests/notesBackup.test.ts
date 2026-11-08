@@ -24,13 +24,15 @@ import {
 import {
     buildBackupFileName,
     buildNotesBackupFileName,
+    buildNotesBackupZipFileName,
+    selectAutoBackupsToPrune,
     selectNotesBackupsToPrune,
 } from "../worker/webdav/naming";
 import type { NotesBackupRun } from "../src/API/types";
 import { NavigationAPI } from "../src/API/navigationApi";
 import { resetMigrationCacheForTests } from "../src/API/http";
 import { isNavBackupDue } from "../worker/cron";
-import { NAV_BACKUP_INTERVAL_MS, shouldRunNavBackup } from "../worker/cronLogic";
+import { NAV_BACKUP_INTERVAL_MS, parseAutoBackupFileTime, shouldRunNavBackup } from "../worker/cronLogic";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -113,6 +115,68 @@ test("文件名：记事本备份与导航备份前缀分开，auto/manual 可�
     // 与导航备份的前缀不同：「备份和导航页的分开」在文件名这层也要成立
     assert.ok(!autoName.startsWith("navihive-backup"));
     assert.ok(buildBackupFileName("auto").startsWith("navihive-backup-auto-"));
+});
+
+// ============ 纯逻辑：备份文件名固定北京时间（UTC+8） ============
+//
+// 全站时间显示统一北京时间后，naming.ts 的 buildBackupFileName 用「+8h 取 getUTC*」
+// 生成北京墙上时钟的定宽时间戳；cronLogic.parseAutoBackupFileTime 反解时再减 8h。
+// 下面三条钉死：生成是北京钟面、往返解析回同一绝对时刻、前缀/格式/单调性都不变。
+
+/** 固定绝对时刻 2026-01-02T17:04:05.006Z = 北京 2026-01-03 01:04:05.006（跨日，能验出 +8h） */
+const BEIJING_FIXED_MS = Date.UTC(2026, 0, 2, 17, 4, 5, 6);
+const BEIJING_STAMP = "20260103-010405-006";
+
+test("buildBackupFileName 用北京时间分量：定宽零填充、前缀/后缀不变", t => {
+    t.mock.timers.enable({ apis: ["Date"], now: BEIJING_FIXED_MS });
+    const nav = buildBackupFileName("auto");
+    const notes = buildNotesBackupFileName("auto");
+    const notesZip = buildNotesBackupZipFileName("auto");
+    t.mock.timers.reset();
+
+    assert.equal(nav, `navihive-backup-auto-${BEIJING_STAMP}.json.gz`);
+    // 两个包装函数复用同一 stamp，只是换前缀 / 扩展名 → 同样带北京时间
+    assert.equal(notes, `navihive-notes-backup-auto-${BEIJING_STAMP}.json.gz`);
+    assert.equal(notesZip, `navihive-notes-backup-auto-${BEIJING_STAMP}.zip`);
+    // 旧 UTC 行为会得到 20260102-170405-006；这里必须是 +8h 的 20260103-010405-006
+    assert.ok(!nav.includes("20260102-170405-006"));
+});
+
+test("新（北京命名）文件名解析成正确的绝对时刻：生成→解析往返一致", t => {
+    // 北京 2026-11-08 10:00:00.000 = UTC 2026-11-08 02:00:00.000Z
+    const fixedMs = Date.UTC(2026, 10, 8, 2, 0, 0, 0);
+    t.mock.timers.enable({ apis: ["Date"], now: fixedMs });
+    const name = buildBackupFileName("auto");
+    t.mock.timers.reset();
+
+    assert.equal(name, "navihive-backup-auto-20261108-100000-000.json.gz");
+    // 北京命名反解回原绝对时刻（减 8h），不是把钟面当 UTC 得到的 10:00Z
+    assert.equal(parseAutoBackupFileTime(name), fixedMs);
+    assert.equal(parseAutoBackupFileTime("navihive-backup-auto-20260103-010405-006.json.gz"), BEIJING_FIXED_MS);
+    // 认不出的 / 手动前缀 / null 一律 null（严格匹配不被放宽）
+    assert.equal(parseAutoBackupFileTime("navihive-backup-20261108-100000-000.json.gz"), null);
+    assert.equal(parseAutoBackupFileTime("navihive-backup-auto-2026-11-08-1.json.gz"), null);
+    assert.equal(parseAutoBackupFileTime(null), null);
+});
+
+test("保留策略：北京时间戳仍是定宽零填充、字典序=时间序，倒序清理不变", () => {
+    // 北京命名的连续三次自动备份（字典序即时间序）
+    const files = [
+        { name: "navihive-backup-auto-20261108-100000-000.json.gz" },
+        { name: "navihive-backup-auto-20261108-090000-000.json.gz" },
+        { name: "navihive-backup-auto-20261107-100000-000.json.gz" },
+    ];
+    // 保留 2 份：keep(最新) + 次新，最旧那份回删（第 3 参是 recorded，retentionCount 是第 4 参）
+    assert.deepEqual(selectAutoBackupsToPrune(files, files[0].name, undefined, 2), [files[2].name]);
+    // 跨日 / 跨月依旧单调：新名字字典序一定大于旧名字
+    assert.ok(files[1].name > files[2].name);
+    assert.ok(files[0].name > files[1].name);
+    // notes 版按文件名倒序的兜底同样成立
+    const notesFiles = files.map(f => ({ name: f.name.replace("navihive-backup-auto-", "navihive-notes-backup-auto-") }));
+    assert.deepEqual(
+        selectNotesBackupsToPrune(notesFiles, notesFiles[0].name, 1),
+        [notesFiles[1].name, notesFiles[2].name]
+    );
 });
 
 test("运行记录：新的在前、最多 12 条", () => {
@@ -202,14 +266,34 @@ test("导航自动备份：从来没备份过就跑（配了自动备份的人�
     assert.ok(shouldRunNavBackup(null, now, ""));
 });
 
-test("存量兼容：没有 lastAutoBackupAt 时从自动备份文件名里解析时间", () => {
-    // 该键是 2026-10-29 新加的，老库里没有 —— 但文件名一直带着 UTC 精确时间
+test("存量兼容：老 UTC 文件名按新规则偏早 8 小时，但只会多备份、绝不漏备份", () => {
+    // 该键是 2026-10-29 新加的，老库里没有 —— 文件名一直带着精确时间。
+    // 但老文件名是 **UTC 命名**：LAST_AUTO_NAME 里的 20261019-020000-005 本意是
+    // 2026-10-19T02:00:00.005Z。改成按北京时间反解（统一减 8h）后，它被读成
+    // 比真实时刻早 8 小时。这是本次时区统一对存量文件唯一的影响。
+    const parsed = parseAutoBackupFileTime(LAST_AUTO_NAME);
+    assert.equal(parsed, LAST_AUTO_MS - 8 * HOUR, "老 UTC 文件名按新规则反解偏早 8 小时");
+
+    // 偏早只会让「距上次备份」偏大 → 更倾向于判「到点」→ 多备份一次（安全侧）：
+    //   · 刚备份完 2 小时：即便偏早 8h（累计 10h），仍远小于 6.5 天 → 跳过，不会立刻重传
     const justAfter = LAST_AUTO_MS + 2 * HOUR;
-    assert.ok(
-        !shouldRunNavBackup(null, justAfter, LAST_AUTO_NAME),
-        `文件名里的时间要能读出来（${LAST_AUTO_NAME}），否则升级后第一件事就是多传一份`
-    );
+    assert.ok(!shouldRunNavBackup(null, justAfter, LAST_AUTO_NAME));
+    //   · 真正到 6.5 天：照样跑，绝不会因为时区改动被卡成「还没到点」而漏备份
     assert.ok(shouldRunNavBackup(null, LAST_AUTO_MS + NAV_BACKUP_INTERVAL_MS, LAST_AUTO_NAME));
+    //   · 关键安全侧证明：「按真实时刻还差 1ms、按偏早时刻已到点」这个 8 小时窗口里，
+    //     结果是「提前触发（多备份一次）」而不是「跳过」（漏备）。
+    assert.ok(
+        shouldRunNavBackup(null, LAST_AUTO_MS + NAV_BACKUP_INTERVAL_MS - 1, LAST_AUTO_NAME),
+        "偏早 8 小时只会提前触发，不会漏备份"
+    );
+});
+
+test("调度：有 lastAutoAt（绝对时刻 ISO）时优先用它，时区改动不影响判定", () => {
+    const at = new Date(LAST_AUTO_MS).toISOString();
+    // 带一个旧文件名也无所谓：ISO 绝对时刻是首选，文件名回退根本不参与
+    assert.ok(!shouldRunNavBackup(at, LAST_AUTO_MS + 2 * HOUR, LAST_AUTO_NAME));
+    assert.ok(!shouldRunNavBackup(at, LAST_AUTO_MS + NAV_BACKUP_INTERVAL_MS - 1, LAST_AUTO_NAME));
+    assert.ok(shouldRunNavBackup(at, LAST_AUTO_MS + NAV_BACKUP_INTERVAL_MS, LAST_AUTO_NAME));
 });
 
 test("文件名坏掉 / 认不出：当作「从没备份过」，宁可多备一次也不能永久不备", () => {
@@ -396,36 +480,95 @@ test("真实 SQLite：卡片绑定的笔记，指纹随备份导出、跨库按 
     assert.equal(unbound.site_id ?? null, null, "没绑定的笔记导入后也不该凭空出现绑定");
 });
 
-test("真实 SQLite：指纹匹配不到置空（宁可断绑不错绑）；老备份没有指纹同样置空", async () => {
+test("真实 SQLite：有 boundSites 但解析失败仍置空（兜底不介入）；无 boundSites 时同库空闲 id 才重绑", async () => {
     resetMigrationCacheForTests();
     const db = makeRealD1();
     const api = makeApi(db);
     await api.migrate();
     const group = await api.createGroup({ name: "组", order_num: 0 } as never);
-    await api.createSite({ group_id: group.id, name: "本地站", url: "https://local.example.com", icon: "", description: "", order_num: 0 } as never);
+    const site = await api.createSite({ group_id: group.id, name: "本地站", url: "https://local.example.com", icon: "", description: "", order_num: 0 } as never);
 
-    // 新备份：指纹指向本地不存在的站点 → 置空，不断错绑
+    // 关键回归：note 的 site_id 指向一个**当前库里存在且空闲**的站点，
+    // 但 boundSites 的 URL / 名称都解析不到它。有指纹时兜底绝不许介入 ——
+    // 否则会把旧 id 当成「同库有效」留下来，等于错绑到这张无关的卡上。
+    // 断言 t1 仍为 null，才证明「有 boundSites 时完全走原逻辑」这条约束没被破坏。
     const newer = await api.importNotesData({
         kind: "navihive-notes-backup",
         notes: [
-            { uuid: "u1", title: "t1", content: "c1", site_id: 99 } as never,
+            { uuid: "u1", title: "t1", content: "c1", site_id: site.id! } as never,
             { uuid: "u2", title: "t2", content: "c2", site_id: null } as never,
         ],
-        boundSites: [{ id: 99, name: "不存在的站", url: "https://ghost.example.com" }],
+        boundSites: [{ id: site.id!, name: "不存在的名字", url: "https://ghost.example.com" }],
     });
     assert.equal(newer.created, 2);
     let notes = await api.listNotes();
-    assert.equal(notes.find(n => n.title === "t1")!.site_id ?? null, null);
+    assert.equal(notes.find(n => n.title === "t1")!.site_id ?? null, null, "有指纹但解析失败 → 置空，兜底没介入");
     assert.equal(notes.find(n => n.title === "t2")!.site_id ?? null, null);
 
-    // 老备份：没有 boundSites 字段 → 无从判断，同样置空（老行为本来就是 NULL）
+    // 老备份 / 前端手动导出：没有 boundSites 字段。同一个库里删掉绑定笔记再导入，
+    // 站点没动过、这个 id 也还没被别的笔记占用 → 按新规则保留，绑定自动恢复
+    //（旧行为无条件置空，正是需求 4 要修的「站点显示绑定笔记已删除」）。
     const older = await api.importNotesData({
         kind: "navihive-notes-backup",
-        notes: [{ uuid: "u3", title: "t3", content: "c3", site_id: 1 } as never],
+        notes: [{ uuid: "u3", title: "t3", content: "c3", site_id: site.id! } as never],
     });
     assert.equal(older.created, 1);
     notes = await api.listNotes();
-    assert.equal(notes.find(n => n.title === "t3")!.site_id ?? null, null);
+    assert.equal(notes.find(n => n.title === "t3")!.site_id, site.id, "同库有效且空闲的 site_id → 保留（重绑成功）");
+});
+
+test("真实 SQLite：无 boundSites 兜底 —— 站点不存在 / 已被别的笔记占用一律置 null", async () => {
+    resetMigrationCacheForTests();
+    const db = makeRealD1();
+    const api = makeApi(db);
+    await api.migrate();
+    const group = await api.createGroup({ name: "组", order_num: 0 } as never);
+    const site = await api.createSite({ group_id: group.id, name: "站", url: "https://x.example.com", icon: "", description: "", order_num: 0 } as never);
+
+    // 同一次导入：空闲有效 id 保留；库里根本不存在的 id 置 null
+    const first = await api.importNotesData({
+        kind: "navihive-notes-backup",
+        notes: [
+            { uuid: "b1", title: "占位的笔记", content: "c", site_id: site.id! } as never,
+            { uuid: "b2", title: "指向不存在站点", content: "c", site_id: 99999 } as never,
+        ],
+    });
+    assert.equal(first.created, 2);
+    let notes = await api.listNotes();
+    assert.equal(notes.find(n => n.title === "占位的笔记")!.site_id, site.id, "有效且空闲 → 保留");
+    assert.equal(notes.find(n => n.title === "指向不存在站点")!.site_id ?? null, null, "sites 表里没有这个 id → 置 null");
+
+    // 再导入一条指向同一站点：此时它已被 b1 占用 → 置 null，且 b1 不受影响
+    const second = await api.importNotesData({
+        kind: "navihive-notes-backup",
+        notes: [{ uuid: "b3", title: "后来的笔记", content: "c", site_id: site.id! } as never],
+    });
+    assert.equal(second.created, 1);
+    notes = await api.listNotes();
+    assert.equal(notes.find(n => n.title === "后来的笔记")!.site_id ?? null, null, "已被别的笔记占用 → 置 null（避免双绑）");
+    assert.equal(notes.find(n => n.title === "占位的笔记")!.site_id, site.id, "占用者不受影响");
+});
+
+test("真实 SQLite：有 boundSites 且 URL 唯一命中到重排后的新 id → 重连成功（原行为不回归）", async () => {
+    resetMigrationCacheForTests();
+    const db = makeRealD1();
+    const api = makeApi(db);
+    await api.migrate();
+    const group = await api.createGroup({ name: "组", order_num: 0 } as never);
+    // 旧 id 现在是一张无关的卡；URL 唯一命中的是后面新建、id 已重排的目标站
+    const oldSite = await api.createSite({ group_id: group.id, name: "占位站", url: "https://other.example.com", icon: "", description: "", order_num: 0 } as never);
+    const target = await api.createSite({ group_id: group.id, name: "改了名的站", url: "https://target.example.com", icon: "", description: "", order_num: 0 } as never);
+
+    const stats = await api.importNotesData({
+        kind: "navihive-notes-backup",
+        notes: [{ uuid: "e1", title: "按 URL 重连", content: "c", site_id: oldSite.id! } as never],
+        boundSites: [{ id: oldSite.id!, name: "不存在的名字", url: "https://target.example.com" }],
+    });
+    assert.equal(stats.created, 1);
+    const notes = await api.listNotes();
+    // 既不是照抄旧 id，也不是兜底把它留下，而是按 URL 重连到唯一命中的新 id
+    assert.equal(notes[0].site_id, target.id, "按 URL 唯一命中重连到重排后的新 id");
+    assert.notEqual(notes[0].site_id, oldSite.id, "不能照抄旧 id / 被兜底救回来");
 });
 
 test("真实 SQLite：一站一篇 —— 同批抢同一站点先到先得，本地占位被解绑", async () => {

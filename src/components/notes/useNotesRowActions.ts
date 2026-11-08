@@ -76,6 +76,16 @@ export function useNotesRowActions() {
     const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
     const [bulkBusy, setBulkBusy] = useState(false);
 
+    /**
+     * 退出多选：一次把三个状态收干净。列表被收起 / 折叠 / 切换视图时都要调它，
+     * 否则组件没卸载、state 会留着，重新展开就「幽灵多选」。
+     */
+    const exitMultiSelect = useCallback(() => {
+        setMultiSelect(false);
+        setChecked(new Set());
+        setBulkDeleteOpen(false);
+    }, []);
+
     return {
         multiSelect,
         setMultiSelect,
@@ -102,5 +112,6 @@ export function useNotesRowActions() {
         setBulkDeleteOpen,
         bulkBusy,
         setBulkBusy,
+        exitMultiSelect,
     };
 }

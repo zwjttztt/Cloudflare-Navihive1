@@ -17,6 +17,7 @@ import {
     WebDavErrorCode,
     SiteOrderUpdateResult,
     SiteBatchDeleteResult,
+    NoteBatchDeleteResult,
     RecycleBatchRestoreResult,
     SessionInfo,
     ImportOptions,
@@ -619,6 +620,23 @@ export class MockNavigationClient {
         if (idx === -1) return { success: false };
         mockNotes.splice(idx, 1);
         return { success: true, recycleId: mockRecycleSeq++ };
+    }
+
+    /** 演示模式的多选删除：与 deleteSites 同一套 items / failed 口径（界面一次更新） */
+    async deleteNotes(ids: number[]): Promise<NoteBatchDeleteResult> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const items: Array<{ id: number; recycleId?: number }> = [];
+        const failed: number[] = [];
+        for (const id of ids) {
+            const idx = mockNotes.findIndex(n => n.id === id);
+            if (idx === -1) {
+                failed.push(id);
+                continue;
+            }
+            mockNotes.splice(idx, 1);
+            items.push({ id, recycleId: mockRecycleSeq++ });
+        }
+        return { items, failed };
     }
 
     async updateNoteOrder(orders: { id: number; order_num: number }[]): Promise<boolean> {

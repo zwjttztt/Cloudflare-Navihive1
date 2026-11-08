@@ -23,6 +23,7 @@ import {
 } from "../utils/backupScope";
 import type { NotifyFn } from "../context/NotifyContext";
 import { exportLinkHealth } from "../utils/linkHealth";
+import { beijingDateStamp } from "../utils/format";
 import { cronErrorDismissed, dismissCronError } from "../utils/cronErrorDismiss";
 
 type CurrentUser = { username: string; role: "owner" | "user" } | null;
@@ -206,7 +207,7 @@ export function useBackupController(deps: BackupControllerDeps) {
             // 摘要在「写文件前的最后一刻」才算：这份数据里带着本机星标 / 标签（localPrefs），
             // 服务端那份 exportData 不知道它，早算一步就会对不上
             const dataStr = JSON.stringify(await withBackupIntegrity(buildExportData()), null, 2);
-            const stamp = new Date().toISOString().slice(0, 10);
+            const stamp = beijingDateStamp();
 
             let blob: Blob;
             let exportFileName: string;

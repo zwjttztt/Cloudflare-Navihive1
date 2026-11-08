@@ -20,9 +20,10 @@ export function isAutoBackupFileName(filename: string): boolean {
  * - keepFilename：本次刚上传的那份，绝不能删；
  * - retentionCount：要保留的自动备份份数（含 keep 这一份）。只删超出份数的旧自动备份。
  *
- * 文件名自带 UTC 时间戳且零填充定宽，按文件名倒序即时间倒序：保留最新的
+ * 文件名自带北京时间（UTC+8）时间戳且零填充定宽，按文件名倒序即时间倒序：保留最新的
  * retentionCount-1 份旧备份 + keep，其余（更老的）回删。retentionCount 缺省为 1，
  * 退回「只留 keep、其余自动备份全删」的旧行为，已有的单测不受影响。
+ * 北京时间只是 UTC 的定偏移（+8h，无夏令时），定宽零填充 + 字典序 = 时间序不变。
  */
 export function selectAutoBackupsToPrune(
     files: readonly { name: string }[],
@@ -49,9 +50,13 @@ export function selectAutoBackupsToPrune(
         .slice(Math.max(retentionCount - 1, 0));
 }
 
+/** 备份文件名固定用北京时间（Asia/Shanghai = UTC+8，无夏令时）。
+ *  把绝对时刻 +8h 后取 `getUTC*`，等价于「北京墙上时钟」的分量；
+ *  比 Intl timeZone 更稳：Worker 运行时对 IANA timeZone 的支持不一定齐全，
+ *  固定偏移不依赖 ICU 时区库，且零填充定宽 / 单调性都保持不变。 */
 // 自动备份带 auto 前缀：清理时靠文件名就能区分来源，不会误删手动备份
 export function buildBackupFileName(mode: WebDavBackupMode): string {
-    const now = new Date();
+    const now = new Date(Date.now() + 8 * 3600_000);
     const pad = (value: number) => String(value).padStart(2, "0");
     const stamp =
         `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}` +

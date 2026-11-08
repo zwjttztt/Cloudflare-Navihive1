@@ -19,8 +19,8 @@ import { tagNamesOf, NavRow, FolderTagSection } from "../notes/sidebarSection";
 import { NOTES_NAV_CTRL_H } from "../../constants";
 import type { NotesPageCtx } from "./notesPageCtx";
 
-export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | "activeFolder" | "activeId" | "activeTag" | "askName" | "attManagerOpen" | "folderCounts" | "folderTags" | "folders" | "jumpToNote" | "keyword" | "listCollapsed" | "narrowLayout" | "noteTags" | "notes" | "notesInFolder" | "onClose" | "onCreate" | "onUpdate" | "openTemplatePicker" | "renderSearchField" | "searchRef" | "setActiveFolder" | "setActiveTag" | "setAppearanceFolderId" | "setAttManagerOpen" | "setListCollapsed" | "setMiddleHidden" | "setNavDrawerOpen" | "setRemoveTarget" | "setRowMenu" | "setSettingsOpen" | "setTagColorId" | "setView" | "startCreateInFolder" | "tagCounts" | "tags" | "uploadApi" | "view" | "viewCounts">) {
-    const { accountName, activeFolder, activeId, activeTag, askName, attManagerOpen, folderCounts, folderTags, folders, jumpToNote, keyword, listCollapsed, narrowLayout, noteTags, notes, notesInFolder, onClose, onUpdate, openTemplatePicker, renderSearchField, searchRef, setActiveFolder, setActiveTag, setAppearanceFolderId, setAttManagerOpen, setListCollapsed, setMiddleHidden, setNavDrawerOpen, setRemoveTarget, setRowMenu, setSettingsOpen, setTagColorId, setView, startCreateInFolder, tagCounts, tags, uploadApi, view, viewCounts } = props;
+export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | "activeFolder" | "activeId" | "activeTag" | "askName" | "attManagerOpen" | "exitMultiSelect" | "folderCounts" | "folderTags" | "folders" | "jumpToNote" | "keyword" | "listCollapsed" | "narrowLayout" | "noteTags" | "notes" | "notesInFolder" | "onClose" | "onCreate" | "onUpdate" | "openTemplatePicker" | "renderSearchField" | "searchRef" | "setActiveFolder" | "setActiveTag" | "setAppearanceFolderId" | "setAttManagerOpen" | "setListCollapsed" | "setMiddleHidden" | "setNavDrawerOpen" | "setRemoveTarget" | "setRowMenu" | "setSettingsOpen" | "setTagColorId" | "setView" | "startCreateInFolder" | "tagCounts" | "tags" | "uploadApi" | "view" | "viewCounts">) {
+    const { accountName, activeFolder, activeId, activeTag, askName, attManagerOpen, exitMultiSelect, folderCounts, folderTags, folders, jumpToNote, keyword, listCollapsed, narrowLayout, noteTags, notes, notesInFolder, onClose, onUpdate, openTemplatePicker, renderSearchField, searchRef, setActiveFolder, setActiveTag, setAppearanceFolderId, setAttManagerOpen, setListCollapsed, setMiddleHidden, setNavDrawerOpen, setRemoveTarget, setRowMenu, setSettingsOpen, setTagColorId, setView, startCreateInFolder, tagCounts, tags, uploadApi, view, viewCounts } = props;
     return (
             <>
             {/* 头部（2026-10-26 统一高度）：**两行都在头部里，高度由变量定死** ——
@@ -174,6 +174,8 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                         icon={icon}
                         selected={view === key}
                         onClick={() => {
+                            // 切视图会重新放出中栏列表，先退出多选（需求 3：别留幽灵多选）
+                            exitMultiSelect();
                             setView(key);
                             setActiveFolder(null);
                             setActiveTag(null);
@@ -200,6 +202,8 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                 }))}
                 selectedId={activeFolder}
                 onSelect={id => {
+                    // 换文件夹同样是切视图，先清掉多选；下面「不放开中栏」的约定照旧保留
+                    exitMultiSelect();
                     setActiveFolder(id);
                     setActiveTag(null);
                     setNavDrawerOpen(false);
@@ -279,6 +283,7 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     }))}
                 selectedId={activeTag}
                 onSelect={id => {
+                    exitMultiSelect();
                     setActiveTag(id);
                     setActiveFolder(null);
                     setMiddleHidden(false);
@@ -340,6 +345,8 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                             icon={<AttachmentIcon sx={{ fontSize: 15 }} />}
                             selected={attManagerOpen}
                             onClick={() => {
+                                // 开附件管理器也是换面板，保守起见一并清掉多选
+                                exitMultiSelect();
                                 setAttManagerOpen(true);
                                 setNavDrawerOpen(false);
                             }}
@@ -358,6 +365,7 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                             count={count}
                             selected={view === key}
                             onClick={() => {
+                                exitMultiSelect();
                                 setView(key);
                                 setActiveFolder(null);
                                 setActiveTag(null);

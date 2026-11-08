@@ -7,6 +7,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import {
     applyBulkMoveToGroups,
     maxOrderNum,
@@ -149,4 +152,112 @@ test("删标签：标签表的键是 JSON 键 —— 直接拿数字 id 比会�
 test("删标签：键不是数字就跳过（脏数据不该让整个操作崩掉）", () => {
     const affected = pickSitesWithTag({ abc: ["常用"], "2": ["常用"] }, "常用");
     assert.deepEqual(affected, [2]);
+});
+
+// ==================== 需求 2 / 需求 3 的结构性守卫 ====================
+//
+// 运行时的「证明行为」用例放在 tests/*.dom.test.tsx（要渲染 hook / 组件，
+// 只有 DOM bundle 才挂 jsdom）。这里补的是**纯文本第二层**：钉住那几处
+// 「写歪了不报错、只是界面不对」的调用点。运行时用例没法单独隔离它们 ——
+// 例如 X 按钮本来就直接调了 exitMultiSelect，集中式 effect 被删掉也照样过，
+// 而那条 effect 恰恰是给「折叠 / 选中文件夹」这些别的隐藏路径兜底的。
+// 所以这一层专门盯「入口和兜底都还在」，运行时那层盯「状态真的被清干净」。
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+/** 单测会被复制到 script/tmp-tests/ 下再跑，逐级向上找真身 */
+function projectDir(): string {
+    for (let dir = here, i = 0; i < 6; i++) {
+        try {
+            readFileSync(resolve(dir, "package.json"), "utf8");
+            return dir;
+        } catch {
+            dir = dirname(dir);
+        }
+    }
+    throw new Error("找不到项目根目录");
+}
+
+/** 剥掉块注释与整行行注释：仓库注释里常写「正确写法」，不剥会被守卫蒙混 */
+function stripComments(src: string): string {
+    return src
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .split("\n")
+        .filter(line => !line.trim().startsWith("//"))
+        .join("\n");
+}
+
+function readSrc(rel: string): string {
+    return stripComments(readFileSync(resolve(projectDir(), rel), "utf8"));
+}
+
+test("批量删除（useNotes.deleteNotes）：一次批量端点 + 一次乐观 setNotes + 老部署降级 + 失败回滚", () => {
+    const src = readSrc("src/hooks/useNotes.ts");
+    const at = src.indexOf("const deleteNotes = useCallback(");
+    assert.ok(at > 0, "找不到 deleteNotes 实现");
+    // 用下一个 callback 当边界，避免窗口太短把 catch 那段回滚切掉
+    const end = src.indexOf("const saveOrder = useCallback(", at);
+    const body = end > at ? src.slice(at, end) : src.slice(at, at + 6000);
+    // 一次批量端点，而不是 N 次单删
+    assert.ok(/api\.deleteNotes\(ids\)/.test(body), "deleteNotes 要走一次批量端点");
+    assert.ok(!/api\.deleteNotes\(id\)/.test(body), "别把批量端点退化成逐条调用");
+    // 老部署没有批量端点时逐条降级
+    assert.ok(
+        /Promise\.all\([\s\S]*?api\.deleteNote\(id\)/.test(body),
+        "没有批量端点时要退化成 N 次 deleteNote"
+    );
+    // 乐观移除只做一次（卡片不能一条条消失）
+    assert.equal(
+        (body.match(/setNotes\(prev\s*=>\s*prev\.filter\(/g) ?? []).length,
+        1,
+        "整批只该有一次乐观 setNotes"
+    );
+    // 异常整体回滚 + 提示
+    assert.ok(/setNotes\(before\)/.test(body), "抛异常要整体回滚到 before 快照");
+    assert.ok(/onError\("批量删除笔记失败/.test(body), "异常要触发 onError");
+});
+
+test("useNotesBulkOps：优先一次 onDeleteMany、failed 留勾选、归档并发上限 6", () => {
+    const src = readSrc("src/components/notes/useNotesBulkOps.ts");
+    const del = src.indexOf("const bulkDelete = useCallback(");
+    assert.ok(del > 0, "找不到 bulkDelete 实现");
+    const delEnd = src.indexOf("return { checkedNotes", del);
+    const delBody = delEnd > del ? src.slice(del, delEnd) : src.slice(del, del + 3000);
+    assert.ok(/await\s+onDeleteMany\(checkedNotes\)/.test(delBody), "bulkDelete 要优先一次 onDeleteMany");
+    assert.ok(/setChecked\(new Set\(failed\)\)/.test(delBody), "failed 要保留在勾选里");
+    const arc = src.indexOf("const bulkArchive = useCallback(");
+    assert.ok(arc > 0, "找不到 bulkArchive 实现");
+    const arcEnd = src.indexOf("const bulkDelete = useCallback(", arc);
+    const arcBody = arcEnd > arc ? src.slice(arc, arcEnd) : src.slice(arc, arc + 3000);
+    assert.ok(
+        /mapWithConcurrency\(checkedNotes,\s*6\s*,/.test(arcBody),
+        "批量归档并发上限必须是 6（不是串行 for...await）"
+    );
+});
+
+test("exitMultiSelect 一次收掉 multiSelect / 勾选 / 批量删除确认框", () => {
+    const src = readSrc("src/components/notes/useNotesRowActions.ts");
+    const at = src.indexOf("const exitMultiSelect = useCallback(");
+    assert.ok(at > 0, "找不到 exitMultiSelect 实现");
+    const body = src.slice(at, at + 400);
+    assert.ok(/setMultiSelect\(false\)/.test(body), "要关掉多选");
+    assert.ok(/setChecked\(new Set\(\)\)/.test(body), "要清空勾选");
+    assert.ok(/setBulkDeleteOpen\(false\)/.test(body), "要关掉批量删除确认框");
+});
+
+test("隐藏列表 / 折叠 / 退出多选：三个入口都接到 exitMultiSelect", () => {
+    const model = readSrc("src/components/notes/useNotesPageModel.tsx");
+    assert.ok(
+        /if\s*\(listHidden\s*\|\|\s*listCollapsed\)\s*exitMultiSelect\(\)/.test(model),
+        "集中 effect 要在 listHidden / listCollapsed 为真时退出多选"
+    );
+    const pane = readSrc("src/components/notes/NotesListPane.tsx");
+    assert.ok(
+        /setMiddleHidden\(true\);\s*exitMultiSelect\(\)/.test(pane),
+        "X 收起要顺手 exitMultiSelect（需求 3 的直接入口）"
+    );
+    assert.ok(
+        /if\s*\(multiSelect\)\s*exitMultiSelect\(\)/.test(pane),
+        "再点多选按钮切出要 exitMultiSelect"
+    );
 });

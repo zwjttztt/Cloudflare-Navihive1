@@ -216,6 +216,23 @@ export const recycleImpl: RecycleApi = {
         tagIds: number[] = []
     ): Promise<void> {
         const uuid = (note.uuid as string) || newUuid();
+        // 删除时存进回收站的是 SELECT * 整行，site_id 也在里面。但「导入重绑成功后，
+        // 用户又从回收站还原旧笔记」会撞车：站点侧的反查子查询（SITE_SELECT_WITH_NOTE）
+        // 只按 site_id 取一篇，两条笔记同时指向同一站点就是静默的双绑，谁显示出来全看顺序。
+        // 取舍：站点现在已经有别的笔记占着，就保住那条现有绑定（往往正是用户刚确认过的
+        // 导入结果），只把**本次还原**这条的 site_id 置空；站点没被占用时原样还原。
+        // 站点本身已被删、没有任何笔记占用时也不会动它 —— 悬空 site_id 是刻意保留的
+        //（见 siteNoteBindingRealSql.test.ts「站点被删后笔记留下」），这里不越权清理。
+        let restoredSiteId = (note.site_id as number | null) ?? null;
+        if (typeof restoredSiteId === "number" && Number.isInteger(restoredSiteId) && restoredSiteId > 0) {
+            const taken = await this.db
+                .prepare(
+                    `SELECT id FROM notes WHERE site_id = ?${this.scopeSql(true)} LIMIT 1`
+                )
+                .bind(...this.scopeParams([restoredSiteId]))
+                .first<{ id: number }>();
+            if (taken) restoredSiteId = null;
+        }
         const inserted = await this.db
             .prepare(
                 // ⚠️ 收藏（starred）也要带回来：删到回收站时存的是整行（SELECT *），
@@ -232,7 +249,7 @@ export const recycleImpl: RecycleApi = {
                 note.pinned ? 1 : 0,
                 note.starred ? 1 : 0,
                 (note.order_num as number) ?? 0,
-                (note.site_id as number | null) ?? null,
+                restoredSiteId,
                 (note.folder_id as number | null) ?? null,
                 note.archived ? 1 : 0
             )

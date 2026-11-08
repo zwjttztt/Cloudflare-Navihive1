@@ -28,6 +28,7 @@ import type {
     NotesChangesResult,
     NotesImportPayload,
     PublicNoteAccess,
+    NoteBatchDeleteResult,
 } from "../types";
 
 import { shareMethods } from "./notes/notesShare";
@@ -93,6 +94,11 @@ export interface NotesApi {
     updateNote(id: number, patch: Partial<Note>): Promise<Note | null>;
     /** 软删除：先进回收站再删行，返回 recycleId 供撤销 */
     deleteNote(id: number, audit?: AuditEntry): Promise<{ success: boolean; recycleId?: number }>;
+    /**
+     * 多选删除：一次请求 + 切批 + 每批一个 db.batch，逐条保留单删的全部副作用，
+     * 返回逐条成败（界面据此一次更新，失败按 failed 保留未删项）。
+     */
+    deleteNotes(ids: number[], audit?: AuditEntry): Promise<NoteBatchDeleteResult>;
     updateNoteOrder(orders: { id: number; order_num: number }[]): Promise<boolean>;
     countNotes(): Promise<number>;
 

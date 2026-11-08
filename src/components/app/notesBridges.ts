@@ -144,12 +144,14 @@ export function createNotesSiteLinkApi({
          * 笔记右键「绑定网站」的选择器要用这份清单（2026-10-23）。
          * 直接从内存的分组树摊平，不发请求；带上 note_id / note_title 是为了
          * 在选择器里提醒「这个站已经绑了『X』，绑上会把它换下来」。
+         * url 是站点指纹：导出时按它让导入端重连被删掉的绑定（site.url 见 src/API/types.ts）。
          */
         list: () =>
             groups.flatMap(group =>
                 (group.sites ?? []).map(site => ({
                     id: site.id,
                     name: site.name,
+                    url: site.url ?? "",
                     note_id: site.note_id ?? null,
                     note_title: site.note_title ?? null,
                 }))

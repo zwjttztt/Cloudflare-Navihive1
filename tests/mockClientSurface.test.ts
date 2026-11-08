@@ -123,6 +123,7 @@ const CALL_ORDER = [
     "restoreNoteRevision",
     "updateNoteOrder",
     "deleteNote",
+    "deleteNotes",
     // ---- 分享（演示模式不支持公开分享）----
     "listNoteShares",
     "getNoteShare",
@@ -313,6 +314,10 @@ test("MockNavigationClient 的每个原型方法都被真实执行过，且返�
                 return [[{ id: state.noteId ?? 1, order_num: 2 }]];
             case "deleteNote":
                 return [state.noteId ?? 1];
+            case "deleteNotes":
+                // 用一个确定不存在的 id：只验证形状（items/failed），不真的改动
+                // 演示库，免得影响后面其它用例取到的笔记集合。
+                return [[999999]];
             case "getNoteShare":
             case "revokeNoteShare":
                 return [1];

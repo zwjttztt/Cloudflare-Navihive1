@@ -7,9 +7,10 @@
 // 由 http.ts 混回原型。组合不改变 `this` 绑定与调用语义 —— 对外完全不变。
 import type { NavigationAPI } from "../../http";
 import type { NotesApi } from "../notes";
-import type { Note } from "../../types";
+import type { Note, NoteBatchDeleteResult } from "../../types";
 import type { AuditEntry } from "../data";
 import type { D1PreparedStatement } from "../../schema";
+import { chunkByParamBudget } from "../../d1Limits";
 import { auditStatement } from "../data";
 import { newUuid } from "../../../utils/uuid";
 import { countWikiLinks } from "../../../utils/noteWikiLinkCount";
@@ -102,7 +103,7 @@ function releaseSiteBindingStatement(
 
 export const noteMethods: Pick<NotesApi,
     "listNotes" | "getNote" | "createNote" | "updateNote" |
-    "deleteNote" | "updateNoteOrder" | "countNotes"> = {
+    "deleteNote" | "deleteNotes" | "updateNoteOrder" | "countNotes"> = {
     /**
      * 列笔记。**不传 limit 就是全部**（这是刻意保留的默认，见下）。
      *
@@ -523,6 +524,192 @@ export const noteMethods: Pick<NotesApi,
             const recycleId =
                 typeof meta?.last_row_id === "number" ? meta.last_row_id : undefined;
             return { success: true, recycleId };
+        });
+    },
+
+    /**
+     * 多选删除：把单条 deleteNote 的副作用**逐条保留**，但整组只发一次请求、
+     * 每批一个 db.batch（一个事务 / 一次往返）—— 界面才能一次更新、不再一条条消失。
+     *
+     * 照 data.ts deleteSites 的两阶段：① 只读认出哪些 id 真的存在、按批备好语句；
+     * ② 每批一次 db.batch。D1 没有跨 batch 的事务，跨批部分失败要如实回填 failed，
+     * 客户端按 failed 保留未删项、别一次清空勾选（useBulkActions.ts:136-141 的教训）。
+     *
+     * ⚠️ 回收站条目结构必须与单删**逐字一致**（{ note, tagIds }）：还原换的是新 id，
+     * recycle.ts:155/211/303 靠这份 data 写回标签，少一个字段就是「还原后标签全丢」。
+     * **不要删附件**：pruneAttachments 靠回收站 data 里的笔记正文保住图片。
+     */
+    deleteNotes: async function (
+        this: NavigationAPI,
+        ids: number[],
+        audit?: AuditEntry
+    ): Promise<NoteBatchDeleteResult> {
+        await this.migrate();
+        const unique = [...new Set(ids.filter(id => Number.isInteger(id)))];
+        if (unique.length === 0) return { items: [], failed: [] };
+
+        return this.withSchemaRetry(async () => {
+            // SELECT ... WHERE id IN (?,…) 每项 1 参数 + scopeSql 追加的 user_id 占 1 个：
+            // 预留 1 按预算切批（data.ts:530-531、notes/notesTag.ts:131 同一套）。
+            // 每批最多 99 条 × 6 条语句 + 1 条审计 = 595 < D1_MAX_BATCH_STATEMENTS(1000)，
+            // 所以这里不用再 chunkStatements。
+            const chunks = chunkByParamBudget(unique, 1);
+
+            interface Step {
+                ids: number[];
+                statements: D1PreparedStatement[];
+                /** recycle_bin INSERT 在 statements 里的下标，按位置取 last_row_id */
+                recycleAt: number[];
+            }
+            const planned: Step[] = [];
+            const failed: number[] = [];
+
+            // ---- 阶段①：只读，认出存在的 id + 取标签关联，按批备好语句 ----
+            for (const chunk of chunks) {
+                const inList = chunk.map(() => "?").join(", ");
+                // 两条 SELECT 互不依赖，并行发。标签关联靠 JOIN notes 判归属
+                //（note_note_tag 没有 user_id 列，见单删注释），scopeSql 落在 JOIN ON，
+                // 所以参数顺序是 [userId, ...chunk]。
+                const [rows, links] = await Promise.all([
+                    this.db
+                        .prepare(`SELECT * FROM notes WHERE id IN (${inList})${this.scopeSql(true)}`)
+                        .bind(...this.scopeParams(chunk))
+                        .all<Record<string, unknown>>(),
+                    this.db
+                        .prepare(
+                            `SELECT l.note_id, l.tag_id FROM note_note_tag l
+                             JOIN notes n ON n.id = l.note_id${this.scopeSql(true)}
+                             WHERE l.note_id IN (${inList})`
+                        )
+                        .bind(...this.scopeParams([]), ...chunk)
+                        .all<{ note_id: number; tag_id: number }>(),
+                ]);
+
+                const found = new Map<number, Record<string, unknown>>();
+                for (const row of rows.results || []) {
+                    const id = Number(row.id);
+                    if (Number.isFinite(id)) found.set(id, row);
+                }
+                const tagIdsByNote = new Map<number, number[]>();
+                for (const link of links.results || []) {
+                    const id = Number(link.note_id);
+                    const list = tagIdsByNote.get(id) ?? [];
+                    list.push(Number(link.tag_id));
+                    tagIdsByNote.set(id, list);
+                }
+
+                const statements: D1PreparedStatement[] = [];
+                const recycleAt: number[] = [];
+                const stepIds: number[] = [];
+                for (const id of chunk) {
+                    const note = found.get(id);
+                    if (!note) {
+                        failed.push(id);
+                        continue;
+                    }
+                    const tagIds = tagIdsByNote.get(id) ?? [];
+                    stepIds.push(id);
+
+                    // ① 整行 + tagIds 进回收站（先搬进站再删行，顺序反了救不回来）
+                    recycleAt.push(statements.length);
+                    statements.push(
+                        this.db
+                            .prepare(
+                                "INSERT INTO recycle_bin (kind, owner_user_id, data, deleted_at) VALUES (?, ?, ?, ?)"
+                            )
+                            .bind(
+                                "note",
+                                this.currentUserId,
+                                JSON.stringify({ note, tagIds }),
+                                Math.floor(Date.now() / 1000)
+                            )
+                    );
+                    // ② 清标签关联（有才清，与单删一致）
+                    if (tagIds.length > 0) {
+                        statements.push(
+                            this.db.prepare("DELETE FROM note_note_tag WHERE note_id = ?").bind(id)
+                        );
+                    }
+                    // ③ 吊销链接，恢复笔记也不会重新公开
+                    statements.push(
+                        this.db
+                            .prepare("DELETE FROM note_share WHERE note_id = ? AND user_id IS ?")
+                            .bind(id, this.currentUserId)
+                    );
+                    // ④ 删真身（带 scope 多账号隔离）
+                    statements.push(
+                        this.db
+                            .prepare(`DELETE FROM notes WHERE id = ?${this.scopeSql(true)}`)
+                            .bind(...this.scopeParams([id]))
+                    );
+                    // ⑤ 删全文索引
+                    if (this.notesFtsReady) {
+                        statements.push(
+                            this.db.prepare("DELETE FROM notes_fts WHERE rowid = ?").bind(id)
+                        );
+                    }
+                    // ⑥ 墓碑：软删除对 notes 是物理删行，其它设备靠它感知（同单删只认 uuid）
+                    if (typeof note.uuid === "string" && note.uuid) {
+                        statements.push(
+                            this.db
+                                .prepare("INSERT INTO note_tombstone (user_id, note_uuid) VALUES (?, ?)")
+                                .bind(this.currentUserId, note.uuid)
+                        );
+                    }
+                }
+                if (stepIds.length === 0) continue;
+                planned.push({ ids: stepIds, statements, recycleAt });
+            }
+            if (planned.length === 0) return { items: [], failed };
+
+            // ---- 阶段②：每批一次 db.batch（= 一个事务 / 一次往返）----
+            const items: Array<{ id: number; recycleId?: number }> = [];
+            for (let i = 0; i < planned.length; i++) {
+                const step = planned[i];
+                const statements = [...step.statements];
+                // ⑦ 审计一条，只挂最后一批（一次调用一条审计，与单删 / deleteSites 一致）；
+                // 追加在末尾，不影响 recycleAt 记的 INSERT 下标。
+                if (i === planned.length - 1) {
+                    const auditStmt = auditStatement(this, audit);
+                    if (auditStmt) statements.push(auditStmt);
+                }
+                try {
+                    const results = await this.db.batch(statements);
+                    step.ids.forEach((id, j) => {
+                        const at = step.recycleAt[j];
+                        const meta = (at === undefined ? undefined : results[at]?.meta) as
+                            | { last_row_id?: number }
+                            | undefined;
+                        items.push({
+                            id,
+                            recycleId:
+                                typeof meta?.last_row_id === "number" ? meta.last_row_id : undefined,
+                        });
+                    });
+                } catch (error) {
+                    // 跨批无法原子：D1 没有跨 batch 的事务。单批场景保持「全或无」，
+                    // 失败照旧上抛（500）；多批时已提交批次（items）保留，本批及之后
+                    // 未提交的 id 全部并入 failed，并标记 partial —— 客户端据此如实续传。
+                    if (planned.length === 1) throw error;
+                    return {
+                        items,
+                        failed: [
+                            ...failed,
+                            ...items.filter(item => item.recycleId === undefined).map(item => item.id),
+                            ...planned.slice(i).flatMap(s => s.ids),
+                        ],
+                        partial: true,
+                    };
+                }
+            }
+
+            return {
+                items,
+                failed: [
+                    ...failed,
+                    ...items.filter(item => item.recycleId === undefined).map(item => item.id),
+                ],
+            };
         });
     },
 

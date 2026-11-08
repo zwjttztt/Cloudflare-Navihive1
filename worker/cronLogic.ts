@@ -163,11 +163,19 @@ export function trimSnapshot(
 export const NAV_BACKUP_INTERVAL_MS = 6.5 * 86400_000;
 
 /**
- * 从自动备份文件名里解析出它的 UTC 时间戳（毫秒）。解析不出来返回 null。
+ * 从自动备份文件名里解析出它的绝对时间戳（毫秒）。解析不出来返回 null。
  *
- * 存量兼容用：老库里没有 `webdav.lastAutoBackupAt` 这个键（这个键是 2026-10-29 才加的），
- * 但文件名一直带着精确时间 —— `navihive-backup-auto-20261019-020000-005.json.gz`
- * 里的 `20261019-020000-005` 就是 `2026-10-19T02:00:00.005Z`（UTC，末段是毫秒）。
+ * 文件名里的 `20261019-020000-005` 是**北京时间**（Asia/Shanghai，UTC+8）的墙上时钟
+ * —— 与 naming.ts 的 buildBackupFileName 一致。反解成绝对时刻要把这组「当 UTC 拼出来」
+ * 的数字再减 8 小时：`2026-10-19 02:00:00.005 北京 = 2026-10-18T18:00:00.005Z`。
+ *
+ * 存量兼容（重要）：升级前网盘里已有 **UTC 命名**的老备份文件（如
+ * `...-20261019-020000-005.json.gz` 本意是 `2026-10-19T02:00:00.005Z`）。按新规则统一
+ * 减 8 小时后，老文件会被反解成比真实时刻**早 8 小时**。这只让
+ * `shouldRunNavBackup` 里的「距上次备份」偏大 → 下一次自动备份最多提前 8 小时触发，
+ * 属于「多备份一次」的安全侧，绝不会漏备份（判断只会更倾向 true，不会卡成永久跳过）。
+ * 一旦新的自动备份成功，`webdav.lastAutoBackupAt`（ISO 绝对时刻）就会写入并成为首选，
+ * 文件名回退不再参与，系统自愈。因此无需在文件名里加新旧标记。
  *
  * 为什么不宽松匹配（比如随便找 8 位数字）：文件名是用户网盘里能看见、也能被别的
  * 工具改写的东西，宽松解析会把 `navihive-backup-auto-2026-10-19-1.json.gz` 这种
@@ -188,7 +196,7 @@ export function parseAutoBackupFileTime(filename: string | null | undefined): nu
         Number(mi),
         Number(s),
         Number(ms)
-    );
+    ) - 8 * 3600_000;
     return Number.isFinite(stamp) ? stamp : null;
 }
 

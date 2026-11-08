@@ -652,7 +652,7 @@ export function AccountPanel({
                                     color: 'text.secondary'
                                 }}>
                                     {invite.expiresAt
-                                        ? `有效期至 ${new Date(invite.expiresAt * 1000).toLocaleTimeString()}`
+                                        ? `有效期至 ${new Date(invite.expiresAt * 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}`
                                         : "30 分钟内有效"}
                                 </Typography>
                                 <Button

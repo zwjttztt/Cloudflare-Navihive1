@@ -139,6 +139,9 @@ export const API_ROUTES = {
     "site-orders": "PUT",
     // ---- 记事本 ----
     notes: "GET,POST",
+    // 多选删除：一次请求搬完（逐条 DELETE 在 N 条时要等 N 个串行 RTT，界面一条条消失）。
+    // 默认 30s 档即可 —— 别加进 NO_TIMEOUT_ROUTES，耗时不是「由数据量决定、客户端预估不了」的整库搬运。
+    "notes/batch-delete": "POST",
     "note-orders": "PUT",
     "notes/changes": "GET",
     "notes/count": "GET",

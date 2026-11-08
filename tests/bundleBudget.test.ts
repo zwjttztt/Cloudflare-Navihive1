@@ -179,7 +179,21 @@ function skipOrFail(t: TestContext, reason: string): void {
 // 约 +2.56 KB 直接顶破；实测 index 258.23 KB，按 272 算余量 5.34%，信号照旧抓得住。
 // （顺带排除「构建漂移」：本仓 2026-10-14 记录过未改代码 rebuild 涨 1.19 KB 的同类漂移，
 //  即使含部分漂移，可懒加载的赘肉也无处可砍，故按 P0 例外照实抬预算。）
-const BUDGET_KB = 272;
+// ⚠️ 2026-11-08 四项需求批次（时间北京化 / 笔记批量删除 / 多选清理 / 导入重绑）：272 → 274。
+// 实测 index 258.23 → **259.47 KB**（+1.24 KB），两笔都 lazy 不了：
+//   · `utils/format.ts` 的「无时区 UTC 文本补 Z 解析 + 北京墙上时钟输出」——
+//     `fmtDateTime` 是首屏时间显示的公共出口（卡片 / 审计 / 邀请码等共用），
+//     时区换算必须在首屏就地做完，推到懒块只会让首屏显示错 8 小时；
+//   · `API/clientMethods/notes.ts` 的 `notes/batch-delete` 端点方法（约 0.2 KB）——
+//     API client 是首屏单例对象，方法不能按需下载。
+// 已用 dist 产物逐块核对归属：`noteTime.ts`（笔记时间）、`exportNotes.ts` 的
+// `boundSites`、服务端 `deleteNotes` 实现全在 NotesOverlay 懒块或根本没进客户端，
+// 没有组件被改回同步 import。
+// 已先还债：`beijingParts` 从 `Intl.DateTimeFormat.formatToParts` 换成 UTC+8 定偏移
+// （北京 1991 年后无夏令时），并合并 `toDate` 的两个正则，实测省 0.25 KB / 0.15 KB gzip；
+// `formatUtilities` + `noteTime` 子集 43 项全绿、输出逐字不变。
+// 按 274 算余量 5.60%，「谁再往首屏塞东西」的信号照旧抓得住，没有放宽到 3%。
+const BUDGET_KB = 274;
 /**
  * 基线：每次真的把首屏压下来之后都要跟着更新，否则这条用例会一路放任包变大。
  * 222.61 KB —— LoginForm 改 lazy 之后（见 git log）
@@ -245,7 +259,8 @@ const BUDGET_KB = 272;
 //
 // 258.23 —— 2026-11-08 白块/抖动修复（P0，见 BUDGET_KB 上方那段）：首屏必需逻辑约 +2.56 KB，
 // 已逐项确认无可改 lazy 的赘肉，按 P0 例外照实更新基线，不靠放宽过门禁。
-const BASELINE_KB = 258.23;
+// 259.47 —— 2026-11-08 四项需求批次照实更新（见 BUDGET_KB 上方那段实测与归因）。
+const BASELINE_KB = 259.47;
 
 function indexChunk(): { name: string; kb: number } | null {
     const assets = join(findProjectDir(), "dist", "client", "assets");
@@ -316,7 +331,12 @@ const FIRST_SCREEN_BUDGET_RAW_KB = 920;
 // 🔴 第三批 T01–T04 全部是后端 + CI 改动（note_revision 节流 / 批量删除 partial /
 // 离线队列重放守卫 / docker-publish SBOM·签名·扫描），**零前端改动**，所以这次涨价与
 // 本批无关：本批只是把已经贴线的预算重定回安全线，不是为本批放行。
-const FIRST_SCREEN_BUDGET_GZIP_KB = 301;
+// ⚠️ 2026-11-08 同批次：301 → 303。实测首屏 867.6/285.8 → **870.8/286.9 KB**，
+// 成因与上面 BUDGET_KB 那条同源（时间北京化落在首屏公共格式化出口 + 批量删除端点）；
+// 原始体积余量仍有 5.6%，只有 gzip 半边顶破 5% 线（286.9 × 1.05 = 301.25）。
+// 抬到 303 后余量 5.6%，仍按 5% 判，不是放宽。本轮 package.json / lock 未动，
+// 逐块比对确认增量集中在 index，已排除「依赖升级涨价」那种口径变化。
+const FIRST_SCREEN_BUDGET_GZIP_KB = 303;
 /**
  * 实测基线（2026-10-17 P2-2 第三次分块变更）：852.4 KB 原始 / 280.1 KB gzip。
  * mui-lazy 大块（417KB，内含大量弹窗专用组件）被彻底拆掉：首屏 preload 改为
@@ -344,8 +364,9 @@ const FIRST_SCREEN_BUDGET_GZIP_KB = 301;
 // 实测基线（2026-11-07，v33.0.3）：867.6 KB 原始 / 285.8 KB gzip。
 // 自 27.0.0（852.4 / 280.1 → 858.5 / 283.2）之后，v28→v33.0.2 的依赖升级把 gzip 推到
 // 285.8；index 应用块仅 256.7（vs 255.67 基线）几乎未涨，确认是依赖而非代码进场。
-const FIRST_SCREEN_BASELINE_RAW_KB = 867.6;
-const FIRST_SCREEN_BASELINE_GZIP_KB = 285.8;
+// 870.8 / 286.9 —— 2026-11-08 四项需求批次照实更新（理由见 gzip 预算上方那段）。
+const FIRST_SCREEN_BASELINE_RAW_KB = 870.8;
+const FIRST_SCREEN_BASELINE_GZIP_KB = 286.9;
 
 /** 首屏测量结果的别名（字段形状由 script/bundleBudgetGate.mjs 定义，这里不重复声明） */
 type FirstScreen = FirstScreenMeasure;

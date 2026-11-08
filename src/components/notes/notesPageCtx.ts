@@ -39,8 +39,9 @@ export interface NotesSiteLinkApi {
     resolve: (siteId: number) => { id?: number; name: string } | null;
     /** 关掉记事本并滚到那张卡片（App 的 jumpToSite，会闪一下轮廓） */
     open: (siteId: number) => void;
-    /** 全部网站；带 note_id / note_title 便于选择器提示「这个站已经绑了『X』」 */
-    list: () => { id?: number; name: string; note_id?: number | null; note_title?: string | null }[];
+    /** 全部网站；带 note_id / note_title 便于选择器提示「这个站已经绑了『X』」；
+     *  url 是站点指纹，导出时用来让导入端按「URL / 名称」重连被删掉的绑定 */
+    list: () => { id?: number; name: string; url?: string; note_id?: number | null; note_title?: string | null }[];
     /**
      * 绑定关系变了，让 App 重取一次卡片数据。
      *
@@ -283,6 +284,8 @@ export interface NotesPageCtx {
     textareaRef: React.RefObject<NoteEditorHandle | null>;
     tick: number;
     toggleChecked: (id: number) => void;
+    /** 退出多选：一次关掉 multiSelect / 清空勾选 / 关掉批量删除确认弹窗 */
+    exitMultiSelect: () => void;
     tools: { undoableInsert: (tool: string, build: (value: string) => { next: string; at: number; snippet: string; caret: number; selEnd: number; } | null) => void; insertAtCursor: (before: string, after: string, placeholder: string) => void; setHeadingLevel: (level: number) => void; insertCallout: (type: string) => void; insertFootnoteRef: () => void; applyCodeLanguage: (lang: string) => void; applyTable: (op: TableOp) => void; applyFormula: (kind: "inline" | "block" | "inlineTex" | "blockTex") => void; toggleLinePrefix: (prefix: string) => void; insertBlock: (tool: string, block: string) => void; onInsertEmbed: () => void; onInsertBlockRef: () => void; onInsertBlockId: () => void; onInsertFrontMatter: () => void; onInsertTag: () => void; onInsertWikiLink: () => void; onInsertHiddenComment: () => void; onInsertCopyChip: () => void; onInsertFold: () => void; onInsertTabs: () => void; onInsertDivider: () => void; jumpToOffset: (offset: number) => void; };
     trashedNotes: Array<TrashedNote>;
     uiSettings: NotesUiSettings;
@@ -421,6 +424,11 @@ export interface NotesPageProps {
     onCreate: (draft?: Partial<Note>) => Promise<Note | null>;
     onUpdate: (id: number, patch: Partial<Note>) => Promise<void | boolean>;
     onDelete: (note: Note) => Promise<void>;
+    /**
+     * 批量删除（2026-11）：一次请求删掉一批，返回没删掉的 id。
+     * 可选：老调用方没接时就退回逐条 onDelete。
+     */
+    onDeleteMany?: (notes: Note[]) => Promise<{ failed: number[] }>;
     onTogglePin: (note: Note) => Promise<void>;
     /** 收藏（2026-10-09 与置顶分离）：置顶管排序、收藏管筛选。老部署没传时这个动作不出现 */
     onToggleStar?: (note: Note) => Promise<void>;

@@ -1202,6 +1202,43 @@ async function handleNoteDelete(ctx: RouteCtx): Promise<Response> {
 }
 
 /**
+ * `POST notes/batch-delete`：多选删除一次请求搬完。
+ *
+ * 与 `POST sites/batch-delete` 同一套来由（那边是「20 张卡逐个 DELETE 要等十几秒」
+ * 逼出来的）：一手请求把整组 id 交给 api 层，由它切批 + 每批一个 db.batch，
+ * 界面才能一次更新、不再一条条消失。
+ *
+ * ⚠️ 幂等由 handleDataRoutes 对写方法统一套 withIdempotency，这里**不要**再包一层。
+ */
+async function handleNotesBatchDelete(ctx: RouteCtx): Promise<Response> {
+    const { request, api, ip } = ctx;
+    const limited = await writeGate(ctx);
+    if (limited) return limited;
+
+    const body = (await readJsonBody(request)) as { ids?: unknown };
+    const ids = Array.isArray(body.ids)
+        ? body.ids.filter(
+              (v): v is number => typeof v === "number" && Number.isInteger(v) && v > 0
+          )
+        : [];
+    if (ids.length === 0) {
+        return errorResponse(ApiError.badRequest("缺少要删除的 id"));
+    }
+    // 一次删太多会把 D1 单次请求顶满，也给误操作留个上限（与 sites 侧一致）
+    if (ids.length > 500) {
+        return errorResponse(ApiError.badRequest("一次最多删除 500 个"));
+    }
+    // 审计一条，detail 只写条数（照 sites/batch-delete 的口径，不把每个 id 塞进审计）
+    const result = await api.deleteNotes(ids, {
+        action: "note.batchDelete",
+        actor: "",
+        ip,
+        detail: `笔记 ${ids.length} 个`,
+    });
+    return Response.json(result);
+}
+
+/**
  * `GET sites/changes`：卡片侧增量同步（2026-10-13）——只回「自 since 以来删掉了哪些」。
  * 增删改里的改与增客户端比对 bootstrap 就能发现，只有删除是物理删行、看不见。
  * no-store：轮询带游标，缓存了会让其它设备永远看不见变更。
@@ -1533,6 +1570,9 @@ const DATA_ROUTES: readonly DataRoute[] = [
     // 泛化分支留在最后
     { test: (path, method) => path.startsWith("notes/") && method === "GET", run: handleNoteGet },
     { test: (path, method) => path === "notes" && method === "POST", run: handleNoteCreate },
+    // 批量删除：POST 精确路径撞不上下面几条（方法各不相同），排在泛化 notes/ 之前更保险，
+    // 与 sites/batch-delete 同一套「具体写在上、泛化写在下」。
+    { test: (path, method) => path === "notes/batch-delete" && method === "POST", run: handleNotesBatchDelete },
     { test: (path, method) => path === "note-orders" && method === "PUT", run: handleNoteOrders },
     { test: (path, method) => path.startsWith("notes/") && method === "PUT", run: handleNoteUpdate },
     { test: (path, method) => path.startsWith("notes/") && method === "DELETE", run: handleNoteDelete },

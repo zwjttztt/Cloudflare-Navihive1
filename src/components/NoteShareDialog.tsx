@@ -218,13 +218,12 @@ export default function NoteShareDialog({
     };
 
     const expired = share?.expires_at != null && share.expires_at <= Date.now();
-    // created_at 在 D1 里可能是数字毫秒也可能是字符串，两种都得认
-    const createdTs =
-        typeof share?.created_at === "number"
-            ? share.created_at
-            : share?.created_at
-              ? Date.parse(String(share.created_at))
-              : null;
+    // created_at 是 D1 的无时区 UTC 文本（形态①）或毫秒数：统一交给 fmtDateTime
+    // 按北京时间显示。不能用 Date.parse(String(...)) —— 无时区文本会被按浏览器本地
+    // 时区解析，北京用户看到就差 8 小时。
+    const createdText = share?.created_at
+        ? fmtDateTime(share.created_at, { style: "compact", fallback: "" })
+        : "";
 
     /** 分段选择：已有到期时间时多一档「保持当前」（inkstone 同款） */
     const expiryOptions = [
@@ -318,9 +317,9 @@ export default function NoteShareDialog({
                                           : `到期于 ${fullTime(share.expires_at)}`}
                                 </Typography>
                                 <Box sx={{ flex: 1 }} />
-                                {createdTs !== null && Number.isFinite(createdTs) && (
+                                {createdText && (
                                     <Typography variant='caption' color='text.disabled'>
-                                        创建于 {fullTime(createdTs)}
+                                        创建于 {createdText}
                                     </Typography>
                                 )}
                                 {share.views != null && (

@@ -715,6 +715,17 @@ export interface SiteBatchDeleteResult {
     partial?: boolean;
 }
 
+/**
+ * 笔记批量删除的结果，形状与 SiteBatchDeleteResult 一致（切批 / partial 口径照它）。
+ * items 里有 recycleId 的才算真删掉了；failed 是没动过的 id —— 客户端要按它保留
+ * 未删项、别一次清空勾选（useBulkActions.ts:136-141 的教训）。
+ */
+export interface NoteBatchDeleteResult {
+    items: Array<{ id: number; recycleId?: number }>;
+    failed: number[];
+    partial?: boolean;
+}
+
 /** 批量从回收站还原的结果：restored 直接给前端插回界面，省掉一次全量重拉 */
 export interface RecycleBatchRestoreResult {
     /** 还原出来的站点（按原始 id 插回，密码已解密） */
