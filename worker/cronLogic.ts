@@ -113,9 +113,10 @@ export function selectSweepCandidates(
 export function applyProbeResult(
     snapshot: LinkHealthSnapshot,
     url: string,
-    alive: boolean,
+    alive: boolean | null,
     now: number
 ): LinkHealthSnapshot {
+    if (alive === null) return snapshot;
     const key = normalizeKey(url);
     const next: LinkHealthSnapshot = {
         v: 1,

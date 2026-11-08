@@ -207,6 +207,7 @@ export default memo(function SiteListBody({
                                     onUpdate={onSiteUpdate}
                                     onDelete={onSiteDelete}
                                     isEditMode
+                                    isDragOverlay
                                 />
                             </Box>
                         )}

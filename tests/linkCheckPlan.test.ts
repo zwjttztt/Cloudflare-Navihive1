@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { collectCheckUrls, describeLinkCheck } from "../src/utils/linkHealth";
+import { collectCheckUrls, describeLinkCheck } from "../src/utils/linkCheck";
 
 test("收集链接：去空白、去重、保持首次出现顺序", () => {
     const urls = collectCheckUrls([

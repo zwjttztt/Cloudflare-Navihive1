@@ -14,6 +14,13 @@
 //   - scheme / host 转小写（这两段大小写不敏感，浏览器也会这么发）
 // 刻意不做：查询串（?a=1 就是另一个请求）、路径大小写（服务器区分）、非默认端口
 // （:8080 ≠ :80；默认端口的省略交给 normalizeUrl 那条入库路径处理）。
+/** true=可达，false=明确资源不存在，null=限流/方法限制/服务异常，不能判死。 */
+export function classifyLinkStatus(status: number): boolean | null {
+    if (status === 404 || status === 410) return false;
+    if (status === 405 || status === 429 || status < 200 || status >= 500) return null;
+    return true;
+}
+
 export function normalizeKey(url: string): string {
     const trimmed = (url || "").trim();
     if (!trimmed) return "";

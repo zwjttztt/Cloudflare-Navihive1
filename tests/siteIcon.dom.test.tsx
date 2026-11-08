@@ -41,6 +41,8 @@ async function flush() {
     });
 }
 
+import { iconCandidates, writeIconRecord } from "../src/utils/iconCache";
+
 const iconProbe: { current: SiteIconState | null } = { current: null };
 
 function IconHarness(props: Parameters<typeof useSiteIcon>[0]) {
@@ -54,10 +56,32 @@ async function mountIcon(props: Parameters<typeof useSiteIcon>[0]) {
     return iconProbe.current!;
 }
 
+test("所有主源已有失败缓存时仍尝试favicon兜底", async () => {
+    const props = { icon: "https://negative.example/icon.png", url: "https://negative.example", iconApi: "" };
+    for (const candidate of iconCandidates(props, "")) await writeIconRecord(candidate, false);
+    const state = await mountIcon(props);
+    assert.equal(state.iconError, false);
+    assert.match(decodeURIComponent(state.currentIcon), /negative\.example\/favicon\.ico/);
+});
+
 test("有自带图标时第一个候选就是它", async () => {
     const s = await mountIcon({ icon: "https://a.com/logo.png", url: "https://a.com", iconApi: "" });
     // 候选统一走 /api/icon 代理（不直连第三方：既不带 Referer，也能统一缓存）
     assert.equal(decodeURIComponent(s.currentIcon), "/api/icon?u=https://a.com/logo.png");
+    const calls: string[] = [];
+    const oldFetch = globalThis.fetch;
+    globalThis.fetch = (async url => {
+        calls.push(String(url));
+        return { ok: false, status: 502 } as Response;
+    }) as typeof fetch;
+    try {
+        await act(async () => { s.handleIconError(); });
+        await flush();
+        assert.equal(decodeURIComponent(iconProbe.current!.currentIcon), "https://a.com/logo.png");
+        assert.deepEqual(calls, [], "代理不可用时回退浏览器图片加载，不额外执行JS fetch");
+    } finally {
+        globalThis.fetch = oldFetch;
+    }
     assert.equal(s.iconError, false);
 });
 

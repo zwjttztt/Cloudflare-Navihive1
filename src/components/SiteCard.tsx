@@ -60,6 +60,8 @@ interface SiteCardProps {
     onUpdate: (updatedSite: Site) => void;
     onDelete: (siteId: number) => void;
     isEditMode?: boolean;
+    /** 浮层只展示，不能用原卡片 id 再注册一次拖放节点。 */
+    isDragOverlay?: boolean;
     index?: number;
     /** 搜索关键词，命中片段会高亮 */
     highlight?: string;
@@ -75,6 +77,7 @@ const SiteCard = memo(function SiteCard({
     onUpdate,
     onDelete,
     isEditMode = false,
+    isDragOverlay = false,
     index = 0,
     highlight = "",
     selectMode = false,
@@ -149,10 +152,11 @@ const SiteCard = memo(function SiteCard({
         });
 
     // 使用dnd-kit的useSortable hook
-    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-        id: `site-${site.id || index}`,
-        disabled: !isEditMode,
+    const sortable = useSortable({
+        id: isDragOverlay ? `site-overlay-${site.id || index}` : `site-${site.id || index}`,
+        disabled: !isEditMode || isDragOverlay,
     });
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = sortable;
 
     const style = {
         transform: CSS.Transform.toString(transform),
@@ -422,9 +426,11 @@ const SiteCard = memo(function SiteCard({
         // 用 markLink（不是 markLinkAlive）：前者只记探测结果，后者会重新加回白名单 ——
         // 刚移出来又加回去，等于白撤销一次。探测结果照老规则走：
         // 第一次失败只记「疑似」，窗口内再失败一次才贴失效。
-        setDeadLinks(markLink(site.url, alive));
+        if (alive !== null) setDeadLinks(markLink(site.url, alive));
         const label = site.name || site.url;
-        if (alive) {
+        if (alive === null) {
+            notify(`「${label}」重新检测：暂时无法确认（网络、访问限制或超时），未判为失效`, "info");
+        } else if (alive) {
             notify(`「${label}」重新检测：可以访问`, "success");
         } else {
             notify(`「${label}」重新检测：这次没连上，再检测一次仍失败才会标失效`, "info");

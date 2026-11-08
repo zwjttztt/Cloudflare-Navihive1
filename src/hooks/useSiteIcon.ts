@@ -145,7 +145,10 @@ export function useSiteIcon({ icon, url, iconApi, privacy }: UseSiteIconParams):
                 return;
             }
             // 主源都失败过，等加载时再补兜底源
-            if (!cancelled) setIconIdx(primaryIcons.length);
+            if (!cancelled) {
+                setFallbackAdded(true);
+                setIconIdx(primaryIcons.length);
+            }
         })();
 
         return () => {

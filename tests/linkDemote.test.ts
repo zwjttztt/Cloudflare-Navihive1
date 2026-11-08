@@ -16,11 +16,11 @@ import {
     markLink,
     mergeLinkHealth,
     onLinkHealthChange,
-    probeLinks,
     readDeadLinks,
     readSuspectTimes,
     SUSPECT_WINDOW_MS,
 } from "../src/utils/linkHealth";
+import { probeLinks } from "../src/utils/linkCheck";
 
 const URL_A = "https://a.com/page";
 const URL_B = "https://b.com/page";
@@ -54,9 +54,7 @@ beforeEach(() => {
     onLinkHealthChange(() => {
         changes += 1;
     });
-    globalThis.fetch = (async () => {
-        throw new TypeError("Failed to fetch");
-    }) as typeof fetch;
+    globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
 });
 
 afterEach(() => {

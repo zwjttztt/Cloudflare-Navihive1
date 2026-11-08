@@ -4,13 +4,13 @@
 // 这条巡检过去是一把梭：以「无账号」身份读出**所有人**的站点，探完写回全站共享的
 // 一份 `link.health` —— 库里唯一一处跨账号混合的数据。现在改成逐个账号各探各的。
 //
-// 站点 URL 统一用回环地址：SSRF 黑名单会直接判为死链，**不会真的发出请求**，
-// 所以这个测试是纯内存的、不碰网络。
+// 回环地址由 SSRF 策略阻断后属于未知，不写失效证据，也不会真的联网。
+// 明确 HTTP 结果的隔离用例用 mock fetch，避免空快照相等导致错误推断共享数据。
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runLinkSweep } from "../worker/cron";
-import { HEALTH_KEY } from "../worker/cronLogic";
+import { HEALTH_KEY, type LinkHealthSnapshot } from "../worker/cronLogic";
 
 /** 只实现巡检真正用到的读写字；快照按「当前账号 + 键」分开存，模拟 user_configs */
 function makeApi(
@@ -19,10 +19,14 @@ function makeApi(
 ) {
     const store = new Map<string, string>();
     const seenAs: (number | null)[] = [];
+    const switches: (number | null)[] = [];
+    const writes: { uid: number | null; key: string }[] = [];
     let current: number | null = null;
 
     return {
         seenAs,
+        switches,
+        writes,
         store,
         api: {
             async listUsers() {
@@ -34,6 +38,7 @@ function makeApi(
                 }));
             },
             setCurrentUser(uid: number | null) {
+                switches.push(uid);
                 current = uid;
             },
             async getSites() {
@@ -48,6 +53,7 @@ function makeApi(
                 return store.get(`${current}:${key}`) ?? null;
             },
             async setConfig(key: string, value: string) {
+                writes.push({ uid: current, key });
                 store.set(`${current}:${key}`, value);
                 return true;
             },
@@ -69,8 +75,8 @@ test("死链巡检按账号逐个进行：每个人只探到自己的站点", as
     assert.deepEqual(seenAs, [1, 2], "应当分别以账号 1、账号 2 的身份各巡检一轮");
 });
 
-test("死链巡检的快照各写各的：A 的链接不会出现在 B 的快照里", async () => {
-    const { api, store } = makeApi(
+test("SSRF 未知结果各写空快照，不以内容相同推断共享数据", async () => {
+    const { api, store, switches, writes } = makeApi(
         [{ id: 1 }, { id: 2 }],
         {
             1: ["http://localhost:9/a"],
@@ -80,12 +86,52 @@ test("死链巡检的快照各写各的：A 的链接不会出现在 B 的快照
 
     await runLinkSweep(api as never);
 
-    const a = JSON.parse(store.get(`1:${HEALTH_KEY}`) as string) as { entries?: unknown[] };
-    const b = JSON.parse(store.get(`2:${HEALTH_KEY}`) as string) as { entries?: unknown[] };
-    assert.ok(a, "账号 1 应当有自己的快照");
-    assert.ok(b, "账号 2 应当有自己的快照");
-    assert.notDeepEqual(a, b, "两份快照不该是同一份共享数据");
+    const a = JSON.parse(store.get(`1:${HEALTH_KEY}`) as string) as LinkHealthSnapshot;
+    const b = JSON.parse(store.get(`2:${HEALTH_KEY}`) as string) as LinkHealthSnapshot;
+    const empty = { v: 1, dead: {}, probe: {}, white: [] };
+    assert.deepEqual(a, empty, "账号 1 的未知探测不产生成功或失效证据");
+    assert.deepEqual(b, empty, "账号 2 的未知探测不产生成功或失效证据");
+    assert.deepEqual(writes.filter(w => w.key === HEALTH_KEY).map(w => w.uid), [1, 2]);
+    assert.deepEqual(switches, [1, null, 2, null], "每账号执行后恢复无账号上下文");
     assert.equal(store.has(`null:${HEALTH_KEY}`), false, "不再写全站共享的那份快照");
+});
+
+test("明确 HTTP 404 和 200 的证据只写各自账号，不泄漏到对方快照", async () => {
+    const missing = "https://account-a.example/missing";
+    const healthy = "https://account-b.example/healthy";
+    const { api, store, seenAs, switches, writes } = makeApi(
+        [{ id: 1 }, { id: 2 }],
+        { 1: [missing], 2: [healthy] }
+    );
+    const previousFetch = globalThis.fetch;
+    const calls: { url: string; method: string }[] = [];
+    globalThis.fetch = async (input, init) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        calls.push({ url, method: init?.method ?? "GET" });
+        assert.ok(url === missing || url === healthy, "不应请求其他账号之外的 URL");
+        return new Response(null, { status: url === missing ? 404 : 200 });
+    };
+    try {
+        await runLinkSweep(api as never);
+
+        const a = JSON.parse(store.get(`1:${HEALTH_KEY}`) as string) as LinkHealthSnapshot;
+        const b = JSON.parse(store.get(`2:${HEALTH_KEY}`) as string) as LinkHealthSnapshot;
+        assert.deepEqual(Object.keys(a.dead), [missing]);
+        assert.deepEqual(a.probe, {});
+        assert.deepEqual(Object.keys(b.probe), [healthy]);
+        assert.deepEqual(b.dead, {});
+        assert.equal(a.dead[healthy], undefined);
+        assert.equal(a.probe[healthy], undefined);
+        assert.equal(b.dead[missing], undefined);
+        assert.equal(b.probe[missing], undefined);
+        assert.deepEqual(seenAs, [1, 2]);
+        assert.deepEqual(calls, [{ url: missing, method: "HEAD" }, { url: healthy, method: "HEAD" }]);
+        assert.deepEqual(writes.filter(w => w.key === HEALTH_KEY).map(w => w.uid), [1, 2]);
+        assert.equal(store.has(`null:${HEALTH_KEY}`), false);
+        assert.deepEqual(switches, [1, null, 2, null]);
+    } finally {
+        globalThis.fetch = previousFetch;
+    }
 });
 
 test("已停用的账号跳过巡检：人进不来看不到结果", async () => {

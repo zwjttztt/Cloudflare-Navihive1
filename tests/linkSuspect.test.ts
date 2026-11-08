@@ -1,11 +1,8 @@
 // tests/linkSuspect.test.ts
 // 「两次探测失败才标失效」这条规则。
 //
-// 背景：linkHealth 用的是 no-cors 探测，拿不到真实状态码 —— fetch 抛错只说明
-// 「这次请求没发出去」。网络抖一下、被拦截插件挡掉、DNS 临时抽风、站点慢过 6 秒
-// 超时，都会失败，而这些站点其实都还好好的。一次失败就贴「失效」，误伤率太高。
-//
-// 所以规则改成：第一次失败只记「疑似」（suspect），窗口内再失败一次才升级成 dead。
+// 只有可读的明确404/410证据参与两次确认；网络/CSP/限流未知不参与。
+// 这里用真实Response模拟可读404，验证疑似确认、撤销与过期流程。
 // 这里测的就是那个升级 / 撤销 / 过期的过程。
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -13,13 +10,13 @@ import {
     exportLinkHealth,
     markLink,
     mergeLinkHealth,
-    probeLinks,
     readDeadLinks,
     readSuspectTimes,
     SUSPECT_WINDOW_MS,
 } from "../src/utils/linkHealth";
+import { probeLinks } from "../src/utils/linkCheck";
 
-/** 探测结果由测试决定：ok = fetch 正常返回，fail = 抛网络错误 */
+/** 探测结果由测试决定：ok=200，fail=明确404；未知网络错误另有回归覆盖。 */
 let mode: "ok" | "fail" = "ok";
 /** 真实发出的请求次数（用来验证「同域名只探一次」） */
 let fetchCalls = 0;
@@ -43,7 +40,7 @@ beforeEach(() => {
     Date.now = () => realNow() + nowOffset;
     globalThis.fetch = (async () => {
         fetchCalls += 1;
-        if (mode === "fail") throw new TypeError("Failed to fetch");
+        if (mode === "fail") return new Response(null, { status: 404 });
         return new Response(null, { status: 200 });
     }) as typeof fetch;
 });
@@ -135,7 +132,7 @@ test("已经确认失效的链接再次失败：保持失效（不能因为疑�
     assert.equal(Object.keys(readDeadLinks()).length, 1, "失效标记必须还在");
 });
 
-test("同域名共享探测结果：一次失败算一次，两个链接各记一份疑似", async () => {
+test("同域不同路径独立探测404，两个链接各记一份疑似", async () => {
     mode = "fail";
     const r = await sweep(["https://a.com/one", "https://a.com/two"]);
 
@@ -143,7 +140,7 @@ test("同域名共享探测结果：一次失败算一次，两个链接各记�
     assert.equal(Object.keys(readSuspectTimes()).length, 2);
     // probed 是「待探测的链接数」，请求数要看真实发出的 fetch 次数
     assert.equal(r.probed, 2);
-    assert.equal(fetchCalls, 1, "同域名只发一次请求");
+    assert.equal(fetchCalls, 2, "不同路径必须独立请求");
     assert.equal(r.suspect, 2, "但两个链接各自记一份疑似");
 });
 

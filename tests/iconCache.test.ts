@@ -85,20 +85,21 @@ test("isIconRecordFresh：空记录不算数，过期一律作废", () => {
     assert.equal(isIconRecordFresh({ ok: true, ts: Date.now() - ICON_OK_TTL - 1 }), false);
 });
 
-// ============ 第三方图标一律过本站代理 ============
-// 隐私模式下 SiteCard 干脆不给候选（组件里 iconPrivacy 时 primaryIcons = []），
-// 这里保证「默认路径下也没有任何一个候选是直连第三方的」。
+// 默认服务仍只走代理；显式图标在代理失败后与设置预览使用同一图片地址。
+// 隐私模式在 hook 层完全禁用候选（包含这个直连回退）。
 
-test("图标候选与兜底源都不直连第三方（统一走 /api/icon 代理）", () => {
+test("默认和兜底服务走代理，显式图标有与设置一致的直连回退", () => {
     const site = { icon: "https://cdn.example/logo.png", url: "https://example.com" };
 
     const normal = iconCandidates(site, "");
     assert.ok(normal.length > 0, "默认应当有候选源");
     assert.ok(
-        normal.every(u => u.startsWith("/api/icon?u=")),
-        `第三方图标一律走本站代理，实际 ${JSON.stringify(normal)}`
+        normal.every(u => u.startsWith("/api/icon?u=") || u === site.icon),
+        `只有显式图标可作浏览器回退，实际 ${JSON.stringify(normal)}`
     );
 
+    assert.equal(normal[1], site.icon);
+    assert.ok(iconCandidates({ url: site.url }, "").every(u => u.startsWith("/api/icon?u=")));
     const fallback = iconFallbackCandidates(site);
     assert.ok(fallback.length > 0, "兜底源也应当存在");
     assert.ok(

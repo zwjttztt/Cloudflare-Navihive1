@@ -363,7 +363,7 @@ const ICON_PROXY = "/api/icon?u=";
 export const proxied = (url: string): string => {
     if (!url) return url;
     if (isSameOrigin(url)) return url;
-    if (url.startsWith("/")) return url;
+    if (url.startsWith("/") || /^data:image\//i.test(url) || url.startsWith("blob:")) return url;
     return `${ICON_PROXY}${encodeURIComponent(url)}`;
 };
 
@@ -402,6 +402,10 @@ export function iconCandidates(
     };
 
     push(site.icon);
+    // 自定义图标可能只在用户浏览器可达（认证/防盗链/IPv6），代理失败后用与设置
+    // 预览相同的安全图片地址。仅给 img 用；不改变服务端 safeFetch/SSRF 策略。
+    const explicitIcon = (site.icon || "").trim();
+    if (/^https?:\/\//i.test(explicitIcon) && !list.includes(explicitIcon)) list.push(explicitIcon);
     push(resolveIconApiUrl(iconApi, site.url || ""));
 
     return list;

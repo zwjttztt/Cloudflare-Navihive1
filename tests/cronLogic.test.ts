@@ -239,18 +239,29 @@ test("probeUrl：HEAD 405 回退 GET，且 GET 200 → 活着", async () => {
     m.restore();
 });
 
-test("probeUrl：5xx → 探测失败（视为失效口径）", async () => {
+test("probeUrl：5xx → 未知，不判失效", async () => {
     const m = mockFetch(() => ({ status: 503 }));
-    assert.equal(await (await import("../worker/cron")).probeUrl("https://a.com"), false);
+    assert.equal(await (await import("../worker/cron")).probeUrl("https://a.com"), null);
     m.restore();
 });
 
-test("probeUrl：网络错误 → 失效口径", async () => {
+test("probeUrl：网络错误 → 未知且不污染快照", async () => {
     const m = mockFetch(() => {
         throw new Error("network down");
     });
-    assert.equal(await (await import("../worker/cron")).probeUrl("https://a.com"), false);
+    assert.equal(await (await import("../worker/cron")).probeUrl("https://a.com"), null);
+    const snapshot = emptySnapshot();
+    assert.equal(applyProbeResult(snapshot, "https://a.com", null, NOW), snapshot);
     m.restore();
+});
+
+test("probeUrl：403防机器人、429限流与405方法限制分别处理", async () => {
+    for (const [status, expected] of [[403, true], [429, null], [405, null], [410, false]] as const) {
+        const m = mockFetch(() => ({ status }));
+        try {
+            assert.equal(await (await import("../worker/cron")).probeUrl("https://a.com"), expected);
+        } finally { m.restore(); }
+    }
 });
 
 // ---------------- ⑥ 巡检键归一化（与前端口径必须一致） ----------------

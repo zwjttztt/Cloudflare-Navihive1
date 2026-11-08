@@ -12,10 +12,7 @@ import type { ConfigWriter } from "../API/transport";
 import type { GroupWithSites } from "../types";
 import type { NotifyAction } from "../context/NotifyContext";
 import {
-    collectCheckUrls,
-    describeLinkCheck,
     FRESH_WINDOW_MS,
-    probeLinks,
     type DeadLinks,
 } from "../utils/linkHealth";
 
@@ -121,29 +118,30 @@ export function useLinkCheck(
     setDeadOnly: (value: boolean) => void
 ): () => Promise<void> {
     return useCallback(async () => {
-        const urls = collectCheckUrls(groups);
-        if (urls.length === 0) {
-            notify("还没有可以检测的链接", "info");
-            return;
+        try {
+            const { collectCheckUrls, describeLinkCheck, probeLinks } = await import("../utils/linkCheck");
+            const urls = collectCheckUrls(groups);
+            if (urls.length === 0) {
+                notify("还没有可以检测的链接", "info");
+                return;
+            }
+            notify(`开始检测 ${urls.length} 个链接…`, "info");
+            // 近期成功或白名单跳过；只有同一请求键才复用结果。
+            const result = await probeLinks(urls, { concurrency: 5, skipFreshMs: FRESH_WINDOW_MS });
+            setDeadLinks(result.dead);
+            const { text, severity, offerFilter } = describeLinkCheck(
+                Object.keys(result.dead).length,
+                result.skipped,
+                result.suspect
+            );
+            notify(
+                text,
+                severity,
+                undefined,
+                offerFilter ? { label: "只看失效", onClick: () => setDeadOnly(true) } : undefined
+            );
+        } catch {
+            notify("链接检测失败，请重试", "error");
         }
-        notify(`开始检测 ${urls.length} 个链接…`, "info");
-        // 增量检测：7 天内探测过、或用户手动标记过「能访问」的链接直接跳过，
-        // 同一域名也只探一次，避免每次都得等上几分钟
-        const result = await probeLinks(urls, { concurrency: 5, skipFreshMs: FRESH_WINDOW_MS });
-        setDeadLinks(result.dead);
-        // 第三个参数是「这次第一次失败、只记了疑似」的数量 —— 分两次才标失效之后，
-        // 第一次检测完界面上什么都不标，不说明白用户只会以为检测坏了
-        const { text, severity, offerFilter } = describeLinkCheck(
-            Object.keys(result.dead).length,
-            result.skipped,
-            result.suspect
-        );
-        notify(
-            text,
-            severity,
-            undefined,
-            // 有可疑链接时给个快捷入口，省得自己一张张翻
-            offerFilter ? { label: "只看失效", onClick: () => setDeadOnly(true) } : undefined
-        );
     }, [groups, notify, setDeadLinks, setDeadOnly]);
 }

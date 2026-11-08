@@ -174,7 +174,7 @@ test("跨非空组后取消或无落点松手恢复dragStart快照且不请求AP
         for (const cancel of [true, false]) {
             await run(() => sort().handleSiteDragStart({ active: { id: "site-10" } } as never));
             await run(() => sort().handleSiteSortDragOver({ active: { id: "site-10" }, over: { id: "site-20" } } as never));
-            assert.equal(text("groups"), "[[1,[11]],[2,[10,20]]]");
+            assert.equal(text("groups"), "[[1,[10,11]],[2,[20]]]");
             if (cancel) await run(() => sort().handleSiteDragCancel());
             else await run(() => sort().handleSiteSortDragEnd({ active: { id: "site-10" }, over: null } as never));
             assert.equal(text("groups"), "[[1,[10,11]],[2,[20]]]");
@@ -192,14 +192,14 @@ test("跨非空组后碰撞目标交替不再反复组内交换，松手仍可�
     try {
         await run(() => sort().startSiteSort(1));
         await run(() => sort().handleSiteSortDragOver({ active: { id: "site-10" }, over: { id: "site-20" } } as never));
-        assert.equal(text("groups"), "[[1,[11]],[2,[10,20]]]");
+        assert.equal(text("groups"), "[[1,[10,11]],[2,[20]]]");
         for (let index = 0; index < 80; index++) {
             const overId = index % 2 === 0 ? "site-20" : "site-10";
             await run(() => sort().handleSiteSortDragOver({ active: { id: "site-10" }, over: { id: overId } } as never));
-            assert.equal(text("groups"), "[[1,[11]],[2,[10,20]]]");
+            assert.equal(text("groups"), "[[1,[10,11]],[2,[20]]]");
         }
         await run(() => sort().handleSiteSortDragEnd({ active: { id: "site-10" }, over: { id: "site-20" } } as never));
-        assert.equal(text("groups"), "[[1,[11]],[2,[20,10]]]");
+        assert.equal(text("groups"), "[[1,[11]],[2,[10,20]]]");
         assert.equal(calls.length, 0, "拖动期间不写数据库");
     } finally {
         cleanup();

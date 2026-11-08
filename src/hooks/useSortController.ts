@@ -182,10 +182,12 @@ export function useSortController({
         (event: DragOverEvent) => {
             const { active, over } = event;
             if (!over || active.id === over.id) return;
+            // 拖动期间不迁移 sortable 节点。迁移会让来源组收缩、目标组扩张，
+            // closestCenter 随重新测量在两个组之间来回切换；crossGroupOnly 也挡不住
+            // 这种跨组反馈环。保留原布局和 DragOverlay，松手时只提交一次最终落点。
             if (!dragSnapshotRef.current) dragSnapshotRef.current = groupsRef.current;
-            setGroups(prev => moveSiteInGroups(prev, String(active.id), String(over.id), true));
         },
-        [groupsRef, setGroups]
+        [groupsRef]
     );
 
     const handleSiteSortDragEnd = useCallback(

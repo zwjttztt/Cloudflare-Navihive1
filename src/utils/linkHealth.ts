@@ -17,19 +17,16 @@
 const KEY = "navihive:deadLinks";
 const PROBE_KEY = "navihive:linkProbe";
 const WHITELIST_KEY = "navihive:linkWhitelist";
-/** 第一次探测失败的链接先记在这里（「疑似」），再失败一次才真的标失效 */
+/** 首次明确404/410证据暂存；网络/CSP/限流等未知不累计失败次数。 */
 const SUSPECT_KEY = "navihive:linkSuspect";
 const TIMEOUT_MS = 6000;
 
 /** 默认「多久内探测过就不再重复探测」：7 天 */
 export const FRESH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 /**
- * 「疑似失效」的有效期：7 天内第二次失败才升级成失效，超时就从头再算。
- *
- * 为什么要两次：no-cors 探测拿不到真实状态码，失败只说明「这次请求没发出去」——
- * 网络抖一下、被广告拦截插件挡掉、DNS 临时抽风、站点慢过 6 秒超时，都会失败，
- * 而这些站点其实都还好好的。一次失败就贴「失效」标签，误伤率太高
- * （用户看到自己天天用的站被标灰，第一反应是这个功能不准，然后就再也不信它了）。
+ * 明确资源不存在证据的有效期：7天内两次可读的404/410才升级失效。
+ * no-cors opaque响应只能证明服务有响应；fetch异常可能是CSP、网络、超时，
+ * 无论重复多少次都保持未知，不能通过「两次失败」推断资源不存在。
  */
 export const SUSPECT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -68,7 +65,7 @@ const hostOf = (url: string) => {
  * 实现放在 ./url（无 DOM 依赖），这样 worker 侧的死链巡检能共用同一套口径；
  * 这里再转出一次，调用方仍只需认 linkHealth 这一个入口。
  */
-import { deriveDeadLinks, normalizeKey } from "./linkKey";
+import { classifyLinkStatus, deriveDeadLinks, normalizeKey } from "./linkKey";
 export { deriveDeadLinks, normalizeKey };
 
 const readNumberMap = (key: string): Record<string, number> => {
@@ -263,7 +260,7 @@ export function markLink(url: string, alive: boolean): DeadLinks {
 }
 
 /** 旧判据留下的失效标记降级到哪一刻为止（存的是首次迁移的时间戳） */
-const MIGRATION_KEY = "navihive:linkHealthDemotedAt";
+const MIGRATION_KEY = "navihive:linkHealthEvidenceDemotedAt";
 
 const readMigrationBaseline = (): number => {
     try {
@@ -279,8 +276,9 @@ const readMigrationBaseline = (): number => {
 /**
  * 把旧判据留下的「失效」降级成「疑似」。
  *
- * 背景：「一次探测失败就标失效」那条老规则误伤率太高（见 SUSPECT_WINDOW_MS 的注释），
- * 已经改成连续两次。但老规则留下的标记还躺在 dead 表里 —— 不处理的话，用户升级完
+ * 背景：旧规则把一次/两次网络未知当失效。改用明确HTTP证据后，需要再次降级
+ * 旧版本留下的标记。迁移键独立于以前的“两次失败”迁移，保证升级后执行一次。
+ * 旧规则留下的标记还躺在 dead 表里 —— 不处理的话，用户升级完
  * 打开页面，那几个天天在用的站照样挂着「失效」，只会觉得这功能没救了。
  *
  * 为什么用「基线时间戳」而不是「迁移过没有」的布尔标记：
@@ -291,8 +289,8 @@ const readMigrationBaseline = (): number => {
  *   迁移之后新判定的一律不碰。云端回填多少次都会被下一次启动再降级一次。
  *
  * 取舍：人工「标记为失效」且发生在迁移之前的，也会被降级 —— 光看两张表区分不出
- * 「人工标的」和「一次失败标的」（两者都是 dead 有、suspect 无）。真失效的站重跑
- * 一次检测就会重新标上，这时代价是用户多点一下，比留着一堆假的红标划算。
+ * 「人工标的」和「一次失败标的」（两者都是 dead 有、suspect 无）。重新检测时只接受
+ * 明确HTTP失效证据；旧疑似超过7天时，需要在有效窗口内重新取得两次404/410才标失效。
  *
  * @returns 本次降级了多少条；0 表示没有可降级的（也就不会触发上传）
  */
@@ -307,7 +305,7 @@ export function demoteLegacyDeadMarks(now: number = Date.now()): number {
     const suspects = readSuspectTimes();
     let moved = 0;
     for (const [url, ts] of Object.entries(dead)) {
-        if (ts >= baseline) continue; // 迁移之后判定的，是真连续两次失败的结果
+        if (ts >= baseline) continue; // 迁移之后判定的保留；旧记录云端回填后仍会被降级
         delete dead[url];
         // 只在已有疑似更旧时才覆盖：把时间戳往前推会让「连续两次」更容易成立
         if ((suspects[url] ?? 0) < ts) suspects[url] = ts;
@@ -375,206 +373,40 @@ export function isLinkWhitelisted(url: string): boolean {
     return readWhitelist().includes(normalizeKey(url));
 }
 
-/** 探测结果怎么说给用户听；App 拿到之后补上「只看失效」的快捷入口 */
-export interface LinkCheckSummary {
-    text: string;
-    severity: "info" | "success";
-    /** 有疑似失效的链接时才给快捷入口 */
-    offerFilter: boolean;
-}
-
-/**
- * 一次批量探测结束后生成提示文案（跳过数只在实际 >0 时才提）。
- *
- * 疑似数单独说一句很重要：改成分两次才标失效之后，第一次检测完界面上**什么都没标**，
- * 不说清楚的话用户只会觉得「检测坏了」。
- */
-export function describeLinkCheck(
-    deadCount: number,
-    skipped = 0,
-    suspectCount = 0
-): LinkCheckSummary {
-    const skipNote = skipped > 0 ? `（${skipped} 个近期检测过，已跳过）` : "";
-    const suspectNote =
-        suspectCount > 0
-            ? `；另有 ${suspectCount} 个这次没连上，再检测一次仍失败才会标失效`
-            : "";
-    if (deadCount > 0) {
-        return {
-            text: `检测完成，${deadCount} 个链接疑似失效${skipNote}${suspectNote}`,
-            severity: "info",
-            offerFilter: true,
-        };
-    }
-    return {
-        text: `检测完成，所有链接都能访问${skipNote}${suspectNote}`,
-        severity: "success",
-        offerFilter: false,
-    };
-}
-
-/** 从分组里取出要去检测的全部链接：去空白、去重、保持首次出现顺序 */
-export function collectCheckUrls(
-    groups: { sites?: { url?: string }[] }[] | null | undefined
-): string[] {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const group of groups || []) {
-        for (const site of group.sites || []) {
-            const url = (site.url || "").trim();
-            if (!url) continue;
-            // 按归一化键去重：`a.com` 与 `a.com/#top` 探测的是同一个目标，
-            // 算两个会让「本次检测 N 个链接」的计数虚高。
-            const key = normalizeKey(url);
-            if (seen.has(key)) continue;
-            seen.add(key);
-            out.push(url);
-        }
-    }
-    return out;
-}
-
-/** 探测单个链接是否还能访问 */
-export async function probeLink(url: string): Promise<boolean> {
-    if (!url || !hostOf(url)) return false;
+/** true=HTTP层有响应，false=明确404/410，null=请求或状态无法判定。 */
+export async function probeLink(url: string): Promise<boolean | null> {
+    if (!url || !hostOf(url)) return null;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
-        await fetch(url, {
+        const response = await fetch(url, {
             method: "GET",
             mode: "no-cors",
             cache: "no-store",
             signal: controller.signal,
         });
-        return true;
+        // no-cors opacity obscures even a real 404. For browser navigation, any received
+        // opaque response means the host answered; readable same-origin/test responses
+        // still distinguish explicit 404/410 from other statuses.
+        return response.type === "opaque" || response.status === 0
+            ? true
+            : classifyLinkStatus(response.status);
     } catch {
-        return false;
+        // CSP、混合内容、CORS、断网和超时在浏览器里都可能只是 TypeError。
+        // 重复发生也不能变成「资源不存在」的证据。
+        return null;
     } finally {
         clearTimeout(timer);
     }
 }
 
-export interface ProbeOptions {
-    /** 并发数，默认 5 */
-    concurrency?: number;
-    /**
-     * 「多久内探测过就跳过」的毫秒数，默认 0（每次都测）。
-     * 传 FRESH_WINDOW_MS 即为增量检测：近期测过且成功的链接不再重复请求。
-     */
-    skipFreshMs?: number;
-    onProgress?: (done: number, total: number) => void;
-}
-
-export interface ProbeResult {
-    /** 判定失效的链接（含本次之前就失效、但这次没重新探测的） */
-    dead: DeadLinks;
-    /** 本次需要探测的链接数（已排除跳过的） */
-    probed: number;
-    /** 因「近期测过」或「用户标记过正常」而跳过的链接数 */
-    skipped: number;
-    /** 本次**第一次**失败的链接数：只记了疑似，还没标失效 */
-    suspect: number;
-}
-
-/**
- * 批量探测：限制并发，避免一次打出几十个请求。
- * 两层减负：
- * 1) 白名单 / 近期探测成功的链接直接跳过
- * 2) 同一域名只探第一个，结果同步给该域名下的其它链接
- */
-export async function probeLinks(
-    urls: string[],
-    options: ProbeOptions = {}
-): Promise<ProbeResult> {
-    const { concurrency = 5, skipFreshMs = 0, onProgress } = options;
-
-    const whitelist = new Set(readWhitelist());
-    const probes = readProbeTimes();
-    const now = Date.now();
-
-    // 这里直接操作原始表，最后统一推导一次失效清单
-    const rawDead = readNumberMap(KEY);
-    const rawSuspect = readSuspectTimes();
-    const uniq = [...new Set(urls.map(u => (u || "").trim()).filter(Boolean))];
-
-    // 第一层：白名单 / 近期探测成功 → 直接判定存活，不再发请求
-    const pending: string[] = [];
-    let skipped = 0;
-    for (const url of uniq) {
-        const key = normalizeKey(url);
-        if (
-            whitelist.has(key) ||
-            (skipFreshMs > 0 && probes[key] && now - probes[key] < skipFreshMs)
-        ) {
-            delete rawDead[key];
-            delete rawSuspect[key];
-            skipped += 1;
-            continue;
-        }
-        pending.push(url);
-    }
-    if (skipped > 0) {
-        writeDeadLinks(rawDead);
-        writeSuspectTimes(rawSuspect);
-    }
-
-    // 第二层：同一域名只探代表链接，结果复用给该域名下的其它链接
-    const byHost = new Map<string, string[]>();
-    for (const url of pending) {
-        const host = hostOf(url) || url;
-        const list = byHost.get(host) ?? [];
-        list.push(url);
-        byHost.set(host, list);
-    }
-
-    const queue = [...byHost.values()].map(list => list[0]);
-    let done = skipped;
-    let suspectCount = 0;
-
-    const worker = async () => {
-        while (queue.length) {
-            const url = queue.shift();
-            if (!url) return;
-            const alive = await probeLink(url);
-            const host = hostOf(url) || url;
-            const group = byHost.get(host) ?? [url];
-
-            const nextProbes = readProbeTimes();
-            const nextDead = readNumberMap(KEY);
-            const nextSuspect = readSuspectTimes();
-            const at = Date.now();
-            for (const u of group) {
-                // 两张时间戳表都按归一化键存取：否则「带尾斜杠 / 带锚点」的写法
-                // 永远命中不了之前存的成功记录，fresh 窗口形同虚设
-                const key = normalizeKey(u);
-                if (alive) {
-                    delete nextDead[key];
-                    delete nextSuspect[key];
-                    nextProbes[key] = at;
-                } else if (isConfirmedFailure(nextSuspect[key], at)) {
-                    // 窗口内连续第二次失败 —— 这次才真的贴「失效」
-                    delete nextSuspect[key];
-                    nextDead[key] = at;
-                } else {
-                    // 第一次失败：只记疑似。站点可能只是这次没连上，别急着标灰
-                    nextSuspect[key] = at;
-                    suspectCount += 1;
-                }
-            }
-            writeDeadLinks(nextDead);
-            writeProbeTimes(nextProbes);
-            writeSuspectTimes(nextSuspect);
-
-            done += group.length;
-            onProgress?.(Math.min(done, uniq.length), uniq.length);
-        }
-    };
-
-    await Promise.all(
-        Array.from({ length: Math.min(Math.max(concurrency, 1), queue.length || 1) }, worker)
-    );
-
-    emitChange();
-    return { dead: computeDead(), probed: pending.length, skipped, suspect: suspectCount };
-}
+/** 批量检查专用的窄存储桥接；不接受任意 localStorage 键。 */
+export const linkCheckStorage = {
+    readDeadTimes: (): Record<string, number> => readNumberMap(KEY),
+    writeDeadLinks,
+    writeProbeTimes,
+    writeSuspectTimes,
+    isConfirmedFailure,
+    emitChange,
+} as const;

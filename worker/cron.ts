@@ -23,11 +23,11 @@ import {
     shouldRunNotesBackup,
 } from "./notesBackup";
 import { safeFetch } from "./safeFetch";
+import { classifyLinkStatus } from "../src/utils/linkKey";
 import { retryAttachmentDeletions } from "./attachments";
 import {
     HEALTH_KEY,
     PROBE_TIMEOUT_MS,
-    isAliveHttpStatus,
     parseSnapshot,
     selectSweepCandidates,
     applyProbeResult,
@@ -328,12 +328,12 @@ async function notesBackupOneAccount(api: SchedulerDB, uid: number | null, env?:
  * safeFetch 每跳重验 scheme/端口/主机名黑名单、手动跟随重定向（上限 4 跳），
  * 与 meta / icon / webdav 共用同一套出站安全策略。
  */
-export async function probeUrl(url: string): Promise<boolean> {
+export async function probeUrl(url: string): Promise<boolean | null> {
     let target: URL;
     try {
         target = new URL(url);
     } catch {
-        return false;
+        return null;
     }
 
     const ua = {
@@ -347,7 +347,8 @@ export async function probeUrl(url: string): Promise<boolean> {
         fetchInit: { method: "HEAD" },
     });
     if (head.ok) {
-        return isAliveHttpStatus(head.response.status);
+        await head.response.body?.cancel();
+        return classifyLinkStatus(head.response.status);
     }
     // HEAD 不被支持（405/501）时退回 GET；其它非 2xx 直接按状态码判定死活。
     if (head.kind === "http" && (head.upstreamStatus === 405 || head.upstreamStatus === 501)) {
@@ -357,15 +358,17 @@ export async function probeUrl(url: string): Promise<boolean> {
             fetchInit: { method: "GET" },
         });
         if (get.ok) {
-            return isAliveHttpStatus(get.response.status);
+            await get.response.body?.cancel();
+            return classifyLinkStatus(get.response.status);
         }
         if (get.kind === "http") {
-            return isAliveHttpStatus(get.upstreamStatus);
+            return classifyLinkStatus(get.upstreamStatus);
         }
-        return false;
+        return null;
     }
-    // blocked / timeout / redirect 跳板：判为死链（宁可误杀，不可 SSRF）
-    return false;
+    if (head.kind === "http") return classifyLinkStatus(head.upstreamStatus);
+    // 安全阻断仍然阻断请求，但不能据此断言浏览器也无法访问该站。
+    return null;
 }
 
 /**

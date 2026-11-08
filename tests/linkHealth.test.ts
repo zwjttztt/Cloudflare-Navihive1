@@ -13,7 +13,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
     clearDeadLinks,
-    collectCheckUrls,
     deriveDeadLinks,
     exportLinkHealth,
     FRESH_WINDOW_MS,
@@ -22,13 +21,49 @@ import {
     markLinkAlive,
     mergeLinkHealth,
     normalizeKey,
-    probeLinks,
     readDeadLinks,
     readProbeTimes,
     readSuspectTimes,
     readWhitelist,
     unmarkLinkAlive,
 } from "../src/utils/linkHealth";
+import { collectCheckUrls, probeLinks } from "../src/utils/linkCheck";
+
+test("浏览器连续网络未知不升级失效，403与429分别处理", async () => {
+    localStorage.clear();
+    const originalFetch = globalThis.fetch;
+    const urls = ["https://panstar.ai", "https://www.nodeseek.com", "https://www.itdog.cn/ping/"];
+    try {
+        globalThis.fetch = (async () => { throw new TypeError("Failed to fetch"); }) as typeof fetch;
+        await probeLinks(urls);
+        const unknown = await probeLinks(urls);
+        assert.deepEqual(unknown.dead, {});
+        assert.equal(unknown.suspect, 3);
+        assert.deepEqual(readSuspectTimes(), {});
+        globalThis.fetch = (async () => new Response(null, { status: 403 })) as typeof fetch;
+        const restricted = await probeLinks(urls);
+        assert.equal(restricted.suspect, 0);
+        globalThis.fetch = (async () => new Response(null, { status: 429 })) as typeof fetch;
+        const limited = await probeLinks(urls);
+        assert.equal(limited.suspect, 3);
+        assert.deepEqual(limited.dead, {});
+    } finally { globalThis.fetch = originalFetch; }
+});
+
+test("同域不同路径各自探测，不把404传播到正常资源", async () => {
+    localStorage.clear();
+    const originalFetch = globalThis.fetch;
+    const missing = "https://same.example/missing";
+    const healthy = "https://same.example/healthy";
+    try {
+        globalThis.fetch = (async url => new Response(null, { status: String(url) === missing ? 404 : 200 })) as typeof fetch;
+        await probeLinks([missing, healthy]);
+        const result = await probeLinks([missing, healthy]);
+        assert.ok(result.dead[missing]);
+        assert.equal(result.dead[healthy], undefined);
+        assert.ok(readProbeTimes()[healthy]);
+    } finally { globalThis.fetch = originalFetch; }
+});
 
 const reset = () => localStorage.clear();
 
