@@ -20,19 +20,20 @@ import {
 } from "../src/utils/noteTime";
 
 /**
- * 造一条「今天的笔记在库里长这样」的串：SQLite 形状（UTC、空格分隔、无时区后缀），
- * 且 **这个串的时钟面就是 hh:mm（UTC 时钟）**。
+ * 造一条「北京今天 hh:mm 的笔记在库里长这样」的串：SQLite 形状（UTC、空格分隔、无时区后缀）。
  *
- * 为什么要这么造而不是随手拼个本地时间串：我们的语义是「无时区后缀按 UTC 解释」，
- * 直接把本地 09:05 拼成串喂进去，函数会正确地把它当成 UTC 09:05 → 本地 17:05，
- * 于是 formatWhen 输出 "17:05"。那说明**实现对、测试期望错**，
- * 很容易被误读成 bug 而去改实现（改错方向）。所以这里明确造「UTC 钟面 = hh:mm」。
+ * ⚠️ 必须用**绝对 UTC 时刻**反推，不能拿本地构造器 / `getTimezoneOffset()` 拼：
+ * 显示层现在固定按北京时间输出，本地 GMT+8 用本地钟面算期望值会碰巧全绿，
+ * 换到 UTC 的 CI runner 就差 8 小时（这条踩过：CI 期待 09:05、实际 17:05）。
+ * 北京 hh:mm = UTC (hh-8):mm，Date.UTC 自带跨日归一化。
  */
-const utcTodayAt = (hh: number, mm: number) => {
-    const d = new Date();
-    // UTC 时钟摆到 hh:mm：东八区（offset -480）就是本地 hh+8 点
-    d.setHours(hh + d.getTimezoneOffset() / -60, mm, 0, 0);
-    return d.toISOString().slice(0, 19).replace("T", " ");
+const beijingTodayAt = (hh: number, mm: number) => {
+    const bjNow = new Date(Date.now() + 8 * 3600_000);
+    const y = bjNow.getUTCFullYear();
+    const m = bjNow.getUTCMonth();
+    const d = bjNow.getUTCDate();
+    const ms = Date.UTC(y, m, d, hh - 8, mm, 0, 0);
+    return new Date(ms).toISOString().slice(0, 19).replace("T", " ");
 };
 
 test("SQLite 的 UTC 日期时间（空格、无后缀）按 UTC 解释，不是本地时间", () => {
@@ -80,23 +81,20 @@ test("毫秒时间戳（回收站 deletedAt）也能解析", () => {
 });
 
 test("formatWhen：今天只给时:分，更早给 M月D日", () => {
-    // 两层语义要分清，别搞混：
-    //   ① **解析**：无后缀的串按 UTC 解释（串里写 09:05 = 绝对时刻 09:05Z）；
-    //   ② **显示**：给人类看的一定是**本地钟面**（这条笔记其实是 17:05 建的）。
-    // 所以东八区下期望 17:05，UTC 环境下期望 09:05 —— 用偏移现算，别硬编码。
-    const offsetHours = new Date().getTimezoneOffset() / -60;
-    const hh = 9 + offsetHours;
-    const expect = `${String(hh).padStart(2, "0")}:${String(5).padStart(2, "0")}`;
-    assert.equal(formatWhen(utcTodayAt(9, 5)), expect);
-    const t = parseNoteTime(utcTodayAt(9, 5));
+    // 两层语义要分清：① 解析 —— 无后缀串按 UTC 解释；② 显示 —— 固定**北京时间**钟面。
+    // 输入是「北京今天 12:05」对应的 UTC 串（UTC 04:05），期望恒为 12:05，
+    // 与 runner 在哪个时区完全无关。
+    const input = beijingTodayAt(12, 5);
+    assert.equal(formatWhen(input), "12:05");
+    const t = parseNoteTime(input);
     assert.ok(t);
-    assert.equal(t.getHours(), hh, "解析结果必须是本地钟表（这条钉死按 UTC 解释没写反）");
-    // 15 天前：一定不是同一天（除非跨月边界，那就只校验形状）
+    assert.equal(t.getUTCHours(), 4, "解析结果必须是绝对时刻 UTC 04:05（= 北京 12:05）");
+    // 固定过去日期：UTC 2026-02-03 11:05 = 北京当天 19:05，非今天时给「M月D日」
     const old = parseNoteTime("2026-02-03 11:05:18");
     assert.ok(old);
     const txt = formatWhen("2026-02-03 11:05:18");
-    if (old.toDateString() === new Date().toDateString()) assert.match(txt, /^\d{2}:\d{2}$/);
-    else assert.equal(txt, "2月3日");
+    const bjToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+    assert.equal(txt, bjToday === "2026-02-03" ? "19:05" : "2月3日");
 });
 
 test("formatWhen 解析不出就给空串，而不是 Invalid Date", () => {
@@ -127,13 +125,15 @@ test("formatRelative：超过 1 小时且还在今天 → N小时前", () => {
 });
 
 test("formatRelative：跨天就退回日历式，不再堆小时", () => {
-    const now = new Date(2026, 9, 6, 9, 0, 0); // 10-06 09:00
-    // 昨天 23:00 —— 只差 10 小时，但跨天了：写「10小时前」反而要人再算一遍
-    assert.equal(formatRelative(new Date(2026, 9, 5, 23, 0, 0), now), "昨天");
-    // 前天
-    assert.equal(formatRelative(new Date(2026, 9, 4, 23, 0, 0), now), "10月4日");
-    // 去年 → 带年份
-    assert.equal(formatRelative(new Date(2025, 11, 31, 10, 0, 0), now), "2025年12月31日");
+    // 全部用绝对 UTC 时刻构造（北京 = UTC+8），避免本地构造器在 UTC runner 上把
+    // 「昨天 23:00」算成北京当天早上、误判为「N小时前」。
+    const now = new Date("2026-10-06T04:00:00Z"); // 北京 10-06 12:00
+    // 昨天 23:00 北京 = UTC 10-05 15:00，只差 13 小时，但跨了北京日界
+    assert.equal(formatRelative(new Date("2026-10-05T15:00:00Z"), now), "昨天");
+    // 前天 23:00 北京 = UTC 10-04 15:00
+    assert.equal(formatRelative(new Date("2026-10-04T15:00:00Z"), now), "10月4日");
+    // 去年北京 12-31 10:00 = UTC 12-31 02:00 → 带年份
+    assert.equal(formatRelative(new Date("2025-12-31T02:00:00Z"), now), "2025年12月31日");
 });
 
 test("formatRelative：时钟超前（未来时间）不会输出「-1分钟前」", () => {
