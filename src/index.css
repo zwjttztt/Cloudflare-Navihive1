@@ -938,11 +938,16 @@ html[data-notes-open] .nav-card-in {
     transform: none !important;
 }
 
-/* 悬停抬升放在外层容器上：卡片本体 + 右上角设置按钮 + 右下角快捷条会一起动 */
-.nav-card-in[data-hover-lift] {
+/* 悬停抬升放在内层 .nav-card-lift 上：外层 .nav-card-in 作为静止命中区，
+   不再因自身位移而反复移出光标 → 消除卡片边缘 hover 疯狂抖动。
+   卡片本体 + 右上角设置按钮 + 右下角快捷条随内层一起抬升，观感不变。 */
+.nav-card-lift {
+    position: relative;
+    height: 100%;
     transition: transform var(--dur-base) var(--ease-out);
+    will-change: transform;
 }
-.nav-card-in[data-hover-lift]:hover {
+.nav-card-in[data-hover-lift]:hover .nav-card-lift {
     transform: var(--nav-hover-lift, translateY(-6px));
 }
 

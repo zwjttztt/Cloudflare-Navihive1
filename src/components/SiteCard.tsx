@@ -855,6 +855,7 @@ const SiteCard = memo(function SiteCard({
                 ["--nav-hover-lift" as string]: isList ? "translateX(3px)" : "translateY(-6px)",
             }}
         >
+            <div className="nav-card-lift">
             <Card sx={cardSx}>
                 {isEditMode ? (
                     <Box
@@ -1007,6 +1008,7 @@ const SiteCard = memo(function SiteCard({
 
             {/* 快捷操作条 */}
             {!isEditMode && !selectMode && (hasUsername || hasPassword) && renderQuickActions(isList)}
+            </div>
         </Box>
     );
 

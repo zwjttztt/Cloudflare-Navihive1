@@ -91,6 +91,10 @@ export function useNoteAutoSave(deps: NoteAutoSaveDeps) {
     const failuresRef = useRef(0);
     /** 这一串失败报过没有 —— 报**一次**就够，别每 5 秒弹一条 */
     const notifiedRef = useRef(false);
+    /** 是否正在 await 一次保存（在飞）：卸载时若仍有在飞保存，它自己会落库，无需再 flush 一份 */
+    const inFlightRef = useRef(false);
+    /** 最近一次完成的保存是否成功：成功后可避免卸载时重复 flush 一份相同内容 */
+    const lastSaveOkRef = useRef(false);
     /**
      * 当前「重试串」的身份：换笔记、或用户又改了一笔 = 新的一串，计数清零。
      * ⚠️ 只在**这两个**上清零：内容不变时不该因为一次失败就永远放弃自动保存
@@ -112,6 +116,7 @@ export function useNoteAutoSave(deps: NoteAutoSaveDeps) {
         // ⚠️ 失败时状态停在 pending（SaveDot 的灰点「有改动」）—— **不落回 saved**，
         // 那是「用户以为存好了、关掉才发现没有」的根源。
         setSaveState("pending");
+        lastSaveOkRef.current = false;
         let live = true;
         let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -119,6 +124,7 @@ export function useNoteAutoSave(deps: NoteAutoSaveDeps) {
             failuresRef.current = 0;
             notifiedRef.current = false;
             setSaveError(false);
+            lastSaveOkRef.current = true;
             setSaveState("saved");
             setSavedAt(Date.now());
             setTick(Date.now());
@@ -138,7 +144,9 @@ export function useNoteAutoSave(deps: NoteAutoSaveDeps) {
 
         const attempt = async () => {
             setSaveState("saving");
+            inFlightRef.current = true;
             const ok = await saveRef.current();
+            inFlightRef.current = false;
             if (!live) return;
             if (ok) markSaved();
             else {
@@ -159,8 +167,14 @@ export function useNoteAutoSave(deps: NoteAutoSaveDeps) {
         // 「打完字切走」这一下的等待窗口也变长了 —— 这里是它的补偿。
         // 切标签页 / 点到别的窗口都算失焦，都是低频动作，不会把省下来的往返又花回去。
         const flush = () => {
+            if (inFlightRef.current) {
+                clearTimeout(timer);
+                return;
+            }
             clearTimeout(timer);
+            inFlightRef.current = true;
             void saveRef.current().then(ok => {
+                inFlightRef.current = false;
                 if (!live) return;
                 if (ok) markSaved();
                 else markFailed();
@@ -192,9 +206,31 @@ export function useNoteAutoSave(deps: NoteAutoSaveDeps) {
     useEffect(() => {
         flushRef.current = { dirty, save };
     });
+    // 关掉记事本（切回导航站）时把还没落库的草稿强制刷一次。
+    // 组件即将卸载，setState 已无效，所以这里**自带重试 + 失败才通知**，绝不假装已保存：
+    //   · 先判断是否在飞 / 最近一次是否已成功 —— 在飞的保存会自己落库，已成功的无需再写；
+    //   · 否则最多重试 3 次（api 是模块级实例，卸载后请求照样发得出去），全失败才提示用户。
     useEffect(
         () => () => {
-            if (flushRef.current.dirty) void flushRef.current.save();
+            // 卸载前 flush 草稿：用 flushRef 拿「卸载那一刻」的最新 dirty / save。
+            // 直接引用 flushRef.current.dirty 作为守卫，保证这段逻辑一直存在（回归测试会钉它）。
+            if (!flushRef.current.dirty || inFlightRef.current || lastSaveOkRef.current) return;
+            const f = flushRef.current;
+            let tries = 3;
+            const retry = (): void => {
+                void f.save().then(ok => {
+                    if (ok) return;
+                    if (tries <= 1) {
+                        onSaveErrorRef.current?.(
+                            "关闭记事本时自动保存失败，笔记内容可能未保存，请重新打开确认。"
+                        );
+                        return;
+                    }
+                    tries -= 1;
+                    setTimeout(retry, 800);
+                });
+            };
+            retry();
         },
         []
     );
