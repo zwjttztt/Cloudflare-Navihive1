@@ -12,6 +12,23 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-08 · 修复：按 VPS 今日错误日志逐条收口（恢复锁误报 / 拖拽崩溃 / 审计时间差 8 小时 / QQ 中段白块 / 恢复 403）（35.0.0）
+
+> 用户把今天（北京时间 11-08）VPS 操作日志里所有报错一次性摊开要求逐条修掉。审计日志只留下 `source/path/message`、没有堆栈，所以先从 `docker logs` 里取到完整 sanitized 堆栈再定位，不靠猜。
+>
+> - **恢复锁误报「上一次恢复还没结束」（P0，Cloudflare Workers + D1）**：`claimIdempotency` 用 `meta.rows_written === 1` 判「锁是不是我抢到的」，而 D1 的 `rows_written` 是**含索引写入**的物理行数，插一条锁记录也可能 >1 —— 于是自己抢到了却被判成没抢到，紧接着重读锁又读到**自己刚写的那条**，一路报「上一次恢复还没结束」，并且 `finally` 里因为 `lockAcquired` 仍是 false 而**不会释放**，两分钟内谁来都恢复不了。改为按 `meta.changes`（逻辑变更行数：1 = 抢到、0 = 别人占着）判定，`rows_written` 只作为没有 `changes` 的旧适配器兜底，且不再从「>1」推断归属。同时把恢复锁切到三态 `claimIdempotencyDetailed`：「别人在跑」和「锁不可用」不再混成同一个 `false` —— 前者回「上一次恢复还没结束」，后者回「无法确认恢复锁是否可用…本次未做任何改动」，不再让用户对着一句假话干等两分钟。
+> - **恢复的版本闸门挪到抢锁之前**：归一化（含 `checkBackupVersion`）全程是纯计算、一次库都不碰。原先排在抢锁之后，导致「备份版本比当前版本新」这种一眼就该拒绝的输入先去抢锁，抢不到还回报成「上一次恢复还没结束」——报错要报真原因。
+> - **卡片拖拽一拖就报错（P0）**：两条独立成因。其一是 `App.tsx` 的 `POINTER_SENSOR_OPTS` 同时给了 `distance: 5` 和 `delay: 0`，dnd-kit 的 `PointerSensor` 在「位移没超过 distance」时会拐进 delay 分支并调用 `hasExceededDistance(delta, tolerance)`，而这条路径上 `tolerance` 是 `undefined` → `Cannot use 'in' operator to search for 'x' in undefined`（日志里 4 条，堆栈都落在 vendor 的 `handleMove`）。去掉多余的 `delay: 0`，只留 `distance: 5`。其二是跨分组拖动时 `dragover` 每帧都重建 `groups` 数组（同组也算一次移动），把 dnd-kit 的 `useDerivedTransform` effect 顶成自激循环 → React #185（Maximum update depth exceeded，日志里 4 条）。现在 `dragover` 只做**跨组移动**（`crossGroupOnly`，同组直接原样返回，不产生新引用），并在拖起时记一份分组快照：`dragover` 期间基于快照重算、`dragend`/`dragcancel` 收尾时按快照回滚，取消拖动不再残留半路状态。
+> - **审计日志时间差 8 小时**：`audit_log.created_at` 是 SQLite `CURRENT_TIMESTAMP` 写下的**无时区 UTC 文本**，前端当成本地时间 `toLocaleString` 就成了 `02:38`（真实北京时间 `10:38`）。新增 `fmtAuditDateTime`：识别「无时区」形态先补 `Z` 按 UTC 解析，再固定按 `Asia/Shanghai` 格式化；`AuditDialog` 两处（明细行、客户端错误分组）改用它。别的字段仍走 `fmtDateTime`，不牵连全站时间显示。
+> - **QQ 浏览器滚到中段抖动 + 白块挡住卡片**：分组面板的 `content-visibility: auto` 配着 420px 猜测占位，在 QQ 的合成器上滚到视口中段时会反复进出「跳过绘制」判定，表现为不断抖动并糊出白块。QQ 安全档（`html.nav-qqbrowser`）下对浏览态面板（`data-sort-mode="None"`）强制 `content-visibility: visible` + `contain-intrinsic-size: none`；React 侧的一次性懒挂载照旧，排序态的 transform 与测量不受影响，其他浏览器一行不变。
+> - **记事本备份页多出一个「）」**：`NotesBackupTab.tsx` 里一行孤立的 `)` 被当成文本节点渲染出来了，删掉。
+> - **本地文件恢复 403（VPS 侧）**：nginx 的 ModSecurity/OWASP CRS 949110 把大体积加密 POST 当注入拦掉。已在 `/api/import`、`/api/notes/import`、`/api/webdav/` 三处 location 加 `modsecurity off;`（VPS 上已完成并 reload）；应用侧把 worker 的 10MB 额度正则补上 `notes/import`，之前它只认 `import` 与 `webdav/upload`。
+> - **本次不动**：Chrome 上「笔记编辑打开仍无行号」按用户决定不修；拖拽快照回滚理论上可能覆盖同一时刻的 bootstrap 刷新（无现场证据），留作观察项。
+>
+> 新增守卫（均对旧写法做过反向验证）：`restoreAtomicity` 新增 11 条锁用例（`changes-only/indexed` 两种元数据形态、`changes=0` 不释放真实持有者、索引计数下过期锁可重抢、无法确认时不误报并发且不删未知持有者、缺 Detailed 能力拒绝无锁导入、D1 报错不退回无锁导入、异常后 `finally` 释放）；`idempotency` 补 `claimed by meta.changes` 与三态分离；`sortController.dom` 直接调真实 `PointerSensor.prototype.handleMove`（5px 内不抛、6px 启动、`{distance:5,delay:0}` 必抛）+ 80 次交替 `over` 不重建数组；`whiteBlock.dom` 加 QQ 面板静态守卫；`formatUtilities` 钉无时区串→北京时间；`streamLimits`/`workerRequestRebuild` 钉笔记恢复的 10MB 额度。
+>
+> 本地门禁全绿：`tsc -b`(0 error) / lint(0 error，23 条 react-refresh 基线 warning) / 全量单测(4225 通过，0 失败，1 跳过) / build / `check:budget`(37/37) / `audit:a11y`(0 项不合格) / `audit:contrast`(亮暗各 0 处) / `check:strict-idx`(366/62/62) / `check:brand` / smoke(全部通过)。
+
 ## 2026-11-07 · 修复：普通模式在 QQ 浏览器持续闪烁 / 弹窗白块（极光重绘风暴 + QQ 自动安全档）（34.1.1）
 
 > 34.1.0 上线后用户复测：**Chrome 一切正常，但 QQ 浏览器**仍持续闪烁（卡片悬停闪、顶栏与滚动条逐帧闪）并伴随设置 / 弹窗超界白块，开启「清爽模式」后全部消失。这一批定位到真正的根因并修复；34.1.0 那一轮的头部滞回 / 零位移 / sensor 引用 / 设置纸面去模糊**都没碰极光**，所以对你无效。

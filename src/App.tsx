@@ -228,7 +228,7 @@ wrapMutations(api as unknown as MutationApi);
 // 下游 memo 组件的 props 浅比较永远失败，看起来「数据没动」却整列表重渲染。
 // 引用稳定性是 memo 生效的前提，和激活阈值本身是多少无关。
 // （PointerSensor 的 distance: 5 是提高激活阈值，避免点击链接/按钮时误触发拖拽。）
-const POINTER_SENSOR_OPTS = { activationConstraint: { distance: 5, delay: 0 } };
+const POINTER_SENSOR_OPTS = { activationConstraint: { distance: 5 } };
 const TOUCH_SENSOR_OPTS = { activationConstraint: { delay: 100, tolerance: 3 } };
 const KEYBOARD_SENSOR_OPTS = { coordinateGetter: sortableKeyboardCoordinates };
 

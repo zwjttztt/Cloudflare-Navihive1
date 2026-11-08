@@ -47,6 +47,21 @@ test("分组拖拽：拖到自己身上、id 对不上时返回原引用（跳�
     assert.equal(moveGroupByDrag(gs, "1", ""), gs);
 });
 
+test("dragOver 跨组后重复碰撞保持原引用，dragEnd 仍可组内排序", () => {
+    const gs = [group(1, [10, 11]), group(2, [20])];
+    const moved = moveSiteAcrossGroups(gs, "site-10", "site-20", true);
+    assert.deepEqual(siteIds(moved, 2), [10, 20]);
+    for (let index = 0; index < 100; index++) {
+        const target = index % 2 === 0 ? "site-20" : "site-10";
+        assert.equal(moveSiteAcrossGroups(moved, "site-10", target, true), moved);
+    }
+    assert.equal(moveSiteAcrossGroups(moved, "site-10", "group-2", true), moved);
+    const dropped = moveSiteAcrossGroups(moved, "site-10", "site-20");
+    assert.deepEqual(siteIds(dropped, 2), [20, 10]);
+    const empty = [group(1, [10]), group(2, [])];
+    assert.deepEqual(siteIds(moveSiteAcrossGroups(empty, "site-10", "group-2", true), 2), [10]);
+});
+
 // ---------- 站点：同组重排 ----------
 
 test("站点同组重排：从首位拖到末位", () => {

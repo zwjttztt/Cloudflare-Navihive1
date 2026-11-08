@@ -217,7 +217,9 @@ async function handleRequest(request: Request, env: Env, rid: string): Promise<R
             // 预览里没有」。额度与 worker/attachments.ts 的单文件上限一致。
             const attachment =
                 request.method === "POST" && url.pathname === "/api/notes/attachments";
-            const large = /\/api\/(import|webdav\/upload)$/.test(url.pathname);
+            // 笔记本地恢复（POST /api/notes/import）也是整站备份体，可能远超 256KB 默认档，
+            // 与导航 import 同等对待给 10MB 额度，否则大份笔记备份会 413（2026-11-08 排查发现）。
+            const large = /\/api\/(import|notes\/import|webdav\/upload)$/.test(url.pathname);
             const report = /\/api\/(report-error|csp-report)$/.test(url.pathname);
             const maxBytes = attachment
                 ? ATTACHMENT_MAX_BYTES

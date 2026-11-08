@@ -14,6 +14,16 @@ import assert from "node:assert/strict";
 import { readBoundedBytes, BodyLimitError } from "../worker/util";
 import { gunzipOutputLimit, gunzipToString, gzipBytes } from "../worker/webdav/transport";
 
+test("恢复请求的 10MB 边界：等于上限放行，多一字节拒绝", async () => {
+    const limit = 10 * 1024 * 1024;
+    assert.equal((await readBoundedBytes(bigStream(limit), limit, 5000)).byteLength, limit);
+    await assert.rejects(
+        () => readBoundedBytes(bigStream(limit + 1), limit, 5000),
+        (error: unknown) => error instanceof BodyLimitError && error.status === 413
+    );
+    assert.equal((await readBoundedBytes(bigStream(256 * 1024 + 1), limit, 5000)).byteLength, 256 * 1024 + 1);
+});
+
 /**
  * 「每一块都要等够 delayMs 才吐」的流，而且**永不结束**。
  *

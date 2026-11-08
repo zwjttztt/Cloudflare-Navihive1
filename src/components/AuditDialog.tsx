@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { actionLabel } from "../utils/auditActionLabels";
 import { errorSourceLabel, formatAuditDetail, formatAuditPath } from "../utils/auditDetailText";
-import { fmtDateTime } from "../utils/format";
+import { fmtAuditDateTime } from "../utils/format";
 import {
     Button,
     Dialog,
@@ -288,7 +288,7 @@ export function AuditPanel({ client, retentionDays }: AuditPanelProps) {
                                             secondary={
                                                 <span>
                                                     {detailText ? `${detailText} · ` : ""}
-                                                    {fmtDateTime(row.created_at)}
+                                                    {fmtAuditDateTime(row.created_at)}
                                                 </span>
                                             }
                                             actions={
@@ -368,7 +368,7 @@ export function AuditPanel({ client, retentionDays }: AuditPanelProps) {
                                     }
                                     secondary={
                                         <span>
-                                            {group.message} · 最近 {fmtDateTime(group.lastAt)}
+                                            {group.message} · 最近 {fmtAuditDateTime(group.lastAt)}
                                         </span>
                                     }
                                     actions={

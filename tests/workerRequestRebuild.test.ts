@@ -62,6 +62,21 @@ test("限流后的请求重建不得拿 Request 实例当模板（undici 空体�
     assert.match(rebuild[1], /method:\s*request\.method/, "重建请求时漏了 method");
 });
 
+test("笔记恢复与导航恢复使用同一大请求额度，普通笔记写入不放宽", () => {
+    const src = stripComments(readFileSync(path.join(ROOT, "worker", "index.ts"), "utf8"));
+    const match = /const large = (\/.*\/)[.]test\(url.pathname\)/.exec(src);
+    assert.ok(match, "找不到入口大请求路径判据");
+    const expression = match[1];
+    const large = new RegExp(expression.slice(1, -1));
+    for (const route of ["/api/import", "/api/notes/import", "/api/webdav/upload"]) {
+        assert.equal(large.test(route), true, route);
+    }
+    for (const route of ["/api/notes", "/api/notes/1", "/api/notes/import/extra", "/api/webdav/list"]) {
+        assert.equal(large.test(route), false, route);
+    }
+    assert.match(src, /large\s*\?\s*10\s*\*\s*1024\s*\*\s*1024/);
+});
+
 test("桥接层（server/entry.ts）给非 GET/HEAD 挂 body 流的约定还在", () => {
     const src = stripComments(readFileSync(path.join(ROOT, "server", "entry.ts"), "utf8"));
     // hasBody 的定义不能被改成「只有 POST/PUT」：DELETE 一样可能带 body，

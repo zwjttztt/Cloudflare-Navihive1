@@ -32,6 +32,8 @@ class MockD1 {
     idem = new Map<string, Row>();
     /** 幂等表是否抛错（建表之前 / 表不可用）—— 用来验证锁「不可用」与「被占」要分开 */
     idemFail = false;
+    /** Model logical changes separately from D1 index-write accounting. */
+    insertMeta: ((changes: number) => Record<string, number>) | null = null;
 
     /** 统一入口：表不可用时所有语句都抛，模拟缺表 */
     private guard(sql: string) {
@@ -114,7 +116,10 @@ class MockD1 {
                         written = 1;
                     }
                 }
-                return { success: true, meta: { rows_written: written } };
+                const meta = /INSERT INTO idempotency_keys/.test(sql) && self.insertMeta
+                    ? self.insertMeta(written)
+                    : { rows_written: written };
+                return { success: true, meta };
             },
         });
         return make([]);
@@ -134,6 +139,42 @@ function newApi(): { api: NavigationAPI; db: MockD1 } {
 }
 
 const OP = "op-0123456789abcdef";
+
+for (const scenario of [
+    { name: "changes includes successful logical insert", meta: { changes: 1 }, expected: "acquired" },
+    { name: "index writes do not hide successful insert", meta: { changes: 1, rows_written: 3 }, expected: "acquired" },
+    { name: "changes zero wins over index count", meta: { changes: 0, rows_written: 3 }, expected: "busy" },
+    { name: "legacy rows_written one", meta: { rows_written: 1 }, expected: "acquired" },
+    { name: "legacy rows_written zero", meta: { rows_written: 0 }, expected: "busy" },
+    { name: "ambiguous index-only metadata", meta: { rows_written: 3 }, expected: "unavailable" },
+    { name: "missing counters", meta: {}, expected: "unavailable" },
+    { name: "invalid logical count is not acquisition", meta: { changes: 2, rows_written: 1 }, expected: "unavailable" },
+    { name: "NaN logical count is not acquisition", meta: { changes: Number.NaN, rows_written: 1 }, expected: "unavailable" },
+]) {
+    test(`claim metadata: ${scenario.name}`, async () => {
+        const { api, db } = newApi();
+        db.insertMeta = () => scenario.meta as Record<string, number>;
+        assert.equal(await api.claimIdempotencyDetailed("restore.lock", OP), scenario.expected);
+    });
+}
+
+test("claim metadata: indexed insert expires and can be claimed again", async () => {
+    const { api, db } = newApi();
+    db.insertMeta = changes => ({ changes, rows_written: changes * 3 });
+    assert.equal(await api.claimIdempotencyDetailed("restore.lock", OP), "acquired");
+    assert.equal(await api.claimIdempotencyDetailed("restore.lock", OP), "busy");
+    const row = db.idem.get(`restore.lock|${OP}`)!;
+    row.expires_at = Date.now() - 1;
+    assert.equal(await api.claimIdempotencyDetailed("restore.lock", OP), "acquired");
+    await api.releaseIdempotency("restore.lock", OP);
+    assert.equal(db.idem.size, 0);
+});
+
+test("claim metadata: D1 errors remain unavailable", async () => {
+    const { api, db } = newApi();
+    db.idemFail = true;
+    assert.equal(await api.claimIdempotencyDetailed("restore.lock", OP), "unavailable");
+});
 
 function reqWithKey(key: string | null): Request {
     const headers: Record<string, string> = {};

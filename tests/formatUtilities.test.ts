@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fmtBytes, fmtDateTime, fmtRelative } from "../src/utils/format";
+import { fmtAuditDateTime, fmtBytes, fmtDateTime, fmtRelative } from "../src/utils/format";
 import {
     AUTO_BACKUP_STALE_DAYS,
     daysSince,
@@ -28,6 +28,22 @@ test("date formatting preserves raw invalid values and explicit empty fallback",
     assert.equal(formatTime(""), "");
     assert.equal(formatTime("unknown"), "unknown");
     assert.equal(fmtDateTime(new Date(NaN), { fallback: "—" }), "—");
+});
+
+test("审计UTC时间固定显示北京时间，跨日期边界且不依赖浏览器时区", () => {
+    const expected = "2026/11/8 00:00:00";
+    for (const value of ["2026-11-07 16:00:00", "2026-11-07T16:00:00Z", "2026-11-08T00:00:00+08:00", "2026-11-07T08:00:00-08:00"]) {
+        assert.equal(fmtAuditDateTime(value), expected);
+    }
+    assert.equal(fmtAuditDateTime("2026-11-08 02:38:16"), "2026/11/8 10:38:16");
+    assert.equal(fmtAuditDateTime("2026-12-31 16:00:00"), "2027/1/1 00:00:00");
+    assert.equal(fmtAuditDateTime("2026-11-07 16:00:00.123"), expected);
+    assert.equal(fmtAuditDateTime(new Date("2026-11-07T16:00:00Z")), expected);
+    assert.equal(fmtAuditDateTime(Date.parse("2026-11-07T16:00:00Z")), expected);
+    assert.equal(fmtAuditDateTime("invalid"), "invalid");
+    assert.equal(fmtAuditDateTime("invalid", "—"), "—");
+    assert.equal(fmtAuditDateTime(""), "");
+    assert.equal(fmtAuditDateTime(new Date(NaN), "—"), "—");
 });
 
 test("SQLite timestamps keep local wall time, including fractional seconds", () => {

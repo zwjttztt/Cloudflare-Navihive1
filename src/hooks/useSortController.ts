@@ -167,6 +167,9 @@ export function useSortController({
         [setGroups]
     );
 
+    const dragSnapshotRef = useRef<GroupWithSites[] | null>(null);
+    const [draggingSite, setDraggingSite] = useState<Site | null>(null);
+
     // 站点跨分组拖拽：排列计算在 utils/sortable（有单测），这里只负责写回状态
     const moveSite = useCallback(
         (activeId: string, overId: string) => {
@@ -178,31 +181,43 @@ export function useSortController({
     const handleSiteSortDragOver = useCallback(
         (event: DragOverEvent) => {
             const { active, over } = event;
-            if (!over) return;
-            moveSite(String(active.id), String(over.id));
+            if (!over || active.id === over.id) return;
+            if (!dragSnapshotRef.current) dragSnapshotRef.current = groupsRef.current;
+            setGroups(prev => moveSiteInGroups(prev, String(active.id), String(over.id), true));
         },
-        [moveSite]
+        [groupsRef, setGroups]
     );
 
     const handleSiteSortDragEnd = useCallback(
         (event: DragEndEvent) => {
             const { active, over } = event;
-            if (!over) return;
+            const snapshot = dragSnapshotRef.current;
+            dragSnapshotRef.current = null;
+            setDraggingSite(null);
+            if (!over) {
+                if (snapshot) setGroups(() => snapshot);
+                return;
+            }
             moveSite(String(active.id), String(over.id));
         },
-        [moveSite]
+        [moveSite, setGroups]
     );
 
     // 拖拽视觉反馈：被拖起的卡片用浮层跟着指针走，原位留半透明占位
-    const [draggingSite, setDraggingSite] = useState<Site | null>(null);
     const handleSiteDragStart = useCallback((event: DragStartEvent) => {
         const id = String(event.active.id);
         if (!id.startsWith("site-")) return;
         const siteId = Number(id.slice(5));
         const found = groupsRef.current.flatMap(g => g.sites).find(s => s.id === siteId);
+        dragSnapshotRef.current = found ? groupsRef.current : null;
         setDraggingSite(found ?? null);
     }, [groupsRef]);
-    const handleSiteDragCancel = useCallback(() => setDraggingSite(null), []);
+    const handleSiteDragCancel = useCallback(() => {
+        const snapshot = dragSnapshotRef.current;
+        dragSnapshotRef.current = null;
+        if (snapshot) setGroups(() => snapshot);
+        setDraggingSite(null);
+    }, [setGroups]);
 
     // 保存站点排序（支持跨分组移动）
     // 顺序调整 + 跨组移动合并成「一次」批量请求：

@@ -13,6 +13,7 @@ import { useSortController, type SortApi } from "../src/hooks/useSortController"
 import type { SiteOrderItem } from "../src/utils/sortable";
 import type { GroupWithSites } from "../src/types";
 import type { Site } from "../src/API/http";
+import { PointerSensor } from "@dnd-kit/core";
 
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
@@ -93,6 +94,33 @@ async function run(fn: () => void | Promise<void>) {
     });
 }
 
+test("真实PointerSensor未超distance移动不触发undefined容差，旧混合配置可复现TypeError", () => {
+    let started = 0;
+    let cancelled = 0;
+    let pending = 0;
+    // 直接调用库的原型方法而非复制算法：不启动全局监听器，也不依赖布局模拟。
+    const sensor = Object.assign(Object.create(PointerSensor.prototype), {
+        activated: false,
+        initialCoordinates: { x: 0, y: 0 },
+        props: { options: { activationConstraint: { distance: 5 } }, onMove: () => {} },
+        handleStart: () => { started++; },
+        handleCancel: () => { cancelled++; },
+        handlePending: () => { pending++; },
+    }) as {
+        props: { options: { activationConstraint: { distance: number; delay?: number } } };
+        handleMove(event: MouseEvent): void;
+    };
+    const move = (x: number): MouseEvent => new MouseEvent("pointermove", { clientX: x, clientY: 0 });
+    assert.doesNotThrow(() => sensor.handleMove(move(1)));
+    assert.equal(pending, 1);
+    assert.equal(started, 0);
+    assert.equal(cancelled, 0);
+    sensor.handleMove(move(6));
+    assert.equal(started, 1);
+    sensor.props.options.activationConstraint = { distance: 5, delay: 0 };
+    assert.throws(() => sensor.handleMove(move(1)), /Cannot use 'in' operator/);
+});
+
 test("进入站点排序：切到 SiteSort、记住分组 id，并先关掉「设置」菜单", async () => {
     const { api } = makeApi();
     let closed = 0;
@@ -137,6 +165,45 @@ test("拖拽：跨组移动改本地分组，浮层跟着被拖起的卡片", as
     await run(() => sort().handleSiteDragCancel());
     assert.equal(text("dragging"), "none");
     cleanup();
+});
+
+test("跨非空组后取消或无落点松手恢复dragStart快照且不请求API", async () => {
+    const { api, calls } = makeApi();
+    mount(<Harness api={api} onClosed={() => {}} onError={() => {}} />);
+    try {
+        for (const cancel of [true, false]) {
+            await run(() => sort().handleSiteDragStart({ active: { id: "site-10" } } as never));
+            await run(() => sort().handleSiteSortDragOver({ active: { id: "site-10" }, over: { id: "site-20" } } as never));
+            assert.equal(text("groups"), "[[1,[11]],[2,[10,20]]]");
+            if (cancel) await run(() => sort().handleSiteDragCancel());
+            else await run(() => sort().handleSiteSortDragEnd({ active: { id: "site-10" }, over: null } as never));
+            assert.equal(text("groups"), "[[1,[10,11]],[2,[20]]]");
+            assert.equal(text("dragging"), "none");
+        }
+        assert.equal(calls.length, 0);
+    } finally {
+        cleanup();
+    }
+});
+
+test("跨非空组后碰撞目标交替不再反复组内交换，松手仍可排序", async () => {
+    const { api, calls } = makeApi();
+    mount(<Harness api={api} onClosed={() => {}} onError={() => {}} />);
+    try {
+        await run(() => sort().startSiteSort(1));
+        await run(() => sort().handleSiteSortDragOver({ active: { id: "site-10" }, over: { id: "site-20" } } as never));
+        assert.equal(text("groups"), "[[1,[11]],[2,[10,20]]]");
+        for (let index = 0; index < 80; index++) {
+            const overId = index % 2 === 0 ? "site-20" : "site-10";
+            await run(() => sort().handleSiteSortDragOver({ active: { id: "site-10" }, over: { id: overId } } as never));
+            assert.equal(text("groups"), "[[1,[11]],[2,[10,20]]]");
+        }
+        await run(() => sort().handleSiteSortDragEnd({ active: { id: "site-10" }, over: { id: "site-20" } } as never));
+        assert.equal(text("groups"), "[[1,[11]],[2,[20,10]]]");
+        assert.equal(calls.length, 0, "拖动期间不写数据库");
+    } finally {
+        cleanup();
+    }
 });
 
 test("保存站点排序：顺序 + 跨组合成一次请求，成功后退出排序模式并补齐本地", async () => {

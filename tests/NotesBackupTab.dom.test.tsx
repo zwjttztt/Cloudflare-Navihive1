@@ -84,6 +84,17 @@ function notifier() {
 
 // ---------------- 渲染与查询工具 ----------------
 
+test("从网盘恢复区域不渲染孤立的 JSX 右括号", async () => {
+    await mount(makeData());
+    const walker = document.createTreeWalker(host!, NodeFilter.SHOW_TEXT);
+    const stray: string[] = [];
+    while (walker.nextNode()) {
+        const text = walker.currentNode.textContent?.trim() ?? "";
+        if (text === ")") stray.push(text);
+    }
+    assert.deepEqual(stray, [], "误留在 JSX 标签之间的右括号不能出现在界面上");
+});
+
 async function mount(data: NotesDataTabData, notify = notifier()) {
     host = document.createElement("div");
     document.body.appendChild(host);

@@ -897,6 +897,14 @@ html.dark .nav-skip-link {
     contain-intrinsic-size: auto 420px;
 }
 
+/* QQ 安全档不仅要关掉模糊，还要避免中段滚动时反复跳过/恢复整组绘制。
+   保留 React 的一次性懒挂载，禁用 CSS 的 420px 猜测占位；普通浏览器不变。
+   只覆盖浏览模式：排序中的 dnd transform 与测量必须保留。 */
+html.nav-qqbrowser .nav-group-panel[data-sort-mode="None"] {
+    content-visibility: visible;
+    contain-intrinsic-size: none;
+}
+
 /* 记事本打开期间：背景主页面整块停绘。
    NotesOverlay 是叠在 .nav-root 之上的 fixed 层（不是 Portal），背景一直留在 DOM 里；
    上面那条 content-visibility:auto 离屏时会让浏览器跳过子树绘制、只留一个

@@ -208,7 +208,10 @@ class MockD1 {
                 const s = self.normalize(sql);
                 if (s.startsWith("INSERT")) self.insert(sql, args);
                 else if (s.startsWith("DELETE")) self.removeByIds(sql, args);
-                return { success: true };
+                // 真 D1 的 run() 一定带 meta；恢复锁靠 meta.changes 判断「这次到底是不是我抢到的」，
+                // 少了它就只能判成「无法确认」，覆盖导入会被安全拒绝。
+                // 这个桩不模拟锁竞争（幂等表压根没建），所以一律当作抢到了。
+                return { success: true, meta: { changes: 1, rows_written: 1 } };
             },
             async all() {
                 const s = self.normalize(sql);

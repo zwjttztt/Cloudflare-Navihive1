@@ -84,7 +84,8 @@ export function moveSiteByStep(sites: Site[], index: number, delta: number): Sit
 export function moveSiteAcrossGroups(
     groups: GroupWithSites[],
     activeId: string,
-    overId: string
+    overId: string,
+    crossGroupOnly: boolean = false
 ): GroupWithSites[] {
     if (!overId || activeId === overId) return groups;
     const activeSiteId = parseId(activeId, SITE_PREFIX);
@@ -117,6 +118,9 @@ export function moveSiteAcrossGroups(
 
     // 同一分组内重排：只克隆这一个分组
     if (activeContainerIdx === overContainerIdx) {
+        // dragOver 只跨组；组内交换会改变碰撞目标，测量后再次交换形成更新环。
+        // 松手的 dragEnd 仍执行一次最终组内排序。
+        if (crossGroupOnly) return groups;
         const siteList = groups[activeContainerIdx].sites;
         const oldIndex = siteList.findIndex(s => s.id === activeSiteId);
         // 索引要夹到列表内：overIndex 可能是「末尾」语义（= length）

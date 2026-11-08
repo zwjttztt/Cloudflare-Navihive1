@@ -76,6 +76,7 @@ function extractWhiteBlockRules(): string {
         const body = css.slice(open + 1, close);
         if (
             selector.includes("html[data-notes-open]") ||
+            selector.includes("html.nav-qqbrowser .nav-group-panel") ||
             selector === '.nav-group-panel[data-sort-mode="None"]' ||
             selector === ".nav-card-in" ||
             selector === ".nav-card-in.nav-card-first-in"
@@ -115,6 +116,7 @@ function cleanup(): void {
     sitesApi = null;
     document.body.innerHTML = "";
     document.documentElement.removeAttribute("data-notes-open");
+    document.documentElement.classList.remove("nav-qqbrowser");
     injectedStyle?.remove();
     injectedStyle = null;
     if (hitTestInstalled) {
@@ -135,6 +137,41 @@ function cleanup(): void {
     }
 }
 afterEach(cleanup);
+
+test("QQ 浏览模式禁用整组跳绘占位，普通浏览器和排序保持原状", () => {
+    const css = injectCss();
+    // 静态守卫：QQ 覆盖必须钉死浏览模式（[data-sort-mode="None"]）。若放开到全部模式，
+    // 排序时也会被强制 visible/none，拖拽测量失真 —— 这条能直接拦下这种越界。
+    assert.ok(
+        css.includes('html.nav-qqbrowser .nav-group-panel[data-sort-mode="None"]'),
+        "QQ 覆盖必须限定在浏览模式，不能影响排序模式"
+    );
+    const panel = document.createElement("div");
+    panel.className = "nav-group-panel";
+    panel.dataset.sortMode = "None";
+    const card = document.createElement("div");
+    card.className = "nav-card-in nav-card-first-in";
+    panel.appendChild(card);
+    document.body.appendChild(panel);
+
+    assert.equal(getComputedStyle(panel).contentVisibility, "auto");
+    document.documentElement.classList.add("nav-qqbrowser");
+    assert.equal(getComputedStyle(panel).contentVisibility, "visible");
+    assert.equal(getComputedStyle(panel).getPropertyValue("contain-intrinsic-size"), "none");
+    assert.notEqual(getComputedStyle(card).animation, "none");
+    assert.equal(getComputedStyle(card).contain, "layout style");
+
+    panel.dataset.sortMode = "SiteSort";
+    // 排序模式不得套用整组虚拟化（基础规则只对 None 生效），否则 420px 占位会干扰拖拽测量。
+    // ⚠️ 这里不能断言「不等于 visible」：content-visibility 的 CSS 初始值本就是 visible，
+    // 在无规则命中的排序模式下与 QQ 覆盖值相同、无法区分；用「不等于 auto」才真正证明没套用虚拟化。
+    assert.notEqual(getComputedStyle(panel).contentVisibility, "auto");
+    assert.equal(getComputedStyle(card).contain, "layout style");
+    assert.notEqual(getComputedStyle(card).animation, "none");
+    document.documentElement.classList.remove("nav-qqbrowser");
+    panel.dataset.sortMode = "None";
+    assert.equal(getComputedStyle(panel).contentVisibility, "auto");
+});
 
 /** 「一 observe 就当场触发」的 IO 替身：让主界面真的把卡片挂出来 */
 class InstantIntersectionObserver {

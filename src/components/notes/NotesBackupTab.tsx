@@ -859,7 +859,6 @@ export default function NotesBackupTab({ data, onNotify }: NotesBackupTabProps) 
                                     </>
                                 )}
                             </Box>
-        )
                 {/* 删除「最近备份」记录的二次确认（2026-10-10）。
                     有对应网盘文件的先把文件删掉 —— 文件删不掉就整单不删，
                     免得留下「记录没了、文件还躺在网盘上」的孤儿备份。 */}

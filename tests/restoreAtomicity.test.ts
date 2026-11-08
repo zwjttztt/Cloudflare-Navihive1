@@ -36,6 +36,7 @@ class MockD1 {
     batchCalls = 0;
     /** batch 里执行过的语句数（每次调用重置） */
     lastBatchSize = 0;
+    lockMeta: ((changes: number) => Record<string, number>) | null = null;
 
     private norm(sql: string): string {
         return sql.replace(/\s+/g, " ").trim();
@@ -88,7 +89,7 @@ class MockD1 {
         if (s.startsWith("INSERT INTO idempotency_keys")) {
             const key = `${args[0]}|${args[1]}`;
             if (this.idempotency.has(key)) return { rows: [], changed: 0 };
-            this.idempotency.set(key, { state: "pending", expiresAt: Number(args[6]) });
+            this.idempotency.set(key, { state: "pending", expiresAt: Number(args[4]) });
             return { rows: [], changed: 1 };
         }
         if (s.startsWith("DELETE FROM idempotency_keys")) {
@@ -207,7 +208,10 @@ class MockD1 {
             },
             async run() {
                 const out = self.runStatement(sql, args);
-                return { success: true, results: out.rows, meta: { rows_written: out.changed } };
+                const meta = /INSERT INTO idempotency_keys/.test(sql) && self.lockMeta
+                    ? self.lockMeta(out.changed)
+                    : { rows_written: out.changed };
+                return { success: true, results: out.rows, meta };
             },
         };
         return stmt;
@@ -473,6 +477,101 @@ test("站点挂到重新发号的分组上（旧 group_id 翻译正确）", asyn
     assert.equal(db.sites.find(x => x.name === "备份站点1")?.group_id, newGroupA);
     assert.equal(db.sites.find(x => x.name === "备份站点2")?.group_id, newGroupB);
     assert.notEqual(newGroupA, newGroupB, "两个分组不能拿到同一个号");
+});
+
+for (const indexed of [false, true]) {
+    test(`恢复锁：changes-only/indexed=${indexed} 不误读自身锁且 finally 释放`, async () => {
+        const db = new MockD1();
+        seed(db);
+        db.lockMeta = (changes: number): Record<string, number> =>
+            indexed ? { changes, rows_written: changes * 3 } : { changes };
+        const api = apiWith(db, 2);
+        const result = await api.importData(makeBackup());
+        assert.equal(result.success, true, result.message);
+        assert.equal(db.idempotency.size, 0, "成功后必须释放本次锁");
+    });
+}
+
+test("恢复锁：无法确认是否抢到时安全失败，不误报并发、不删未知持有者", async () => {
+    const db = new MockD1();
+    seed(db);
+    db.lockMeta = () => ({});
+    const result = await apiWith(db, 2).importData(makeBackup());
+    assert.equal(result.success, false);
+    assert.doesNotMatch(result.message ?? "", /上一次恢复还没结束/);
+    assert.match(result.message ?? "", /无法确认恢复锁/);
+    assert.equal(db.idempotency.size, 1, "未知所有权不得删除锁");
+    assert.equal(db.batchCalls, 0, "不得无锁写入");
+    assertOldDataIntact(db, "锁状态未知");
+});
+
+test("恢复锁：changes 为零时不释放真实持有者，即使 rows_written 非零", async () => {
+    const db = new MockD1();
+    seed(db);
+    const holder = { state: "pending", expiresAt: Date.now() + 60_000 };
+    db.idempotency.set("restore.lock|u2", holder);
+    db.lockMeta = changes => ({ changes, rows_written: 3 });
+    const result = await apiWith(db, 2).importData(makeBackup());
+    assert.equal(result.success, false);
+    assert.match(result.message ?? "", /上一次恢复还没结束/);
+    assert.equal(db.idempotency.get("restore.lock|u2"), holder);
+    assert.equal(db.batchCalls, 0);
+});
+
+test("恢复锁：索引计数下过期旧锁可以重抢并正常释放", async () => {
+    const db = new MockD1();
+    seed(db);
+    db.idempotency.set("restore.lock|u2", { state: "pending", expiresAt: Date.now() - 1 });
+    db.lockMeta = changes => ({ changes, rows_written: changes * 3 });
+    const result = await apiWith(db, 2).importData(makeBackup());
+    assert.equal(result.success, true, result.message);
+    assert.equal(db.idempotency.size, 0);
+});
+
+test("恢复锁：空覆盖提前返回也释放已确认的锁", async () => {
+    const db = new MockD1();
+    seed(db);
+    db.lockMeta = changes => ({ changes, rows_written: changes * 3 });
+    const result = await apiWith(db, 2).importData({ groups: [], sites: [] } as unknown as ExportData, { mode: "overwrite" });
+    assert.equal(result.success, false);
+    assert.match(result.message ?? "", /覆盖导入已取消/);
+    assert.equal(db.idempotency.size, 0);
+    assert.equal(db.batchCalls, 0);
+});
+
+test("恢复锁：缺少 Detailed 能力时不允许无锁导入", async () => {
+    const db = new MockD1();
+    seed(db);
+    const api = apiWith(db, 2);
+    Object.defineProperty(api, "claimIdempotencyDetailed", { value: undefined });
+    const result = await api.importData(makeBackup());
+    assert.equal(result.success, false);
+    assert.match(result.message ?? "", /无法确认恢复锁/);
+    assert.equal(db.batchCalls, 0);
+    assert.equal(db.idempotency.size, 0);
+});
+
+test("恢复锁：D1 错误不得退回无锁导入", async () => {
+    const db = new MockD1();
+    seed(db);
+    db.failRules = [{ when: /INSERT INTO idempotency_keys/, error: "D1 unavailable" }];
+    const result = await apiWith(db, 2).importData(makeBackup());
+    assert.equal(result.success, false);
+    assert.match(result.message ?? "", /无法确认恢复锁/);
+    assert.equal(db.batchCalls, 0);
+    assertOldDataIntact(db, "锁存储不可用");
+});
+
+test("恢复锁：导入异常后 finally 释放已确认持有的锁", async () => {
+    const db = new MockD1();
+    seed(db);
+    db.lockMeta = changes => ({ changes, rows_written: changes * 3 });
+    db.failRules = [{ when: /INSERT INTO sites/, error: "injected write failure" }];
+    const result = await apiWith(db, 2).importData(makeBackup());
+    assert.equal(result.success, false);
+    assert.match(result.message ?? "", /injected write failure/);
+    assert.equal(db.idempotency.size, 0);
+    assertOldDataIntact(db, "事务失败后释放");
 });
 
 test("恢复锁：上一个恢复还没结束时，第二次直接被挡下", async () => {

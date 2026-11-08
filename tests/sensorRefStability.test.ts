@@ -61,6 +61,19 @@ function assertNoInline(src: string, sensor: string, label: string) {
     );
 }
 
+test("指针距离约束不能混入无 tolerance 的 delay 分支", () => {
+    const policies: Array<[string, string]> = [
+        [APP_SRC, "POINTER_SENSOR_OPTS"],
+        [GROUP_CARD_SRC, "GROUP_POINTER_SENSOR_OPTS"],
+    ];
+    for (const [source, name] of policies) {
+        const options = source.match(new RegExp(`const ${name} = (\\{[^;]+\\});`))?.[1];
+        assert.ok(options, `${name} 必须存在`);
+        assert.match(options, /distance:\s*5/);
+        assert.doesNotMatch(options, /delay:/, "distance 指针策略不应进入延迟容差分支");
+    }
+});
+
 test("App.tsx：三个 useSensor 都吃模块级常量，不是内联对象字面量", () => {
     assertUsesConst(APP_SRC, "PointerSensor", "POINTER_SENSOR_OPTS", "App.tsx");
     assertUsesConst(APP_SRC, "TouchSensor", "TOUCH_SENSOR_OPTS", "App.tsx");

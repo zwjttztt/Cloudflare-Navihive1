@@ -33,7 +33,7 @@ export type ClaimIdempotencyResult =
     | "acquired"
     /** 别人正占着：应该等它干完（它会在收尾时释放，或 TTL 到点自动失效） */
     | "busy"
-    /** 幂等表不可用（还没建 / D1 抽风）：锁不生效，按没有锁照常执行 */
+    /** 存储或元数据不可用，无法确认锁归属；需要互斥的调用方必须拒绝执行 */
     | "unavailable";
 
 export interface IdempotencyRecord {
@@ -143,7 +143,7 @@ export const idempotencyImpl: IdempotencyApi = {
             const result = await this.db
                 .prepare(
                     // 冲突时不覆盖：谁的 INSERT 先落谁就负责执行，
-                    // 后来者靠 rows_written = 0 知道自己来晚了
+                    // 后来者靠 changes = 0 知道自己来晚了（索引写入不影响判定）
                     `INSERT INTO idempotency_keys
                      (scope, op_id, user_id, state, status, body, created_at, expires_at)
                      VALUES (?, ?, ?, 'pending', NULL, NULL, ?, ?)
@@ -151,17 +151,23 @@ export const idempotencyImpl: IdempotencyApi = {
                 )
                 .bind(scope, opId, this.currentUserId, now, expiresAt)
                 .run();
-            const written = (result as { meta?: { rows_written?: number } } | undefined)?.meta
-                ?.rows_written;
-            if (written === 1) return "acquired";
-            if (written === 0) return "busy";
-            // 拿不到 rows_written（有的驱动 / 测试桩不回这个字段）：**不能**当成
-            // 「别人占着」—— 那会让初次初始化白等一轮再放弃，等于把站点卡死在建库前。
-            // 按「锁不生效」处理，退回不幂等的老行为，与 catch 分支一致。
+            const meta = (result as {
+                meta?: { changes?: number; rows_written?: number };
+            } | undefined)?.meta;
+            // changes 是本语句实际修改的逻辑行数；rows_written 可能包含索引写入，
+            // 插入一条锁记录时也可能大于 1，不能用它的精确值判定所有权。
+            if (typeof meta?.changes === "number") {
+                if (meta.changes === 1) return "acquired";
+                if (meta.changes === 0) return "busy";
+                return "unavailable";
+            }
+            // 兼容仅提供 rows_written 的旧适配器；只接受明确的 0/1，不能从更大计数推断归属。
+            if (meta?.rows_written === 1) return "acquired";
+            if (meta?.rows_written === 0) return "busy";
             return "unavailable";
         } catch {
-            // 表还没建好 / D1 抽风：拿不到锁就干脆不生效，退回「不幂等」的老行为，
-            // 总比把一次正常的写操作拦下来强
+            // 表还没建好 / D1 抽风：不能证明本次取得了锁。调用方按业务决定
+            // 是否降级；恢复等必须互斥的操作应当安全拒绝，不能无锁继续。
             return "unavailable";
         }
     },

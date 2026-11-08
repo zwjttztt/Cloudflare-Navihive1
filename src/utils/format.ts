@@ -84,6 +84,17 @@ export function fmtDateTime(
     return date.toLocaleString(locale, { hour12 });
 }
 
+/** 审计时间：SQLite 无时区时间按 UTC 解析，展示固定为北京时间。 */
+export function fmtAuditDateTime(input: Date | string | number, fallback?: string): string {
+    const raw = typeof input === "string" ? input.trim() : input;
+    const normalized = typeof raw === "string" && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(raw)
+        ? `${raw.replace(" ", "T")}Z`
+        : raw;
+    const date = toDate(normalized);
+    if (!date) return fallback ?? String(input ?? "");
+    return date.toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" });
+}
+
 export interface FmtRelativeOptions {
     /** 参照「现在」，默认 new Date()。注入是为了测试 / 自动保存计时器可以手动推进。 */
     now?: Date;

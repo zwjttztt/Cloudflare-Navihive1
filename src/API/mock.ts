@@ -1646,6 +1646,9 @@ export class MockNavigationClient {
         return true;
     }
 
+    // 三态版只给服务端恢复锁用，前端演示客户端不调它，所以这里刻意不实现：
+    // Mock 的 importData 是自己的简化实现，不走服务端那把锁。
+
     async completeIdempotency(
         scope: string,
         opId: string,

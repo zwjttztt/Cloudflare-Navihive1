@@ -345,31 +345,47 @@ export const transferImpl: TransferApi = {
         const lockKey = `u${this.currentUserId ?? "anon"}`;
 
         try {
+            // 归一化（含版本闸门）必须排在抢锁之前：它全是纯计算，一次库都不碰。
+            // 放后面会让「备份版本比当前新」这种一眼就该拒绝的输入先去抢锁、
+            // 抢不到还回报成「上一次恢复还没结束」—— 报错报错因，用户才看得懂。
+            const normalized = normalizeImportData(data);
+
             await this.migrate();
 
-            if (typeof this.claimIdempotency === "function") {
-                const got = await this.claimIdempotency(lockScope, lockKey, RESTORE_LOCK_TTL_MS);
-                if (got) lockAcquired = true;
-                if (!got) {
-                    // 抢不到有两种可能，必须分开处理：
-                    //   - 确实有另一个恢复在跑 → 拒绝（这才是锁的意义）
-                    //   - 存储压根读不出这条记录 → 放行：D1 不可用时后面每一步都会自己失败，
-                    //     没必要在这里把恢复整个堵死
-                    // 重读一次而不是用进入前的快照：并发下两个请求都会先读到空，
-                    // 只有重读才认得出「刚才有人抢赢了」。
-                    const holder = await this.readIdempotency(lockScope, lockKey).catch(() => null);
-                    if (holder) {
-                        return {
-                            success: false,
-                            message: "上一次恢复还没结束，请稍后再试",
-                            groupIdMap,
-                            siteIdMap,
-                        };
-                    }
-                }
+            // 抢锁走三态版：`claimIdempotency` 把「别人正占着」和「锁不可用」
+            // 混成同一个 false，拿它当互斥锁用就会把 D1 抽风误报成「上一次恢复
+            // 还没结束」，用户白等两分钟而其实谁都没在跑。恢复会删数据，
+            // 宁可明确失败，也不能无锁继续。
+            const claimDetailed = this.claimIdempotencyDetailed;
+            if (typeof claimDetailed !== "function") {
+                return {
+                    success: false,
+                    message: "无法确认恢复锁（当前服务端不支持三态抢锁），请刷新页面后重试",
+                    groupIdMap,
+                    siteIdMap,
+                };
             }
-
-            const normalized = normalizeImportData(data);
+            const claim = await claimDetailed.call(this, lockScope, lockKey, RESTORE_LOCK_TTL_MS);
+            if (claim === "acquired") {
+                lockAcquired = true;
+            } else if (claim === "busy") {
+                // 别人真的在跑：这才是「锁」存在的意义，等它收尾或 TTL 到点。
+                return {
+                    success: false,
+                    message: "上一次恢复还没结束，请稍后再试",
+                    groupIdMap,
+                    siteIdMap,
+                };
+            } else {
+                // unavailable：证明不了本次取得了锁 → 安全拒绝。此时那把可能存在的
+                // 锁归属不明，绝不能删（lockAcquired 仍为 false，finally 不会动它）。
+                return {
+                    success: false,
+                    message: "无法确认恢复锁是否可用（存储暂时不可用），请稍后重试；本次未做任何改动",
+                    groupIdMap,
+                    siteIdMap,
+                };
+            }
 
             // ── 覆盖模式的空备份闸门 ──
             //
@@ -387,7 +403,7 @@ export const transferImpl: TransferApi = {
             }
 
             // ── 阶段编排 ──
-            // importData 现在只是「事务外壳」：校验 → 抢锁 → 归一化 → 跑 5 个阶段 →
+            // importData 现在只是「事务外壳」：校验 → 归一化 → 抢锁 → 跑 5 个阶段 →
             // 把同一批语句塞进**一个 D1 batch（= 一个事务）**提交。所有「写什么」的
             // 决策都在 planMerge 里算清，writeGroups / writeSites / writeConfigs /
             // rebuildIndexes 只负责把对应实体的语句追加进同一个提交列表；顺序严格沿用

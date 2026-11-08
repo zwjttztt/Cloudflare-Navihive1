@@ -195,7 +195,10 @@ class MockD1 {
         if (s.startsWith("SELECT id FROM")) return { results: [] };
         if (s.startsWith("SELECT key, value FROM configs")) return { results: [] };
         if (s.startsWith("SELECT")) return { results: [] };
-        return { success: true, results: [] };
+        // 走到这里的都是写语句（含恢复锁的 INSERT INTO idempotency_keys）。
+        // 真 D1 的 run() 必带 meta，恢复锁靠 meta.changes 认定「锁是我抢到的」；
+        // 这个桩不模拟锁竞争，所以一律当作抢到。
+        return { success: true, results: [], meta: { changes: 1, rows_written: 1 } };
     }
 }
 
@@ -223,6 +226,9 @@ function makeApi(db: MockD1, uid: number | null = 7): NavigationAPI {
         writeAudit: async () => {},
         pushToRecycle: async () => undefined,
         getCurrentUserId: () => uid,
+        // 恢复锁走三态接口：真 API 一定有这个方法，桩缺了会被判成「无法确认锁」而整单拒绝。
+        // 这一组用例测的是笔记合并语义，不模拟锁竞争，一律放行。
+        claimIdempotencyDetailed: async () => "acquired" as const,
     } as unknown as NavigationAPI;
 }
 
