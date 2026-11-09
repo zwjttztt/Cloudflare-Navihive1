@@ -48,6 +48,15 @@ import type { VaultCenterPanelProps } from "./navigationCenter/panels/VaultPanel
 import type { AiCenterPanelProps } from "./navigationCenter/panels/AiPanel";
 import type { ConfigCenterPanelProps } from "./navigationCenter/panels/ConfigPanel";
 import type { AccountCenterPanelProps } from "./navigationCenter/panels/AccountPanel";
+
+// v37.3.0：笔记懒块字节预热的一次性调度，放在**模块顶层**而不是 useEffect。
+// 为什么：App.tsx 的登录后 idle 预取清单第 1 位就是本模块，登录后会 import() 到它，
+// 但用户未必真的打开设置中心 —— useEffect 只在组件挂载时才跑，等于要等用户点开设置
+// 才开始预热。放在模块顶层（用动态 import，绝不加静态 import 把代码焊进首屏）能让
+// 「这个懒块被下载」这件事本身就成为触发点，正好落在登录后的空闲期。
+// import() 失败 / SW 不可用都在 lazyWarm 内部静默，绝不影响本弹窗渲染。
+void import("../utils/lazyWarm").then(m => m.startLazyWarm()).catch(() => {});
+
 // ---- 九个面板：全部按需加载，且**只有被选中那一个会真的下载** ----
 // 与 App.tsx 里那些 lazy 弹窗不同，这里是「中心之内再分一层」：
 // 打开中心只下外壳块，切到哪个面板才下哪一块（首屏预算经不起九个一起下）。

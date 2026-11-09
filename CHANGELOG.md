@@ -12,6 +12,21 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-09 · v37.3.0
+
+### 性能
+- 登录后空闲期把「笔记相关懒块」的字节提前灌进 Service Worker 的 Cache Storage：点开记事本 / 笔记编辑器时 SW 直接命中返回，不再现场发十几个 chunk 请求。v37.2.0 已经让带 hash 的 `/assets/*` 命中缓存后不再后台回源，但 SW 的 `install` 只预缓存 core 11 条、lazy 181 条全靠首次 `import()` 现拉 —— 在「每请求固定 1~3 秒」的链路上就是用户看到的数秒空窗，也是「网站打开后笔记和设置打开慢」剩下的一半。现在 `public/sw.js` 新增 `warm-lazy` 消息：串行 `cache.add`、先查命中只计 skipped、单条失败不拖累后续、最多 24 条、只认 `/assets/` 下带指纹的 js/css、客户端带来的 `version` 与当前缓存名不一致时整批跳过（防发版窗口把字节灌进即将被 `activate` 删掉的旧缓存），刻意不调 `trimCache`。`precache-lazy` / `offlineFull` 的原有语义一字未动。
+- 客户端调度器 `src/utils/lazyWarm.ts` 是**纯懒块**：`requestIdleCallback`（timeout 8 秒，无则 `setTimeout` 6 秒错峰）才开始，先过离线 / 省流量 / 2g 守卫，再用默认缓存策略读 60 秒短缓存的 `/precache-manifest.json`，按笔记前缀白名单挑 URL（明确排除 `mermaidSandbox` / `elk` / `mermaid-parser.core`，不白下 MB 级图表块），等 `serviceWorker.ready`（5 秒超时）后发消息。所有失败静默 —— 预热是纯优化，绝不影响界面。触发点放在 `NavigationCenterDialog.tsx` **模块顶层的动态 `import()`**：它在 App 登录后 idle 清单第 1 位、一定会被加载，且不需要用户真的打开设置中心；放 `useEffect` 要等用户点开设置才跑，太晚。
+- **体积预算常量一字未抬**：`index` 仍是 266.12 kB（≈259.88 KiB），与 v37.2.0 基线一致，`check:budget` 37/37；新块 `/assets/lazyWarm-*.js` 只在 `lazy` 清单、不在 `core`、不在 `index.html`，首屏 asset 引用仍是 6 个。
+
+### 工程
+- 新增 `tests/lazyWarm.test.ts`（白名单 / 去重 / 24 条上限 / 非法 URL / 守卫矩阵 / 幂等与端到端 postMessage），扩展 `tests/swCache.test.ts`（7 条 warm-lazy 行为 + 原 `precache-lazy` 回归）与 `tests/lazyPrefetch.dom.test.tsx`（四个首屏模块不许出现 `lazyWarm`、中心必须动态 import）。另补一条「合法但非笔记前缀的普通懒块也不预热」，堵住「删掉白名单都不红」的盲区。
+- 变异验证：SW 退回 v37.2.0 → `swCache` 红 7 条；删掉笔记白名单过滤 → `lazyWarm` 红 1 条；删掉中心触发行 → `lazyPrefetch` 红 1 条；三处 `diff -q` 还原一致后子集 41/41 全绿。
+- 全量门禁：typecheck ✅、lint 0 errors / 警告预算通过、单测 4311 项 / 4310 通过 / 0 失败 / 1 skipped（本地与 `TZ=UTC` 双跑）、build ✅、`check:budget` 37/37、brand / strict-idx / smoke / a11y（0 项）/ contrast（亮暗各 0 处）✅、覆盖率第 1 层 437/437 = 100% 且第 2 层 89.9% 各目录地板全过、`git diff --check` ✅。
+- **本轮明确砍掉「Node 侧静态资源 brotli 预压缩」**：线上实测 `Accept-Encoding: br, gzip` 下首页 HTML 已是 `Content-Encoding: br`（8069 → 4024 字节）、`/api/healthz` 是 `gzip`、`/assets/*` 是 `gzip`（`server/static.ts` 自带运行时 gzip），三层压缩都已在生效；上游一旦带 `Content-Encoding`，Cloudflare 边缘与 nginx 都会跳过二次压缩，Node 侧再压是零收益。`deploy/nginx/sites-available/navihive-selfhost.conf` 里注释掉的 `brotli on` 才是它的正确落点，但那是本轮约束排除的生产 nginx 层，不做无效改动。
+- 仍未动：Cloudflare 首页 HTML 的 Cache Rule（`cf-cache-status: DYNAMIC` 每次回源，是首页首次打开最大的单一瓶颈）、生产 nginx 的 `proxy_cache` / brotli，按前序约定「不用管 cloudflare 端」继续留给运维确认。
+- 已知限制：预热只覆盖笔记白名单前缀那批块，其余懒块仍按需加载；`cache.add` 写入的 Request 与后续 `import()` 脚本请求在 `Vary: Accept-Encoding` 下的 Cache Storage 匹配只在 VM 单测层验证过，未在真机浏览器里逐块核对命中率；不刷新页面时新构建的 `warm-lazy` 会按 version 一致性跳过，属预期行为。
+
 ## 2026-11-09 · v37.2.0
 
 ### 修复

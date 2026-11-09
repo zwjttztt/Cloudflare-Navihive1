@@ -350,38 +350,112 @@ self.addEventListener("activate", event => {
 });
 
 // ---- 离线增强：用户显式开启才把懒加载块也预下来 ----
+// ---- 空闲预热：登录后把笔记相关懒块的字节提前灌进当前版本缓存（点开即命中） ----
+
+// warm-lazy 只认 /assets/ 下带内容指纹的 js/css，口径与客户端 pickWarmUrls 完全一致；
+// 非法 URL（外域、/api/、无 hash、非字符串）一律丢弃，绝不让任意 URL 灌进 Cache Storage。
+const WARM_URL_RE = /^\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(js|css)$/;
+const WARM_MAX_URLS = 24;
+
+/** 从消息里挑出可安全预热的 URL：非数组 / 非法项丢弃，最多 24 条 */
+function collectWarmUrls(urls) {
+    if (!Array.isArray(urls)) return [];
+    const picked = [];
+    for (const url of urls) {
+        if (typeof url !== "string") continue;
+        if (!url.startsWith("/assets/")) continue;
+        if (!WARM_URL_RE.test(url)) continue;
+        picked.push(url);
+        if (picked.length >= WARM_MAX_URLS) break;
+    }
+    return picked;
+}
+
 self.addEventListener("message", event => {
     const data = event.data || {};
-    if (data.type !== "precache-lazy") return;
 
-    event.waitUntil(
-        Promise.all([resolveCacheName(), readManifest()])
-            .then(([name, manifest]) => {
-                const { lazy } = normalizeManifest(manifest);
-                if (!lazy.length) return 0;
-                return caches.open(name).then(async cache => {
-                    // 一条条加而不是 addAll：某一条失败不该让前面成功的也作废
-                    // （addAll 是全有全无，几十个块里挂一个就全白下）
-                    let done = 0;
-                    for (const url of lazy) {
-                        try {
-                            await cache.add(url);
-                            done++;
-                        } catch {
-                            // 单个块失败无所谓，用到时会再取
+    if (data.type === "precache-lazy") {
+        // —— 原行为，保持原样：串行 add 灌全部 lazy、trimCache、回 precache-lazy-done ——
+        event.waitUntil(
+            Promise.all([resolveCacheName(), readManifest()])
+                .then(([name, manifest]) => {
+                    const { lazy } = normalizeManifest(manifest);
+                    if (!lazy.length) return 0;
+                    return caches.open(name).then(async cache => {
+                        // 一条条加而不是 addAll：某一条失败不该让前面成功的也作废
+                        // （addAll 是全有全无，几十个块里挂一个就全白下）
+                        let done = 0;
+                        for (const url of lazy) {
+                            try {
+                                await cache.add(url);
+                                done++;
+                            } catch {
+                                // 单个块失败无所谓，用到时会再取
+                            }
                         }
+                        await trimCache(cache);
+                        return done;
+                    });
+                })
+                .then(done => {
+                    if (event.source && "postMessage" in event.source) {
+                        event.source.postMessage({ type: "precache-lazy-done", done });
                     }
-                    await trimCache(cache);
-                    return done;
-                });
-            })
-            .then(done => {
-                if (event.source && "postMessage" in event.source) {
-                    event.source.postMessage({ type: "precache-lazy-done", done });
-                }
-            })
-            .catch(() => {})
-    );
+                })
+                .catch(() => {})
+        );
+        return;
+    }
+
+    if (data.type === "warm-lazy") {
+        event.waitUntil(
+            Promise.all([resolveCacheName(), readManifest()])
+                .then(([name]) => {
+                    // 发版窗口保护：客户端带来的 version（manifest.version 可能是数字）若与
+                    // 当前缓存名后缀不一致，整批跳过 —— 否则字节会被灌进马上要被 activate
+                    // 删掉的旧缓存，白下还占带宽。String() 把数字/字符串口径统一。
+                    const clientVersion = data.version;
+                    if (
+                        clientVersion !== undefined &&
+                        clientVersion !== null &&
+                        String(clientVersion) !== name.slice(CACHE_PREFIX.length)
+                    ) {
+                        return { done: 0, skipped: 0 };
+                    }
+                    const urls = collectWarmUrls(data.urls);
+                    if (!urls.length) return { done: 0, skipped: 0 };
+                    return caches.open(name).then(async cache => {
+                        let done = 0;
+                        let skipped = 0;
+                        for (const url of urls) {
+                            // 先查命中：已在缓存里就只计 skipped，别重复灌字节。
+                            // cache.add 在 SW 内直接发网络请求，不会递归进本 SW 的 fetch handler；
+                            // 单条 404 / 网络失败吞掉，不拖累后续条目。
+                            const hit = await cache.match(url);
+                            if (hit) {
+                                skipped++;
+                                continue;
+                            }
+                            try {
+                                await cache.add(url);
+                                done++;
+                            } catch {
+                                // 单条失败无所谓，下次点开时再取
+                            }
+                        }
+                        // 刻意不调用 trimCache：预热只是补字节，不能把已有条目淘汰掉。
+                        return { done, skipped };
+                    });
+                })
+                .then(({ done, skipped }) => {
+                    if (event.source && "postMessage" in event.source) {
+                        event.source.postMessage({ type: "warm-lazy-done", done, skipped });
+                    }
+                })
+                .catch(() => {})
+        );
+        return;
+    }
 });
 
 self.addEventListener("fetch", event => {

@@ -89,7 +89,7 @@ class FakeCache {
  */
 function bootServiceWorker(
     targets: Record<string, Response>,
-    options: { failUrls?: string[]; namedCaches?: boolean } = {}
+    options: { failUrls?: string[]; namedCaches?: boolean; manifest?: unknown } = {}
 ) {
     const failUrls = options.failUrls ?? [];
     /**
@@ -101,6 +101,15 @@ function bootServiceWorker(
     const seen: Array<{ url: string; cache?: string; mode?: string }> = [];
     const handlers = new Map<string, (e: unknown) => void>();
     const cache = new FakeCache();
+    // cache.add 在真 SW 里会直接发一次网络请求；替身里让它也认 failUrls，
+    // 这样「单条 add 失败被吞掉」能复用现成的 failUrls 机制制造 404 / 网络失败。
+    const originalAdd = cache.add.bind(cache);
+    cache.add = async (url: string) => {
+        if (failUrls.some(u => String(url).includes(u))) {
+            throw new TypeError("Failed to fetch");
+        }
+        return originalAdd(url);
+    };
     /** `namedCaches` 模式下按名字分缓存：用来验证「离线回落不跨缓存捞旧版外壳」 */
     const stores = new Map<string, FakeCache>();
     const openStore = (name: string): FakeCache => {
@@ -147,7 +156,9 @@ function bootServiceWorker(
             }
             const url = req.url;
             if (url.includes("precache-manifest.json")) {
-                return new Response(JSON.stringify({ version: "test", core: [], lazy: [] }), {
+                // manifest 可注入：precache-lazy 的回归用例要一份带 181 条 lazy 的清单
+                const manifest = options.manifest ?? { version: "test", core: [], lazy: [] };
+                return new Response(JSON.stringify(manifest), {
                     headers: { "Content-Type": "application/json" },
                 });
             }
@@ -234,6 +245,35 @@ async function fireFetch(
     // ⚠️ 返回值可以是 undefined：sw.js 对不归它管的请求（/api/*、非 GET）根本不调
     // respondWith。调用方要断言响应用 `assert.ok(res)`，别直接 `.text()`。
     return res ?? undefined;
+}
+
+/**
+ * 触发一次 message 事件，把 waitUntil 里的尾巴也跑完，并收集 event.source.postMessage 的回执。
+ * 与 fireFetch 同一套「多转几圈事件循环」的做法，确保 async 链（含最后那次 postMessage）跑完。
+ */
+async function fireMessage(
+    handlers: Map<string, (e: unknown) => void>,
+    data: unknown
+): Promise<unknown[]> {
+    const handler = handlers.get("message");
+    assert.ok(handler, "sw.js 必须注册 message handler");
+    const tails: Promise<unknown>[] = [];
+    const receipts: unknown[] = [];
+    handler({
+        data,
+        waitUntil: (p: Promise<unknown>) => tails.push(p),
+        source: {
+            postMessage: (msg: unknown) => receipts.push(msg),
+        },
+    });
+    for (let i = 0; i < 8; i++) {
+        await Promise.all(tails);
+        await new Promise(r => setTimeout(r, 0));
+    }
+    // vm 沙箱里创建的对象带的是沙箱 realm 的 Object.prototype，直接 deepStrictEqual
+    // 会因「原型不同」误判（结构一样却报 not reference-equal）。过一遍 JSON，
+    // 把回执归一化成测试 realm 的普通对象，下面的结构断言才看得见真相。
+    return receipts.map(r => JSON.parse(JSON.stringify(r)) as unknown);
 }
 
 const iconUrl = (i: number) => `https://cdn.example.com/i${i}.png`;
@@ -585,4 +625,142 @@ test("sw：静态资源 miss 且网络失败时回明确失败响应，不再把
         false,
         "必须是明确的失败响应，让动态 import() 能 reject、错误边界才有「刷新」出口"
     );
+});
+
+// ---------------- warm-lazy：登录后空闲期把笔记相关懒块灌进缓存 ----------------
+//
+// 与 precache-lazy 并列，但语义完全不同：只认白名单 URL、已命中只计 skipped、
+// 单条失败吞掉、刻意不 trimCache。下面逐条钉住这些差异，并确认没碰 precache-lazy 的老行为。
+
+const WARM_A = "/assets/Notes-CVg5x3z9.js";
+const WARM_B = "/assets/note-editor-BUK3vTEr.js";
+const WARM_C = "/assets/markdown-DKEETBHE.js";
+
+test("sw：warm-lazy 只缓存白名单 URL，命中计 skipped，回 warm-lazy-done", async () => {
+    const bad = [
+        "https://evil.com/x-abcdef12.js", // 外域
+        "/api/note-abcdef12.js", // /api/
+        "/assets/Notes-abc.js", // 无 8 位 hash
+        123, // 非字符串
+    ];
+    const { handlers, cache } = bootServiceWorker({});
+    // 预置一条已缓存 → 这条只计 skipped，不该重复灌
+    cache.entries.set(WARM_B, { res: new Response("cached"), cachedAt: Date.now() });
+
+    const receipts = await fireMessage(handlers, {
+        type: "warm-lazy",
+        urls: [WARM_A, WARM_B, ...bad],
+        version: "test",
+    });
+
+    assert.equal(cache.entries.has(WARM_A), true, "白名单 URL 要被灌进缓存");
+    for (const u of bad) {
+        assert.equal(cache.entries.has(String(u)), false, `非法 URL ${String(u)} 不该进缓存`);
+    }
+    assert.deepEqual(receipts, [{ type: "warm-lazy-done", done: 1, skipped: 1 }]);
+});
+
+test("sw：warm-lazy 单条 cache.add 失败被吞掉，不拖累后续条目", async () => {
+    // failUrls 让 WARM_B 这一条在 cache.add 里抛（真 SW 里就是 404 / 网络失败）
+    const { handlers, cache } = bootServiceWorker({}, { failUrls: [WARM_B] });
+    const receipts = await fireMessage(handlers, {
+        type: "warm-lazy",
+        urls: [WARM_A, WARM_B, WARM_C],
+    });
+
+    assert.equal(cache.entries.has(WARM_A), true, "第一条成功");
+    assert.equal(cache.entries.has(WARM_B), false, "失败那条没进缓存");
+    assert.equal(cache.entries.has(WARM_C), true, "后续条目照样灌，不被单条失败拖累");
+    assert.deepEqual(receipts, [{ type: "warm-lazy-done", done: 2, skipped: 0 }]);
+});
+
+test("sw：warm-lazy 全非法 URL 时一条都不灌，仍回带 0 的回执", async () => {
+    const urls = [
+        "https://evil.com/x-abcdef12.js",
+        "/api/foo-abcdef12.js",
+        "/assets/Notes-abc.js",
+        42,
+        null,
+    ];
+    const { handlers, cache } = bootServiceWorker({});
+    const receipts = await fireMessage(handlers, { type: "warm-lazy", urls, version: "test" });
+    assert.equal(cache.entries.size, 0, "非法项全被丢弃，缓存里一条都不该多");
+    assert.deepEqual(receipts, [{ type: "warm-lazy-done", done: 0, skipped: 0 }]);
+});
+
+test("sw：warm-lazy 的 version 与缓存名后缀一致时正常预热", async () => {
+    const { handlers, cache } = bootServiceWorker({});
+    const receipts = await fireMessage(handlers, {
+        type: "warm-lazy",
+        urls: [WARM_A],
+        version: "test", // manifest.version === "test" → 缓存名后缀也是 "test"
+    });
+    assert.equal(cache.entries.has(WARM_A), true, "版本匹配要真的灌字节");
+    assert.deepEqual(receipts, [{ type: "warm-lazy-done", done: 1, skipped: 0 }]);
+});
+
+test("sw：warm-lazy 的 version 不匹配缓存名后缀时整批跳过", async () => {
+    const { handlers, cache } = bootServiceWorker({});
+    let addCalls = 0;
+    const prevAdd = cache.add.bind(cache);
+    cache.add = async (url: string) => {
+        addCalls++;
+        return prevAdd(url);
+    };
+    const receipts = await fireMessage(handlers, {
+        type: "warm-lazy",
+        urls: [WARM_A],
+        version: "stale-version", // 与缓存名后缀 "test" 不一致
+    });
+    assert.equal(addCalls, 0, "版本不匹配，一条都不该 cache.add");
+    assert.equal(cache.entries.has(WARM_A), false, "整批跳过，不灌进即将被删的旧缓存");
+    assert.deepEqual(receipts, [{ type: "warm-lazy-done", done: 0, skipped: 0 }]);
+});
+
+test("sw：warm-lazy 最多取 24 条", async () => {
+    const urls: string[] = [];
+    for (let i = 0; i < 30; i++) urls.push(`/assets/Notes-${String(i).padStart(8, "0")}.js`);
+    const { handlers, cache } = bootServiceWorker({});
+    const receipts = await fireMessage(handlers, { type: "warm-lazy", urls, version: "test" });
+    assert.equal(cache.entries.size, 24, "最多灌 24 条");
+    assert.deepEqual(receipts, [{ type: "warm-lazy-done", done: 24, skipped: 0 }]);
+});
+
+test("sw：warm-lazy 不调用 trimCache，已有超量条目不被淘汰", async () => {
+    const { handlers, cache } = bootServiceWorker({});
+    for (let i = 0; i < 305; i++) {
+        cache.entries.set(`/assets/prefill-${String(i).padStart(8, "0")}.js`, {
+            res: new Response("x"),
+            cachedAt: Date.now(),
+        });
+    }
+    assert.equal(cache.entries.size, 305);
+
+    const receipts = await fireMessage(handlers, {
+        type: "warm-lazy",
+        urls: [WARM_A],
+        version: "test",
+    });
+    // 预热只补 1 条；若误调 trimCache，305 条会被砍到 300。
+    assert.equal(cache.entries.size, 306, "warm-lazy 不该 trimCache 淘汰已有条目");
+    assert.deepEqual(receipts, [{ type: "warm-lazy-done", done: 1, skipped: 0 }]);
+});
+
+test("sw：precache-lazy 原行为仍串行灌全部 lazy 并回 precache-lazy-done（warm-lazy 没碰它）", async () => {
+    // 带一份含「warm-lazy 会排除」条目的 manifest：老分支不过滤，照样全灌。
+    const lazy = [
+        WARM_A,
+        WARM_C,
+        "/assets/mermaidSandbox-CX2J_vyI.js",
+        "/assets/elk-IJKZMXRS-B1KoEkEf.js",
+    ];
+    const { handlers, cache } = bootServiceWorker(
+        {},
+        { manifest: { version: "test", core: [], lazy } }
+    );
+    const receipts = await fireMessage(handlers, { type: "precache-lazy" });
+    for (const u of lazy) {
+        assert.equal(cache.entries.has(u), true, `${u} 应被 precache-lazy 灌进缓存`);
+    }
+    assert.deepEqual(receipts, [{ type: "precache-lazy-done", done: lazy.length }]);
 });

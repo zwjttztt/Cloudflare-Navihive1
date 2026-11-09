@@ -176,3 +176,31 @@ test("App 空闲预取清单未被本轮碰坏：14 个常用 key 与访客限�
         );
     }
 });
+
+test("lazyWarm 只在中心懒块里动态 import，四个首屏模块一律不许出现", () => {
+    // 预热是「登录后空闲期」才跑的纯懒块逻辑：静态 import 会把代码焊进首屏，
+    // index chunk 离 5% 棘轮线只剩约 1 KiB，焊进去当场顶破。
+    for (const parts of [
+        ["App.tsx"],
+        ["utils", "dialogChunks.ts"],
+        ["utils", "lazyPrefetch.ts"],
+        ["main.tsx"],
+    ]) {
+        const code = strip(readSrc(...parts));
+        assert.equal(
+            code.includes("lazyWarm"),
+            false,
+            `首屏模块 ${parts.join("/")} 不该出现 lazyWarm（会进 index chunk）`
+        );
+    }
+    const center = strip(readSrc("components", "NavigationCenterDialog.tsx"));
+    assert.ok(
+        center.includes('import("../utils/lazyWarm")'),
+        "中心懒块要用动态 import() 在模块顶层触发预热"
+    );
+    assert.equal(
+        center.includes('from "../utils/lazyWarm"'),
+        false,
+        "不许新增静态 import —— 那会把 lazyWarm 焊进首屏"
+    );
+});
