@@ -112,6 +112,11 @@
 /index.html
   Cache-Control: public, max-age=60, stale-while-revalidate=60
 
+# 预缓存清单随构建变，只给 60 秒短缓存且不能 immutable（否则 SW 拿到旧 version
+# 会去用已被清掉的缓存名）；SW 每次起生命周期都要读它，线上这条曾 30 秒超时。
+/precache-manifest.json
+  Cache-Control: public, max-age=60
+
 # Service Worker 不能强缓存，否则发新版后老客户端拿不到新壳子
 /sw.js
   Cache-Control: public, max-age=0, must-revalidate

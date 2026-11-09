@@ -241,3 +241,36 @@ test("守卫自身没跑空：清单里的组件在 src 里都得真实存在", 
         assert.ok(exists, `${c} 在清单里，但 src/components/${c}.tsx 不存在（改名了？同步改清单）`);
     }
 });
+
+test("记事本骨架有超时出口，且逻辑必须在懒块里、首屏零增量", () => {
+    const fallback = FILES.find(f =>
+        f.path.endsWith(path.join("components", "NotesLoadingFallback.tsx"))
+    );
+    assert.ok(fallback, "找不到 components/NotesLoadingFallback.tsx");
+    const src = fallback.text;
+    assert.match(src, /LOADING_TIMEOUT_MS = 12_000/, "生产默认 12 秒超时");
+    assert.match(src, /setTimeout\(\(\) => setTimedOut\(true\), timeoutMs\)/, "骨架显示期间要起计时器");
+    assert.match(src, /clearTimeout\(timer\)/, "fallback 卸载（加载完成）要取消计时器");
+    assert.match(src, /role="alert"/, "超时后要有可感知的提示");
+    assert.match(src, /刷新页面/, "超时后要给出口");
+    assert.match(src, /clearCachesAndReload/, "出口是清缓存 + 刷新页面");
+    // React.lazy 把 import promise 缓存在组件对象上：换 key 重挂只会再等一次
+    assert.ok(!/<Suspense\s+key=/.test(src), "⛔ 别用换 key 重挂当重试");
+
+    // 关键：超时状态机不许回到首屏包。ChunkBoundary 是首屏模块，实测给它加这套逻辑
+    // 会把 index chunk 从 259.47 顶到 262.02 KB，check:budget 的 5% 余量直接跌到 4.6%。
+    const boundary = FILES.find(f =>
+        f.path.endsWith(path.join("components", "ChunkBoundary.tsx"))
+    );
+    assert.ok(boundary, "找不到 components/ChunkBoundary.tsx");
+    assert.ok(
+        !/timedOut|loadingTimeoutMs/.test(boundary.text),
+        "⛔ ChunkBoundary 是首屏包，别把超时状态机塞回去（会把体积余量压到 5% 以下）"
+    );
+    const app = FILES.find(f => f.path.endsWith("App.tsx"));
+    assert.ok(app, "找不到 App.tsx");
+    assert.ok(
+        !/loadingTimeoutMs=/.test(app.text),
+        "⛔ App 里不该再给 ChunkBoundary 传超时 prop；骨架自己管超时"
+    );
+});

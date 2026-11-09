@@ -119,3 +119,60 @@ test("dialogChunks：只允许动态 import（静态 import 会把全部弹窗�
     const dynamicCount = (code.match(/import\("\.\.\/components\//g) ?? []).length;
     assert.ok(dynamicCount >= 15, `动态预取入口应有 15+ 个，现在只有 ${dynamicCount}`);
 });
+
+// 本轮新增的中心二级转发块 / 冷门业务体：key → 目标模块（相对 src/components/，去掉扩展名）
+const NEW_CENTER_KEYS: Array<[string, string]> = [
+    ["statsPanel", "navigationCenter/panels/StatsPanel"],
+    ["dataSafetyPanel", "navigationCenter/panels/DataSafetyPanel"],
+    ["auditPanel", "navigationCenter/panels/AuditPanel"],
+    ["configPanel", "navigationCenter/panels/ConfigPanel"],
+    ["aiPanel", "navigationCenter/panels/AiPanel"],
+    ["vaultPanel", "navigationCenter/panels/VaultPanel"],
+    ["accountPanel", "navigationCenter/panels/AccountPanel"],
+    ["shortcutsPanel", "navigationCenter/panels/ShortcutsPanel"],
+    ["vaultDialog", "VaultDialog"],
+];
+
+test("设置中心二级转发块：在懒块里用动态 import 预取，不许登记进首屏 dialogChunks", () => {
+    const center = strip(readSrc("components", "NavigationCenterDialog.tsx"));
+    const chunks = strip(readSrc("utils", "dialogChunks.ts"));
+    for (const [key, mod] of NEW_CENTER_KEYS) {
+        assert.ok(
+            center.includes(`prefetchChunk("${key}", () => import("./${mod}"))`),
+            `${key} 必须在中心懒块里以 () => import("./${mod}") 形式预取；静态值 import 会把转发块焊进首屏`
+        );
+        assert.ok(
+            !chunks.includes(`${key}:`),
+            `${key} 不许登记进 dialogChunks —— 那是首屏模块，每个 () => import 都给 index chunk 加约 200B`
+        );
+    }
+});
+
+test("「设置」中心：挂载时并行预取全部二级转发块", () => {
+    const code = strip(readSrc("components", "NavigationCenterDialog.tsx"));
+    for (const [key] of NEW_CENTER_KEYS) {
+        assert.ok(code.includes(`prefetchChunk("${key}",`), `中心挂载预取缺 ${key}`);
+    }
+});
+
+test("App 空闲预取清单未被本轮碰坏：14 个常用 key 与访客限制都在，二级转发块不许进首屏", () => {
+    const code = strip(readSrc("App.tsx"));
+    for (const key of [
+        "navigationCenter", "siteCardContextMenu", "addSite", "siteSettings", "settings", "stats",
+        "backup", "recycle", "confirm", "snackbar", "bulk", "aiSuggest", "deleteAccount",
+        "tagBar",
+    ]) {
+        assert.ok(
+            code.includes(`["${key}", dialogChunks.${key}]`),
+            `空闲预取清单缺 ${key}`
+        );
+    }
+    assert.ok(code.includes("if (!isAuthenticated) return;"), "访客视图不该预取管理弹窗");
+    // 二级转发块只在「打开中心后」取；混进首屏 idle 清单就等于抢首屏带宽
+    for (const [key] of NEW_CENTER_KEYS) {
+        assert.ok(
+            !code.includes(`["${key}", dialogChunks.${key}]`),
+            `${key} 不该出现在 App 首屏 idle 预取清单里`
+        );
+    }
+});

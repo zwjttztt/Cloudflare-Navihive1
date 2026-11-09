@@ -12,6 +12,23 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-09 · v37.2.0
+
+### 修复
+- 修掉「点开记事本停在 6 条灰条骨架」。慢链路上 `note-editor`（564KB）20 秒 0 字节，`React.lazy` 的 `import()` 既不 resolve 也不 reject；`ChunkBoundary` 只接得住 reject，接不住 pending，`Suspense` 的 fallback 就永久挂着，而 `boot-guard.js` 只盯首屏 `#boot-skeleton`、救不了 React 渲染出来的这层骨架。现在 `NotesLoadingFallback`（本身就是懒块）12 秒后把骨架换成「加载时间过长 + 刷新页面」，动作仍是清 Cache Storage 再 `location.reload()`（含 3 秒兜底），不重挂子树 —— lazy 的 promise 缓存在组件对象上，重挂只会再等一次。
+- `public/sw.js` 修一个会把请求挂死的分支：静态资源 miss 且网络失败时，原来 `.catch(() => cached)` 返回的其实是 `undefined`（miss 时 `cached` 恒为 undefined），`respondWith` 拿到它既不算成功也不算明确失败，动态 `import()` 就一直 pending。现在回一个明确的 503，让 `import()` 正常 reject、错误边界才有出口。
+
+### 性能
+- `public/sw.js`：带内容 hash 的 `/assets/*` 命中 Cache Storage 后不再发后台 revalidate 的 `fetch`。缓存名按构建版本版本化、`activate` 会清旧缓存，加上 `immutable` 一年强缓存，内容本就永不改变 —— 那次后台跨境往返是纯浪费，还挤占慢链路带宽。非 hash 资源（图标等）的后台更新语义不变。
+- `public/_headers`：`/precache-manifest.json` 补 `Cache-Control: public, max-age=60`。它原本没有缓存头、也不被 SW 的 fetch 拦截，SW 每次起生命周期都要回源取一次，线上实测这条请求 30 秒超时；清单随构建变，所以只给短缓存、不给 `immutable`。
+- 设置中心：打开中心时并行预取 9 个二级面板转发块与 `VaultDialog`。这些薄壳只有 0.2~2.3KB，原来每次首点都要单独等一个 1~3 秒 RTT，而 `<Suspense fallback={null}>` 让加载期毫无反馈。预取直接写在 `NavigationCenterDialog.tsx` 这个懒块里，不登记进首屏 `dialogChunks`、也不进 App 的空闲预取清单，不抢首屏带宽。
+
+### 工程
+- 新增 `tests/notesLoadingFallback.dom.test.tsx`，扩展 `tests/swCache.test.ts`、`tests/responseHeaders.test.ts`、`tests/lazyPrefetch.dom.test.tsx`、`tests/lazyBoundary.test.ts`。全量单测 4296 项 / 4295 通过 / 0 失败，本地与 `TZ=UTC` 双跑全绿；覆盖率第 1 层 436/436 = 100%；体积预算常量一字未抬。
+- **体积还债**：超时状态机最初放在 `ChunkBoundary`（首屏模块），index 从 259.47 顶到 262.02 KB、余量跌到 4.6% 被 `check:budget` 拦下；挪进懒块后，9 个 `() => import(...)` 登记在首屏 `dialogChunks` 里仍会顶到 261.23 KB（4.9%）。最终两处都放进懒块，首屏回到 259.9 KiB、余量 5.4%。
+- 变异验证：四处修复分别退回旧版，`swCache` 红 2 条、`responseHeaders` 红 1 条、`notesLoadingFallback`/`lazyBoundary` 红 3 条、`lazyPrefetch` 红 2 条；还原后子集 76/76 全绿。
+- 首页 HTML 仍是 `cf-cache-status: DYNAMIC` 每次回源（这是首页提速最大的单一项），以及生产 nginx 的 `proxy_cache` / brotli，按前序约定「不用管 cloudflare 端」本次均未动，需运维确认后再单独处理。
+
 ## 2026-11-09 · v37.1.0
 
 ### 修复

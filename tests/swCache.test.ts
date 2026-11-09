@@ -522,3 +522,67 @@ test("sw：非 HTML 的静态资源仍然是缓存优先（外壳收紧没有误
 
     assert.equal(await res.text(), "cached-js", "带指纹的 chunk 必须继续走缓存优先");
 });
+
+// ---------------- 带指纹 chunk（线上 20s 超时 0 字节那条慢链路）----------------
+
+test("sw：immutable 的带指纹 chunk 命中缓存时不再发起后台 revalidate 的 fetch", async () => {
+    const { handlers, cache, seen } = bootServiceWorker({});
+    const chunkUrl = `${APP}/assets/note-editor-a1b2c3d4.js`;
+    // 真实产物带 immutable 强缓存头，URL 也含 8 位以上内容指纹
+    cache.entries.set(chunkUrl, {
+        res: new Response("cached-chunk", {
+            status: 200,
+            headers: { "Cache-Control": "public, max-age=31536000, immutable" },
+        }),
+        cachedAt: Date.now(),
+    });
+
+    const res = await fireFetch(handlers, {
+        url: chunkUrl,
+        method: "GET",
+        destination: "script",
+        mode: "no-cors",
+    });
+    assert.ok(res, "静态资源请求必须被 sw.js 接住");
+    assert.equal(await res.text(), "cached-chunk", "命中缓存时仍返回缓存里的 chunk");
+    assert.ok(
+        !seen.some(r => r.url === chunkUrl),
+        "immutable 的带指纹 chunk 命中缓存后不该再后台 fetch(revalidate) 白白回源"
+    );
+
+    // 对照：非 /assets/* 的普通资源命中缓存时，原有后台更新语义必须保留（不能一刀切跳过）
+    const plainUrl = `${APP}/favicon.svg?v=1`;
+    cache.entries.set(plainUrl, { res: iconResponse(), cachedAt: Date.now() });
+    await fireFetch(handlers, {
+        url: plainUrl,
+        method: "GET",
+        destination: "image",
+        mode: "no-cors",
+    });
+    assert.ok(
+        seen.some(r => r.url === plainUrl),
+        "非 hash 资源命中缓存时仍要走原有的后台 revalidate"
+    );
+});
+
+test("sw：静态资源 miss 且网络失败时回明确失败响应，不再把 undefined 交给 respondWith", async () => {
+    const chunkUrl = `${APP}/assets/note-editor-ef012345.js`;
+    // 缓存里没有这个 chunk（miss）；failUrls 让这次回源直接 reject
+    const { handlers } = bootServiceWorker({}, { failUrls: [chunkUrl] });
+
+    const res = await fireFetch(handlers, {
+        url: chunkUrl,
+        method: "GET",
+        destination: "script",
+        mode: "no-cors",
+    });
+    assert.ok(
+        res,
+        "网络失败时 respondWith 必须拿到明确响应，不能是 undefined（否则 import() 永远 pending、骨架常驻）"
+    );
+    assert.equal(
+        res.ok,
+        false,
+        "必须是明确的失败响应，让动态 import() 能 reject、错误边界才有「刷新」出口"
+    );
+});

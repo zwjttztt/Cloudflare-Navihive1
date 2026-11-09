@@ -410,6 +410,15 @@ self.addEventListener("fetch", event => {
                 .then(cache =>
                     cache.match(req).then(cached => {
                         if (cached) {
+                            // 版本化缓存名（换版即整体作废）+ 内容 hash/immutable（内容永不变）
+                            // 让命中即这一版最新：后台再回源 revalidate 纯属浪费、还占慢链路带宽，
+                            // 所以 immutable 的 /assets/* 直接返回缓存，其余仍走下面的后台更新。
+                            const cc = cached.headers.get("cache-control") || "";
+                            const isVersionedChunk =
+                                url.pathname.startsWith("/assets/") &&
+                                (/\/assets\/[^/]+-[A-Za-z0-9_-]{8,}\.(js|css)$/i.test(url.pathname) ||
+                                    /\bimmutable\b/i.test(cc));
+                            if (isVersionedChunk) return cached;
                             // 后台静默更新，下次生效。
                             // waitUntil 必须包住：SW 可能在 fetch 回来之前就被回收，
                             // 那时 put 会静默丢失，缓存永远停在旧版本。
@@ -446,7 +455,10 @@ self.addEventListener("fetch", event => {
                                 }
                                 return res;
                             })
-                            .catch(() => cached);
+                            // miss 时 cached 恒为 undefined；网络失败绝不能把它交给 respondWith
+                            // （动态 import() 会一直 pending → React.lazy 永不 resolve → 骨架常驻）。
+                            // 回一个明确的失败响应，让 import() 明确 reject，错误边界才有「刷新」出口。
+                            .catch(() => new Response("", { status: 503, statusText: "chunk fetch failed" }));
                     })
                 )
         );

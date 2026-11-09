@@ -36,3 +36,37 @@ test("写操作被拒时，4xx 响应同样带安全头", async () => {
     assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
     assert.equal(res.headers.get("X-Frame-Options"), "DENY");
 });
+
+test("public/_headers：precache-manifest.json 是 60 秒短缓存、不是 immutable", async () => {
+    // manifest 不被 SW 的 fetch 拦截，每次起生命周期都要回源取一次（线上曾 30 秒超时）；
+    // 它会随构建变，所以只给短缓存、且绝不能 immutable（否则 SW 拿到旧 version
+    // 会去用已被清掉的缓存名）。动态 import 保持这条用例自包含、不碰上面的现有内容。
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    let dir = path.dirname(fileURLToPath(import.meta.url));
+    let text = "";
+    for (let i = 0; i < 6; i++) {
+        try {
+            text = fs.readFileSync(path.resolve(dir, "public/_headers"), "utf8");
+            break;
+        } catch {
+            dir = path.dirname(dir);
+        }
+    }
+    assert.ok(text, "读不到 public/_headers");
+
+    const lines = text.split(/\r?\n/);
+    const at = lines.findIndex(l => l.trim() === "/precache-manifest.json");
+    assert.ok(at >= 0, "public/_headers 里必须有 /precache-manifest.json 规则块");
+    const block: string[] = [];
+    for (let i = at + 1; i < lines.length; i++) {
+        const l = lines[i];
+        if (/^\/\S/.test(l)) break; // 下一个路径块
+        if (/^ {2}\S/.test(l)) block.push(l.trim());
+    }
+    const cc = block.find(l => /^cache-control:/i.test(l)) ?? "";
+    assert.match(cc, /max-age=60/, "manifest 要 60 秒短缓存，避免每次 SW 生命周期都跨境回源");
+    assert.ok(!/immutable/i.test(cc), "manifest 会随构建变，不能 immutable");
+    assert.ok(!/no-store/i.test(cc), "manifest 必须允许缓存，不能是 no-store");
+});

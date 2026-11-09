@@ -167,6 +167,18 @@ export default function NavigationCenterDialog({
         prefetchChunk("aiAssistant", dialogChunks.aiAssistant);
         prefetchChunk("account", dialogChunks.account);
         prefetchChunk("shortcuts", dialogChunks.shortcuts);
+        // 二级面板转发块（共几十 KB）：只在「已打开中心」后才取，与九个 lazy 面板同 chunk，
+        // 切屏时 0 请求。直接写在本懒块里、不登记进 dialogChunks —— 那是首屏模块，
+        // 每多一个 () => import(...) 都会给 index chunk 加约 200B，5% 体积余量不够挪。
+        prefetchChunk("statsPanel", () => import("./navigationCenter/panels/StatsPanel"));
+        prefetchChunk("dataSafetyPanel", () => import("./navigationCenter/panels/DataSafetyPanel"));
+        prefetchChunk("auditPanel", () => import("./navigationCenter/panels/AuditPanel"));
+        prefetchChunk("configPanel", () => import("./navigationCenter/panels/ConfigPanel"));
+        prefetchChunk("aiPanel", () => import("./navigationCenter/panels/AiPanel"));
+        prefetchChunk("vaultPanel", () => import("./navigationCenter/panels/VaultPanel"));
+        prefetchChunk("accountPanel", () => import("./navigationCenter/panels/AccountPanel"));
+        prefetchChunk("shortcutsPanel", () => import("./navigationCenter/panels/ShortcutsPanel"));
+        prefetchChunk("vaultDialog", () => import("./VaultDialog"));
     }, []);
 
     // 每次打开都回到「这次要去的那一屏」，并把选中项校正成真的可见的那一个。
