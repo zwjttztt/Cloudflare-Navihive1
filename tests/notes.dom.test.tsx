@@ -658,6 +658,39 @@ test("悬停时整行右移 2px，且只在真能 hover 的设备上（inkstone 
     );
 });
 
+test("多选态整行点选：行 onClick / onKeyDown 按 multiSelect 分流（源码守卫）", () => {
+    const src = stripComments(readNotesFile("NotesListPane.tsx"));
+    // 根因修复要落在行自己的 handler 上：多选态普通点/键盘都切勾选，
+    // 而不是靠放大 checkbox 命中区。任一分支被删掉，这条守卫就该红。
+    assert.ok(
+        /if \(multiSelect\) toggleChecked\(id\)/.test(src),
+        "多选态普通点整行要 toggleChecked(id)，不能无条件打开笔记"
+    );
+    assert.ok(
+        /onKeyDown=\{e => \{[\s\S]{0,400}if \(multiSelect\)/.test(src),
+        "多选态 Enter/Space 也要按 multiSelect 切勾选（键盘可访问性）"
+    );
+    assert.ok(
+        /onKeyDown=\{e => \{[\s\S]{0,400}e\.preventDefault\(\)/.test(src),
+        "键盘分支要保留 e.preventDefault()"
+    );
+    assert.ok(
+        /else openNote\(note\)/.test(src),
+        "非多选态仍要能打开笔记（整行点击不能被一刀切掉）"
+    );
+    // 两处 stopPropagation：点 checkbox / ⋯ 菜单不能顺带触发行的 toggle
+    assert.ok(
+        src.includes("onClick={e => e.stopPropagation()}"),
+        "checkbox 的 onClick stopPropagation 不能丢（否则点它会双 toggle）"
+    );
+    const menuAt = src.indexOf("data-note-menu={note.id}");
+    assert.ok(menuAt > 0, "行内 ⋯ 菜单按钮要带 data-note-menu");
+    assert.ok(
+        /e\.stopPropagation\(\)/.test(src.slice(menuAt, menuAt + 400)),
+        "⋯ 菜单按钮的 stopPropagation 不能丢（否则点菜单会顺带改勾选）"
+    );
+});
+
 test("置顶的笔记单独排在最上面一组（inkstone 的 pinned 组）", () => {
     mountPanel([
         note({ id: 1, title: "普通", content: "a", updated_at: "2026-09-03T10:00:00Z" }),

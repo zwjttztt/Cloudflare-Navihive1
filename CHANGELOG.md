@@ -12,6 +12,15 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-09 · v37.1.0
+
+### 修复
+- 修掉刚打开网站就弹出的红色提示「加载数据失败: The user aborted a request.」。`bootstrap?full=1` 带 10 秒超时，Chromium 下 `AbortSignal.timeout()` 中止时抛的是 `name=AbortError` 的 `DOMException`（文案就是那句英文），旧请求层只认 `instanceof Error && name === "TimeoutError"`，于是原文一路冒到 toast，还被 `App` 归类成一条假的 `load-error` 审计记录；而首屏缓存与挂载期静默重试随后其实已经把数据补上了，一次性 toast 却撤不回来。现在内部超时 signal 单独留引用：自建 signal 触发的 `AbortError` / `TimeoutError` 统一翻译成 `request_timeout` 的中文超时文案，外部调用方主动取消（组件卸载 / 切换）原样抛，绝不伪装成服务器超时。`useSites` 对这类「可自愈的传输层错误」不再弹 toast，已有数据时也不把整页换成错误面板；确实没有数据且重试无果时仍保留可读错误与重试入口，真实网络错误和真实加载失败的分类一字未动，请求序号过期的旧请求继续静默丢弃。
+- 笔记多选改为「点整行任意位置都能选中」：多选状态下点击笔记行的标题、摘要或空白区即可勾选 / 取消，不必再对准左上角那个小方框；键盘 `Enter` / `Space` 与点击同义。Ctrl / ⌘ 单条切换、Shift 连选、行内 `⋯` 菜单与 checkbox 的冒泡拦截都保留（点方框不会双切换、点菜单不会顺带改勾选），非多选态点击整行仍照旧打开笔记。
+
+### 工程
+- 新增 `tests/clientAbortTimeout.dom.test.tsx`（内部超时 / 外部取消 / 真实网络错误三种行为分类 + 请求层与首屏 state 的源码静态守卫），扩展 `tests/siteListErrorState.dom.test.tsx`（启动期 abort 静默、真失败仍报错、序号过期丢弃）与 `tests/notesMultiSelect.dom.test.tsx`（整行点击、checkbox 单次切换、菜单不误触、键盘、Ctrl/Shift 不回归），并在 `tests/notes.dom.test.tsx` 钉住行点击与键盘的新写法。全量单测 4286 项 / 4285 通过 / 0 失败，本地与 `TZ=UTC` 双跑全绿；覆盖率分层门禁第 1 层各层 100%、第 2 层地板全过。
+
 ## 2026-11-08 · v37.0.0
 
 ### 修复

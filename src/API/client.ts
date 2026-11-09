@@ -194,8 +194,11 @@ export class NavigationClient implements ClientThis {
         // 超时分级见 timeoutForEndpoint（为什么附件上传要单独一档、为什么
         // `notes/attachments/list` 不能跟着一起放宽，都写在那里）
         const timeoutMs = timeoutForEndpoint(endpoint, options.timeoutMs);
+        // 内部超时 signal 单独留引用：catch 里要靠「是不是它自己 aborted」把超时与
+        // 外部调用方主动取消区分开 —— 后者不能报成「请求超时」。
+        const timeoutSignal = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null;
         // 调用方显式给的 signal 优先（它自己知道要不要取消）；否则用超时 signal
-        const signal = options.signal ?? (timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined);
+        const signal = options.signal ?? timeoutSignal ?? undefined;
         const { signal: _ignored, timeoutMs: _ignored2, ...rest } = options;
 
         // 凭据走 httpOnly cookie，由浏览器自动带上（credentials 默认即 same-origin）。
@@ -213,7 +216,18 @@ export class NavigationClient implements ClientThis {
         } catch (error) {
             // 超时要能和「断网」分开：断网进离线队列等着重放，超时说明网络通但服务端
             // 不响应 —— 那是要告诉用户「稍后再试」，而不是默默排进队列里重试一遍。
-            if (error instanceof Error && error.name === "TimeoutError") {
+            // name 直接从对象上取：AbortSignal.timeout() 在 Chromium 下抛的是
+            // name=AbortError 的 DOMException，不一定 instanceof Error，不能靠它过滤。
+            const name = (error as { name?: unknown } | null)?.name;
+            // 关键判定：只有我们自己创建的 timeoutSignal 真触发、且没有外部 signal 时
+            // 才算超时；外部 options.signal 主动取消是组件卸载 / 切换的预期行为，
+            // 原样抛，否则会把一次普通取消伪装成「服务器超时」误导用户、污染审计。
+            const abortedByInternalTimeout =
+                name === "AbortError" &&
+                timeoutSignal !== null &&
+                timeoutSignal.aborted &&
+                options.signal === undefined;
+            if (name === "TimeoutError" || abortedByInternalTimeout) {
                 throw new ApiError({
                     code: "request_timeout",
                     message: `请求超时（${Math.round(timeoutMs / 1000)} 秒无响应），请检查网络后重试`,

@@ -572,13 +572,19 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                         return;
                                     }
                                     selectAnchorRef.current = id;
-                                    if (dirty) void switchTo(id);
+                                    // 多选态：点整行任意位置都切勾选，不再打开笔记（根因：以前只有小方框能选）
+                                    if (multiSelect) toggleChecked(id);
+                                    else if (dirty) void switchTo(id);
                                     else openNote(note);
                                 }}
                                 onKeyDown={e => {
                                     if (e.key === "Enter" || e.key === " ") {
                                         e.preventDefault();
-                                        openNote(note);
+                                        // 多选态：键盘与点击同义，Enter/Space 切勾选而不是打开笔记
+                                        if (multiSelect) {
+                                            const id = note.id;
+                                            if (id !== undefined) toggleChecked(id);
+                                        } else openNote(note);
                                     }
                                 }}
                                 onContextMenu={e => {

@@ -308,3 +308,175 @@ test("X 收起列表：中栏真的隐藏、批量删除确认框随之关闭", 
     );
     assert.ok(!/删除选中的/.test(document.body.textContent ?? ""), "确认框文案不该还在");
 });
+
+// ---------------------------------------------------------------------------
+// ④ 整行点选：多选态下点行的任意位置都切换勾选，而不是只有小 checkbox 能选。
+// 根因在行自己的 onClick/onKeyDown —— 以前多选态仍无条件 openNote/switchTo，
+// 所以点标题、摘要、空白处全都没反应，只有左上方框有效。
+// ---------------------------------------------------------------------------
+
+/** 列表里的行（按渲染顺序），每行带 data-note-id */
+function rows(): HTMLElement[] {
+    return [...document.querySelectorAll<HTMLElement>("[data-note-list] [data-note-id]")];
+}
+
+/** React 的 onClick 收合成事件，修饰键得自己 dispatch MouseEvent 才带得上 */
+function clickRow(el: HTMLElement, init: MouseEventInit = {}) {
+    el.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, view: window, ...init })
+    );
+}
+
+function bulkBar(): string {
+    return document.querySelector("[data-bulk-bar='1']")!.textContent ?? "";
+}
+
+function isChecked(id: number): boolean {
+    return document.querySelector<HTMLInputElement>(`input[data-note-check='${id}']`)!.checked;
+}
+
+function checkedIds(): number[] {
+    return [...document.querySelectorAll<HTMLInputElement>("input[data-note-check]")]
+        .filter(i => i.checked)
+        .map(i => Number(i.getAttribute("data-note-check")))
+        .sort((a, b) => a - b);
+}
+
+async function enterMultiSelect() {
+    await act(async () =>
+        (document.querySelector("button[data-tool='multiselect']") as HTMLElement).click()
+    );
+    assert.ok(document.querySelector("[data-bulk-bar='1']"), "前置：多选已开");
+}
+
+test("多选态：点整行任意位置都切换勾选，再点一次取消（标题也算）", async () => {
+    setWide();
+    mountPanel([
+        note({ id: 1, title: "甲" }),
+        note({ id: 2, title: "乙" }),
+    ]);
+    await enterMultiSelect();
+    assert.match(bulkBar(), /已选 0 条/, "前置：还没勾");
+    const row1 = () => document.querySelector<HTMLElement>("[data-note-list] [data-note-id='1']")!;
+
+    // ① 点行自身的空白处（既不是 checkbox，也不是 ⋯ 菜单按钮）
+    await act(async () => { row1().click(); });
+    assert.equal(isChecked(1), true, "点行要勾上这一条");
+    assert.match(bulkBar(), /已选 1 条/);
+    // ② 再点一次取消
+    await act(async () => { row1().click(); });
+    assert.equal(isChecked(1), false, "再点一次要取消");
+    assert.match(bulkBar(), /已选 0 条/);
+    // ③ 点标题所在的那个 flex 子容器（行内非 checkbox / 非菜单按钮的区域）同样能选
+    const titleArea = row1().firstElementChild as HTMLElement | null;
+    assert.ok(titleArea, "行里要有标题/摘要子区域");
+    await act(async () => { titleArea!.click(); });
+    assert.equal(isChecked(1), true, "点行内子区域也要勾上");
+    assert.match(bulkBar(), /已选 1 条/);
+});
+
+test("多选态：点 checkbox 只切换一次（行 onClick 不会二次 toggle）", async () => {
+    setWide();
+    mountPanel([
+        note({ id: 1, title: "甲" }),
+        note({ id: 2, title: "乙" }),
+    ]);
+    await enterMultiSelect();
+    const box = () => document.querySelector<HTMLInputElement>("input[data-note-check='1']")!;
+    // 若 checkbox 的 stopPropagation 丢了，冒泡到行会再 toggle 一次 → 两次抵消成 0
+    await act(async () => { box().click(); });
+    assert.equal(box().checked, true, "点 checkbox 要勾上");
+    assert.equal(isChecked(1), true);
+    assert.match(bulkBar(), /已选 1 条/, "只能是 1 条，双 toggle 会抵消成 0");
+    await act(async () => { box().click(); });
+    assert.equal(box().checked, false, "再点一次取消");
+    assert.match(bulkBar(), /已选 0 条/);
+});
+
+test("多选态：点行内 ⋯ 菜单按钮不改变勾选（stopPropagation 必须保留）", async () => {
+    setWide();
+    mountPanel([
+        note({ id: 1, title: "甲" }),
+        note({ id: 2, title: "乙" }),
+    ]);
+    await enterMultiSelect();
+    await act(async () => {
+        document.querySelector<HTMLInputElement>("input[data-note-check='1']")!.click();
+    });
+    assert.match(bulkBar(), /已选 1 条/, "前置：先勾一条当基准");
+
+    const menu = document.querySelector<HTMLElement>("button[data-note-menu='2']")!;
+    await act(async () => { menu.click(); });
+    assert.ok(document.querySelector("[data-row-op='delete']"), "菜单要打开");
+    assert.match(bulkBar(), /已选 1 条/, "点菜单不能顺带改勾选");
+    assert.equal(isChecked(2), false, "第二条不该被勾上");
+});
+
+test("非多选态：点整行仍打开笔记，不进多选（不回归）", async () => {
+    setWide();
+    mountPanel([
+        note({ id: 1, title: "甲" }),
+        note({ id: 2, title: "乙" }),
+    ]);
+    const title = () => document.querySelector<HTMLInputElement>("input[aria-label='笔记标题']")!;
+    assert.equal(title().value, "甲", "前置：初始打开第一条");
+    assert.equal(document.querySelector("[data-bulk-bar='1']"), null, "前置：没进多选");
+
+    await act(async () => {
+        (document.querySelector("[data-note-list] [data-note-id='2']") as HTMLElement).click();
+    });
+    assert.equal(title().value, "乙", "点整行要打开/切换过去");
+    assert.equal(document.querySelector("input[data-note-check]"), null, "普通点不该进多选");
+});
+
+test("多选态：Ctrl/Cmd+点仍切单条、Shift+点仍从锚点连选（不回归）", async () => {
+    setWide();
+    mountPanel([
+        note({ id: 1, title: "甲" }),
+        note({ id: 2, title: "乙" }),
+        note({ id: 3, title: "丙" }),
+        note({ id: 4, title: "丁" }),
+    ]);
+    // ⌘/Ctrl+点：进入多选且只切这一条，不能双 toggle
+    await act(async () => { clickRow(rows()[1], { ctrlKey: true, metaKey: true }); });
+    assert.ok(document.querySelector("[data-bulk-bar='1']"), "Ctrl+点要进多选");
+    assert.deepEqual(checkedIds(), [2], "Ctrl+点只该勾这一条");
+    // 多选态下再 Ctrl+点同一条 = 取消（验 B：分支语义不变、没有双切换）
+    await act(async () => { clickRow(rows()[1], { ctrlKey: true }); });
+    assert.deepEqual(checkedIds(), [], "再 Ctrl+点要取消");
+    // 普通点建立锚点（多选态下现在变成「切一条 + 设锚点」）
+    await act(async () => { clickRow(rows()[1]); });
+    assert.deepEqual(checkedIds(), [2], "普通点在多选态切一条并当锚点");
+    // Shift+点第 4 条 → 2、3、4（两端都算）
+    await act(async () => { clickRow(rows()[3], { shiftKey: true }); });
+    assert.deepEqual(checkedIds(), [2, 3, 4], "Shift 从锚点连选到这一条");
+});
+
+test("多选态：键盘 Enter / Space 切勾选而不打开笔记（e.preventDefault 保持）", async () => {
+    setWide();
+    mountPanel([
+        note({ id: 1, title: "甲" }),
+        note({ id: 2, title: "乙" }),
+    ]);
+    const title = () => document.querySelector<HTMLInputElement>("input[aria-label='笔记标题']")!;
+    await enterMultiSelect();
+    const row2 = () => document.querySelector<HTMLElement>("[data-note-list] [data-note-id='2']")!;
+    const press = (key: string) => {
+        const ev = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+        row2().dispatchEvent(ev);
+        return ev;
+    };
+
+    let ev!: KeyboardEvent;
+    await act(async () => { ev = press("Enter"); });
+    assert.ok(ev.defaultPrevented, "e.preventDefault 要保持");
+    assert.equal(isChecked(2), true, "Enter 要勾上第二条");
+    assert.equal(isChecked(1), false, "不该动到别的条");
+    assert.match(bulkBar(), /已选 1 条/);
+    assert.equal(title().value, "甲", "键盘不该打开/切换笔记");
+
+    await act(async () => { press(" "); });
+    assert.equal(isChecked(2), false, "Space 再切一次取消");
+    assert.match(bulkBar(), /已选 0 条/);
+    assert.equal(title().value, "甲", "Space 也不该打开笔记");
+});

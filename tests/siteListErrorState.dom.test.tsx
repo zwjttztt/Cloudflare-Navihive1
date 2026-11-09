@@ -173,7 +173,33 @@ interface UseSitesOut {
     error: string | null;
     toasts: string[];
     authFails: number;
-    fetchData: (opts?: { silent?: boolean }) => Promise<boolean>;
+    fetchData: (opts?: { silent?: boolean; force?: boolean }) => Promise<boolean>;
+}
+
+/** 一份「已经取到、可以展示」的 bootstrap 数据 */
+const OK_DATA = {
+    groups: [{ id: 1, name: "已有分组", order_num: 0 }],
+    sites: [{ id: 7, group_id: 1, name: "已有站点", url: "https://example.com", order_num: 0 }],
+    configs: {},
+    me: { id: 1, username: "root", role: "owner" },
+    recovery: { configured: false },
+} as unknown as BootstrapData;
+
+/** Chromium 下 AbortSignal.timeout() 的形状（name=AbortError，不一定是 DOMException 实例） */
+function abortError(message = "The user aborted a request."): Error {
+    const error = new Error(message);
+    error.name = "AbortError";
+    return error;
+}
+
+function emptyOut(): UseSitesOut {
+    return {
+        loading: true,
+        error: null,
+        toasts: [],
+        authFails: 0,
+        fetchData: async () => false,
+    };
 }
 
 /**
@@ -249,4 +275,126 @@ test("非 silent 取数失败：error 拿到原因，且成功一次后自己清
         await out.fetchData();
     });
     assert.equal(out.error, null, "成功一次之后 error 必须清掉，否则错误面板不会退场");
+});
+
+// ---- 启动期传输层误报（2026-11）：数据已显示，却弹出「加载数据失败: The user aborted a request.」 ----
+//
+// 根因是 bootstrap 的 AbortSignal.timeout() 在 Chromium 下抛 name=AbortError 的
+// DOMException，client 只认 TimeoutError 于是原文冒到 useSites 的 onError。A 已把它
+// 翻成 ApiError(request_timeout)，B 在启动期对这类「可自愈」失败不弹 toast、不写整页错误。
+// 下面三条分别钉：误报被堵住、真失败没被一律吞掉、序号过期的取消静默。
+
+test("启动期 bootstrap 被 abort（已有数据可展示）：不弹「加载数据失败」toast、也不写 error", async () => {
+    const out = emptyOut();
+    let mode: "ok" | "abort" = "ok";
+    const api = {
+        bootstrap: async (): Promise<BootstrapData> => {
+            if (mode === "abort") throw abortError();
+            return OK_DATA;
+        },
+    };
+    mount(<UseSitesHarness out={out} api={api} />);
+
+    // 先成功取一次，模拟「首屏缓存已垫底 / 上一次成功数据」的可展示状态
+    await act(async () => {
+        await out.fetchData();
+    });
+    assert.equal(out.error, null);
+
+    // 随后一次非静默取数被 abort：缓存 / 静默重试会补上，一次性 toast 不该出现
+    mode = "abort";
+    await act(async () => {
+        await out.fetchData();
+    });
+
+    assert.deepEqual(out.toasts, [], "⛔ 自愈类传输错误不能拼「加载数据失败」toast（也就不产生假 load-error）");
+    assert.equal(out.error, null, "已有数据可看时不能把整页换成错误面板");
+    assert.equal(out.loading, false, "loading 仍要在 finally 收掉");
+});
+
+test("client 翻译出的 request_timeout 同样静默（不产生假 load-error）", async () => {
+    const out = emptyOut();
+    let mode: "ok" | "timeout" = "ok";
+    const api = {
+        bootstrap: async (): Promise<BootstrapData> => {
+            if (mode === "timeout") {
+                // 与 client.ts 的翻译结果同形（ApiError 带 code，不必 import 真实类）
+                const err = new Error("请求超时（10 秒无响应），请检查网络后重试") as Error & { code: string };
+                err.code = "request_timeout";
+                throw err;
+            }
+            return OK_DATA;
+        },
+    };
+    mount(<UseSitesHarness out={out} api={api} />);
+    await act(async () => {
+        await out.fetchData();
+    });
+
+    mode = "timeout";
+    await act(async () => {
+        await out.fetchData();
+    });
+
+    assert.deepEqual(out.toasts, [], "request_timeout 不能变成误导性的「加载数据失败」");
+    assert.equal(out.error, null, "已有数据时不要把整页换成错误面板");
+});
+
+test("已有数据时的真实网络错误仍要报错（不能被一律吞掉）", async () => {
+    const out = emptyOut();
+    let mode: "ok" | "down" = "ok";
+    const api = {
+        bootstrap: async (): Promise<BootstrapData> => {
+            if (mode === "down") throw new Error("数据库连接超时");
+            return OK_DATA;
+        },
+    };
+    mount(<UseSitesHarness out={out} api={api} />);
+    await act(async () => {
+        await out.fetchData();
+    });
+
+    mode = "down";
+    await act(async () => {
+        await out.fetchData();
+    });
+
+    assert.equal(out.toasts.length, 1, "真实失败仍要弹 toast");
+    assert.ok(out.toasts[0].includes("加载数据失败"), `要走真实加载失败通道，实际：${out.toasts}`);
+    assert.equal(out.error, "数据库连接超时", "真失败仍要给可读错误提示 + 错误面板的重试入口");
+});
+
+test("旧请求（序号过期）的取消整个丢弃：不弹 toast、不写 error", async () => {
+    const out = emptyOut();
+    const pending: Array<{
+        resolve: (data: BootstrapData) => void;
+        reject: (error: unknown) => void;
+    }> = [];
+    const api = {
+        bootstrap: () =>
+            new Promise<BootstrapData>((resolve, reject) => {
+                pending.push({ resolve, reject });
+            }),
+    };
+    mount(<UseSitesHarness out={out} api={api} />);
+
+    let first!: Promise<boolean>;
+    let second!: Promise<boolean>;
+    await act(async () => {
+        // force 让两次都真正发请求，第二份取得最新序号，第一份随即成为过期请求
+        first = out.fetchData({ force: true });
+        second = out.fetchData({ force: true });
+        await Promise.resolve();
+    });
+
+    await act(async () => {
+        pending[1].resolve(OK_DATA);
+        await second;
+        // 旧请求晚到、且以 abort 失败：必须整个丢弃，不能弹一条与当前状态无关的提示
+        pending[0].reject(abortError("旧请求被取消"));
+        await first;
+    });
+
+    assert.deepEqual(out.toasts, [], "序号过期的取消要静默");
+    assert.equal(out.error, null, "过期请求不能把当前状态改坏");
 });

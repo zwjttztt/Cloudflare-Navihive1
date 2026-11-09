@@ -33,6 +33,27 @@ import {
     upsertSite,
 } from "../utils/siteMutations";
 
+/**
+ * 「可自愈的传输层错误」：超时 / 取消。启动期这类失败会由首屏缓存或挂载期静默重试补上，
+ * 不该弹一次性 toast（撤不回来），也不该在有数据可看时把整页换成错误面板。
+ *
+ * 认三类形状：client.ts 翻译出的 ApiError(request_timeout)、浏览器原生的
+ * TimeoutError / AbortError DOMException、以及文案里带取消语义的兜底
+ * （Chromium 的 "The user aborted a request."、Node 的 "The operation was aborted…"）。
+ */
+function isSelfHealingTransportError(err: unknown): boolean {
+    if (!err || typeof err !== "object") return false;
+    const e = err as { name?: unknown; message?: unknown; code?: unknown };
+    const name = typeof e.name === "string" ? e.name : "";
+    const message = typeof e.message === "string" ? e.message : "";
+    return (
+        e.code === "request_timeout" ||
+        name === "TimeoutError" ||
+        name === "AbortError" ||
+        /The user aborted a request|The operation was aborted/i.test(message)
+    );
+}
+
 export interface UseSitesDeps {
     /** bootstrap 抓取（与 App 共用同一个 api 实例，保证 mutation 包裹一致） */
     api: { bootstrap: () => Promise<BootstrapData> };
@@ -54,6 +75,13 @@ export function useSites(deps: UseSitesDeps) {
     // 用来告诉那次初始 fetchData「已经有缓存垫底，别再举骨架屏」——否则下面的非静默
     // fetch 会把骨架屏重新举起来，把缓存优化的效果抵消掉（这是此前每次打开都白屏的根因）。
     const paintedFromCacheRef = useRef(false);
+
+    // fetchData 是空依赖的稳定引用，catch 里读不到最新的 groups；镜像一份，
+    // 用来判断「页面上是否已有数据可展示」。
+    const groupsRef = useRef(groups);
+    useEffect(() => {
+        groupsRef.current = groups;
+    });
 
     // 请求序号：每次**真正发起**一次 bootstrap 就 +1。响应回来时只有序号仍等于
     // 当前值才允许落地 —— 挂载期 ≥4 条自动刷新源（缓存快照 / 首次 bootstrap /
@@ -164,14 +192,17 @@ export function useSites(deps: UseSitesDeps) {
                 } catch (err) {
                     // 旧请求的失败同样整个丢弃：不能让一份过期快照的 401 把人踢回登录页，
                     // 也不能让它在页面上弹一条与当前状态无关的「加载数据失败」。
+                    // 序号过期的请求多半正是被取消的那一份，这里天然静默。
                     if (seq !== requestSeqRef.current) return false;
                     const message = err instanceof Error ? err.message : "未知错误";
+                    const selfHealing = isSelfHealingTransportError(err);
                     if (!effectiveSilent) {
-                        depsRef.current.onError("加载数据失败: " + message);
-                        // 整页错误：让 App 渲染错误面板（而不是空数据）。
-                        // silent（缓存已垫底后的静默刷新）**不吃这条** —— 那时页面上
-                        // 有旧数据可看，把整页换成错误面板是倒退，只弹 toast 就够。
-                        setError(message);
+                        // 可自愈的传输层错误不弹 toast：缓存 / 静默重试会补上，而一次性
+                        // toast 撤不回来，还会被 App 归类成假的 load-error 污染审计。
+                        if (!selfHealing) depsRef.current.onError("加载数据失败: " + message);
+                        // 已有数据可展示时不把整页换成错误面板；确实没有数据且重试也无果时，
+                        // 保留这个可自动撤销的错误面板 + 重试入口，真失败仍有出口。
+                        if (!selfHealing || groupsRef.current.length === 0) setError(message);
                     }
                     // 如果因为认证问题导致加载失败，处理认证状态。
                     // 判据用 ApiError 的 code / HTTP 401，不再拿 message 去 includes —— 这条
