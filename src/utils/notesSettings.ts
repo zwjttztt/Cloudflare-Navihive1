@@ -182,3 +182,37 @@ export function saveNotesSettings(settings: NotesUiSettings): void {
         /* 隐私模式下写不了，忽略 */
     }
 }
+
+// ---------- 打开记事本时的编辑器档位（2026-11-11） ----------
+//
+// 与上面的「设置面板项」不同：pane 是运行时布局，用户在头部三档键里随时切，
+// 不该混进 NotesUiSettings（那会牵动设置面板与一堆逐字段断言）。
+// 之前 useNotesPageModel 写死 useState<Pane>("split")，关闭记事本时组件一卸载
+// 状态就没了，于是每次打开都回到分栏。这里只记这一档：键独立、清洗独立。
+
+export const NOTES_PANE_KEY = "notes.pane";
+export type NotesPane = "edit" | "split" | "preview";
+export const DEFAULT_NOTES_PANE: NotesPane = "split";
+
+export function readNotesPane(): NotesPane {
+    try {
+        const raw = globalThis.localStorage?.getItem(NOTES_PANE_KEY);
+        return raw === "edit" || raw === "split" || raw === "preview"
+            ? raw
+            : DEFAULT_NOTES_PANE;
+    } catch {
+        return DEFAULT_NOTES_PANE;
+    }
+}
+
+export function writeNotesPane(pane: NotesPane): void {
+    try {
+        // 写之前也过一遍白名单：脏类型不许进 localStorage（读侧同样兜底，两头都干净）。
+        const safe: NotesPane = pane === "edit" || pane === "split" || pane === "preview"
+            ? pane
+            : DEFAULT_NOTES_PANE;
+        globalThis.localStorage?.setItem(NOTES_PANE_KEY, safe);
+    } catch {
+        /* 隐私模式下写不了，忽略 */
+    }
+}

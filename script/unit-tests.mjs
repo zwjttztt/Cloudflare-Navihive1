@@ -321,6 +321,12 @@ if (domEntries.length > 0) {
 
 await Promise.all(builds);
 
+/** 并发数默认 4（与 CI 一致）；本地可用环境变量压低峰值内存。 */
+const testConcurrency = (() => {
+    const n = Number(process.env.NAVIHIVE_TEST_CONCURRENCY);
+    return Number.isInteger(n) && n >= 1 && n <= 8 ? n : 4;
+})();
+
 const scope =
     filters.length > 0 ? `（只跑匹配 ${filters.join(" / ")} 的）` : "";
 console.log(
@@ -366,7 +372,10 @@ try {
         "--test-timeout=600000",
         // ⚠️ 不设时 node 按核数起进程：16 核开发机上会同时跑 15 个 jsdom 进程，
         // 每个都加载一份 React/MUI，本地和 CI 的调度压力完全不可比。钉成 4 让两边一致。
-        "--test-concurrency=4",
+        // 本地跑全量可用 NAVIHIVE_TEST_CONCURRENCY=1|2 压低峰值内存：4 个 jsdom
+        // 子进程各自加载一整套依赖，内存吃紧时会把机器打爆（2026-11-11 踩过）。
+        // 默认保持 4，CI 行为不变。
+        `--test-concurrency=${testConcurrency}`,
         // cwd 固定为 ROOT：相对路径指向同一产物，避免 Windows 命令行长度上限。
         ...bundles.map(bundle => path.relative(ROOT, bundle)),
     ],

@@ -23,7 +23,9 @@ import { exportNoteAsHtml } from "../../utils/noteHtmlExport";
 import { extractOutline } from "../../utils/noteOutline";
 import {
     loadNotesSettings,
+    readNotesPane,
     saveNotesSettings,
+    writeNotesPane,
     type NotesUiSettings,
 } from "../../utils/notesSettings";
 import { readReadingPosition, writeReadingPosition } from "../../utils/readingPosition";
@@ -144,8 +146,17 @@ export function useNotesPageModel({
     }, [activeId, setRecentNoteIds]);
 
     const userClearedRef = useRef(false);
-    const [pane, setPane] = useState<Pane>("split");
+    const [pane, setPane] = useState<Pane>(readNotesPane);
     const [splitRatio, setSplitRatio] = useState(readSplitRatio);
+
+    // 档位一变就落盘，刷新页面也不丢。跳过挂载那一次：没动过就别往 localStorage
+    // 里写默认值，免得把「用户从没设置过」和「用户选了分栏」混成一回事。
+    const lastPaneRef = useRef(pane);
+    useEffect(() => {
+        if (lastPaneRef.current === pane) return;
+        lastPaneRef.current = pane;
+        writeNotesPane(pane);
+    }, [pane]);
 
     const splitRatioRef = useRef(splitRatio);
 

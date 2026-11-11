@@ -12,6 +12,17 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-11 · v37.4.0
+
+### 修复
+- **打开记事本恢复上次的编辑器档位**（编辑 / 分栏 / 预览），不再每次都固定回到「分栏」。根因是 `src/components/notes/useNotesPageModel.tsx` 把档位写死成 `useState<Pane>("split")`，关闭记事本时组件卸载、状态随之丢失。现在初值从本机偏好 `notes.pane` 恢复，切换档位即刻落盘，刷新页面也不丢；窄屏把分栏降级成预览只改渲染用的 `finePane`，不改写用户选的档位，回到桌面仍按原设置分屏（`NotesEditorPane.tsx` 早就把 `pane` 注释为「持久化设置」，这次把初值补齐）。读写两侧都过白名单，脏值 / 隐私模式一律回落默认「分栏」，老用户与视觉基线不变。
+- 只记编辑器档位这一项：中栏 / 列表栏的收起状态仍是每次打开重置 —— 它们属于导航态，且现有大量回归用例依赖默认展开，不在本次改动范围。
+
+### 工程
+- **单测运行器并发可配**：`script/unit-tests.mjs` 的 `--test-concurrency` 现在读 `NAVIHIVE_TEST_CONCURRENCY`（1–8，默认仍是 4，CI 行为不变）。4 个 jsdom 子进程各自加载一整套 React/MUI，本机并发跑满会把内存打爆（2026-11-11）；本地跑全量改为低并发 + `NODE_OPTIONS='--max-old-space-size=2048'` + 输出落盘，重命令一律串行，被强杀后先确认 `script/.unit-tests.lock` 的 pid 已退出再清理。
+- 新增 `tests/notesPanePrefs.test.ts`（读写清洗、隐私模式、源码接线守卫）与 `tests/notesPaneRestore.dom.test.tsx`（真实挂载 → 卸载 → 重挂验证恢复，用 `role='separator'` 是否渲染判定分栏，不靠样式猜测）。变异验证：初值改回写死 `split` → 4 条红，删掉写回 → 3 条红。
+- 全绿门禁：typecheck / lint（0 error）/ 全量单测 4323 项（0 fail，本地与 `TZ=UTC` 双跑）/ build / 首屏预算 37/37 / brand / strict-idx / smoke / a11y 0 / contrast 亮暗各 0 / 覆盖率两层（437/437 = 100%、89.9% 且各目录地板通过）/ `git diff --check`。首屏预算常量一字未抬。
+
 ## 2026-11-09 · v37.3.0
 
 ### 性能
