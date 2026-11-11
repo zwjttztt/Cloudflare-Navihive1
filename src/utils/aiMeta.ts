@@ -108,6 +108,25 @@ export function resolveGroupName(value: unknown, groups: string[]): string {
     return hit ?? text;
 }
 
+/**
+ * AI 补全失败时把传输层天书翻成人话。
+ *
+ * 502 的响应体经过 CDN / 反代时常被换成 HTML 错误页，客户端只剩「API错误: 502」；
+ * 服务端已对超时 / 网络类失败自动重试过一次，所以这里明确告诉用户「已重试，可再试」。
+ * ⚠️ 只认「没有具体原因」的兜底文案：配置不全、密钥不对、模型答非所问必须原样保留，
+ * 否则真因会被一句「稍后重试」糊掉。
+ */
+export function friendlyAiSiteMetaError(raw: string): string {
+    const text = (raw || "").trim();
+    if (
+        /^API错误:\s*5\d\d$/i.test(text) ||
+        /^(抓取超时|整段请求超时|未能拿到上游响应)(\s|\(|$)/.test(text)
+    ) {
+        return "模型服务这次没响应（已自动重试一次），请稍后再点一次补全";
+    }
+    return text || "AI 补全失败，请重试";
+}
+
 /** 站点元信息补全的提示词：把已有分组与标签都摆出来，逼它从里面选 */
 export function buildSiteMetaPrompt(opts: {
     url: string;

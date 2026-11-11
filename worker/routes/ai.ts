@@ -8,7 +8,13 @@
 //   3. **失败不影响站点**。超时 / 密钥错 / 模型胡说，都是「这次没帮上忙」，
 //      绝不能让加站、保存这类操作失败。
 
-import { EMBED_BATCH_MAX, aiEmbed, aiText } from "../ai";
+import {
+    EMBED_BATCH_MAX,
+    SITE_META_RETRIES,
+    SITE_META_TIMEOUT_MS,
+    aiEmbed,
+    aiText,
+} from "../ai";
 import { aiConfigProblem, aiSettingsFromConfigs } from "../../src/utils/aiConfig";
 import {
     MAX_SUGGEST_SITES,
@@ -188,6 +194,8 @@ export async function handleAiRoutes(ctx: RouteCtx): Promise<Response | null> {
             | null;
         const url = (body?.url || "").trim();
         if (!/^https?:\/\//i.test(url)) return bad("需要一个 http(s) 网址");
+        // 站点补全是「点了就等结果」的交互：用短单跳 + 一次重试把偶发出站抖动
+        // 自愈掉，总耗时仍压在前端 30s 超时之内（见 worker/ai.ts 的注释）。
         const result = await aiText(
             settings,
             buildSiteMetaPrompt({
@@ -195,7 +203,8 @@ export async function handleAiRoutes(ctx: RouteCtx): Promise<Response | null> {
                 name: body?.name,
                 groups: body?.groups ?? [],
                 tags: body?.tags ?? [],
-            })
+            }),
+            { timeoutMs: SITE_META_TIMEOUT_MS, retries: SITE_META_RETRIES }
         );
         if (!result.ok) return bad(result.message, result.status);
         const suggestion = parseSiteMeta(result.data, {

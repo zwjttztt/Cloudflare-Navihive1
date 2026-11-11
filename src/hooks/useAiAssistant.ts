@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AiProbeResult, AiStatus, AiTestResponse } from "../API/http";
-import type { SiteMetaSuggestion, TagSuggestion } from "../utils/aiMeta";
+import { friendlyAiSiteMetaError, type SiteMetaSuggestion, type TagSuggestion } from "../utils/aiMeta";
 
 export type AiOutcome<T> = { ok: true; data: T } | { ok: false; message: string };
 
@@ -116,11 +116,16 @@ export function useAiAssistant({ api }: { api: AiApiLike }): AiAssistant {
                 const normalizedUrl = /^https?:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
                 const res = await api.aiSiteMeta({ url: normalizedUrl, ...opts });
                 if (!res.success || !res.suggestion) {
-                    return { ok: false, message: res.message || "AI 没给出建议" };
+                    return { ok: false, message: friendlyAiSiteMetaError(res.message || "AI 没给出建议") };
                 }
                 return { ok: true, data: res.suggestion };
             } catch (error) {
-                return { ok: false, message: error instanceof Error ? error.message : "AI 补全失败，请重试" };
+                return {
+                    ok: false,
+                    message: friendlyAiSiteMetaError(
+                        error instanceof Error ? error.message : "AI 补全失败，请重试"
+                    ),
+                };
             }
         },
         [api]

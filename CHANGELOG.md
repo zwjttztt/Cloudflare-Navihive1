@@ -12,6 +12,18 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-11 · v37.5.0
+
+### 修复
+- **AI 补全（网站设置 / 新增网站弹窗的魔法棒按钮）偶发报「API错误: 502」**。线上日志显示那一趟 `POST /api/ai/site-meta` 耗时 25012ms —— 正好撞满 `TEXT_TIMEOUT_MS = 25s` 的单跳硬超时。逐项实测排除配置 / 网络 / 模型故障：VPS 到 `api.cloudflare.com` 170ms；容器内用库里同一份 Workers AI token 跑真实模型 200 / 517ms；完整补全 prompt（`max_tokens:700`）200 / 2.4s 且返回正确 JSON；应用同款 `undici Agent + validating lookup` 出站 200 / 815ms。结论是上游偶发抖动撞上硬超时，属可自愈失败。
+  - `worker/ai.ts`：站点补全改用 **12s 单跳 + 一次自愈重试**（`SITE_META_TIMEOUT_MS` / `SITE_META_RETRIES`），最坏约 24s，仍压在前端 30s 补全超时内；其它 AI 端点预算不变。`callAi` 同时把 `safeFetch` 的 `kind:"timeout"` 正确映射成 `AiFailReason:"timeout"`（此前一律压成 `network`），`shouldRetryAiFailure()` 只对真超时重试，密钥失效 / 限流 / 模型答非所问不重复烧额度。
+  - `worker/routes/ai.ts`：`ai/site-meta` 传上短预算与重试；**SSRF 白名单、DNS rebinding 闭环、CSP 一字未动**。
+  - `src/utils/aiMeta.ts` + `src/hooks/useAiAssistant.ts`：502 的响应体经过 CDN / 反代常被换成 HTML 错误页，客户端只剩传输层兜底「API错误: 502」。新增 `friendlyAiSiteMetaError()`，把这类**没有具体原因**的兜底文案翻成「模型服务这次没响应（已自动重试一次），请稍后再点一次补全」；配置不全、密钥不对、模型返回的具体错误原样保留，不糊掉真因。
+
+### 工程
+- 新增 `tests/aiRetry.test.ts`（真实注入出站假体：超时重试一次并成功、两次超时认输、上游 4xx 不重试、配置不全零出站、文案边界、接线守卫），扩展 `tests/useAiAssistant.dom.test.tsx`（502 人话兜底 + 具体原因不被覆盖）。变异验证：去掉重试参数 → 1 条红，去掉文案兜底 → 2 条红。
+- 全绿门禁：typecheck / lint 0 error / 全量单测 4334 项（0 fail，本地 + `TZ=UTC` 双跑）/ build / 首屏预算 37/37 / brand / strict-idx / smoke / a11y 0 / contrast 亮暗各 0 / 覆盖率两层 / `git diff --check`；`changelogFreshness` 4/4。
+
 ## 2026-11-11 · v37.4.0
 
 ### 修复

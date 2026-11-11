@@ -267,6 +267,32 @@ test("siteMeta：失败带原因；成功但没建议也算失败", async () => 
     });
 });
 
+test("siteMeta：502 响应体被链路换掉时给人话，不再是「API错误: 502」", async () => {
+    const { api } = makeApi({
+        aiSiteMeta: async () => { throw new Error("API错误: 502"); },
+    });
+    const latest: Latest = { ai: null, site: null, render: 0 };
+    await mountHarness(api, latest);
+    assert.deepEqual(
+        await latest.ai!.siteMeta("https://x.example/", { groups: [], tags: [] }),
+        {
+            ok: false,
+            message: "模型服务这次没响应（已自动重试一次），请稍后再点一次补全",
+        }
+    );
+});
+
+test("siteMeta：服务端给的具体原因不被「稍后重试」糊掉", async () => {
+    const { api } = makeApi({
+        aiSiteMeta: async () => ({ success: false, message: "模型服务返回 401：Invalid token" }),
+    });
+    const latest: Latest = { ai: null, site: null, render: 0 };
+    await mountHarness(api, latest);
+    const result = await latest.ai!.siteMeta("https://x.example/", { groups: [], tags: [] });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.message, "模型服务返回 401：Invalid token");
+});
+
 test("suggestTags：成功给清单；失败兜底「AI 没给出建议」；成功但缺字段给空数组", async () => {
     const SITES = [{ id: 1, name: "a", url: "https://a/" }];
     const suggestions: TagSuggestion[] = [{ id: 1, tags: ["t"], group: "g" }];

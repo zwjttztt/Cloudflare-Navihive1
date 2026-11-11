@@ -15,6 +15,15 @@ import { aiConfigProblem } from "../src/utils/aiConfig";
 /** 文本生成的超时：8b 模型几百个 token 通常 2-4 秒，留足余量 */
 const TEXT_TIMEOUT_MS = 25_000;
 const EMBED_TIMEOUT_MS = 20_000;
+
+/**
+ * 站点补全专用预算：线上实测同一配置 / 同一 prompt 只要 0.5~3.2s，但偶发会
+ * 撞满 25s 单跳硬超时（2026-11-11 用户报「AI 补全 API错误: 502」）。改成
+ * 12s 单跳 + 一次重试，最坏 24s 出头，仍压在前端 30s 的补全超时之内；
+ * 正常请求完全不受影响，其它 AI 端点仍用各自的原预算。
+ */
+export const SITE_META_TIMEOUT_MS = 12_000;
+export const SITE_META_RETRIES = 1;
 /** 一次最多嵌多少条：批量补向量时前端分批，这里再兜一道 */
 export const EMBED_BATCH_MAX = 32;
 
@@ -34,6 +43,14 @@ export type AiResult<T> =
 
 function fail(reason: AiFailReason, message: string, status: number): AiResult<never> {
     return { ok: false, reason, message, status };
+}
+
+/**
+ * 只有「这一趟压根没拿到响应」（超时）才值得重试。上游 4xx / 限流 / 密钥错 /
+ * 模型答非所问重试多少次都是同一个结果，还白白烧额度。
+ */
+export function shouldRetryAiFailure(reason: AiFailReason): boolean {
+    return reason === "timeout";
 }
 
 /** 端点 URL：openai-compatible 用用户填的地址；workers-ai 拼 Cloudflare 的 REST 地址 */
@@ -85,8 +102,12 @@ async function callAi(
         fetchInit: { method: "POST", body: JSON.stringify(body) },
     });
     if (!result.ok) {
-        // blocked = 目标被 SSRF 黑名单挡下（内网 / 非 80-443 端口）
-        const reason: AiFailReason = result.kind === "blocked" ? "blocked" : "network";
+        // blocked = 目标被 SSRF 黑名单挡下（内网 / 非 80-443 端口）；
+        // timeout = 这一趟没拿到响应，是唯一值得重试的一类（见 shouldRetryAiFailure）。
+        // ⚠️ 别把上游非 2xx（safeFetch 的 kind:"http"）也归成 timeout —— 密钥失效、
+        // 限流、模型服务报错重试只会重复烧额度，得原样把具体原因交回上层。
+        const reason: AiFailReason =
+            result.kind === "blocked" ? "blocked" : result.kind === "timeout" ? "timeout" : "network";
         return fail(reason, result.message, result.status);
     }
     if (!result.response.ok) {
@@ -100,24 +121,33 @@ async function callAi(
 export async function aiText(
     settings: AiSettings,
     prompt: string,
-    opts?: { maxTokens?: number }
+    opts?: { maxTokens?: number; timeoutMs?: number; retries?: number }
 ): Promise<AiResult<string>> {
+    const maxTokens = opts?.maxTokens ?? 700;
+    const timeoutMs = opts?.timeoutMs ?? TEXT_TIMEOUT_MS;
+    const retries = opts?.retries ?? 0;
     const body =
         settings.provider === "workers-ai"
-            ? { prompt, max_tokens: opts?.maxTokens ?? 700, temperature: 0.2 }
+            ? { prompt, max_tokens: maxTokens, temperature: 0.2 }
             : {
                   model: settings.textModel,
                   messages: [{ role: "user", content: prompt }],
                   temperature: 0.2,
-                  max_tokens: opts?.maxTokens ?? 700,
+                  max_tokens: maxTokens,
               };
     const path = settings.provider === "workers-ai" ? settings.textModel : "/chat/completions";
-    const res = await callAi(settings, path, body, TEXT_TIMEOUT_MS);
+    let res = await callAi(settings, path, body, timeoutMs);
+    // 偶发的出站抖动一次重试就能自愈；4xx / 模型胡说重试只是重复烧额度，
+    // 闸门收在 shouldRetryAiFailure 一处，别在调用点各写一遍。
+    for (let attempt = 0; attempt < retries && !res.ok && shouldRetryAiFailure(res.reason); attempt++) {
+        res = await callAi(settings, path, body, timeoutMs);
+    }
     if (!res.ok) return res;
 
+    const response = res.data;
     let payload: unknown;
     try {
-        payload = await res.data.json();
+        payload = await response.json();
     } catch {
         return fail("bad-response", "模型返回的不是 JSON", 502);
     }
