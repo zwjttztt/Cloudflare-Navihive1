@@ -766,6 +766,9 @@ export default function NotesPageShell({
                 // 「界面密度」与「强调色」都作用在整个记事本根元素上：
                 // 强调色用 --accent（页内选中态/图标），密度用 data 属性（index.css 里收紧行距）
                 data-notes-density={uiSettings.density}
+                // 光标配色：只把枚举名交给 CSS，色值（含 SVG 指针 URI）全在 index.css。
+                // theme 档没有对应规则，自然落回默认蓝（亮/暗自动切换）。
+                data-notes-caret={uiSettings.caretColor}
                 // 空串 = 跟随主题 → 注入 var(--notes-accent)，由 index.css 按亮/暗分态给值
                 //（亮 #a03c32 压亮纸面达标；暗 #d18276 —— 2026-10-31 才达标：
                 // 旧暗值 #c96e60 压「列表选中项 12% 淡底」实测 4.25:1，小字线 4.5 没过，

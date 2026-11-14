@@ -12,6 +12,21 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-14 · v37.6.0
+
+### 新增
+- **笔记编辑区的光标配色可选**（设置 → 外观 → 光标配色）：「跟随主题（默认，蓝）」之外新增琥珀 / 青绿 / 珊瑚 / 紫罗兰 4 档，**打字竖线 `caret-color` 与鼠标指针 SVG 一起换色**，亮/暗主题各给一份适配值。接的是 2026-10-22 那次「把光标统一钉成显眼蓝」的后续需求。
+  - `src/index.css`：按 `[data-notes-caret='…']` 属性选择器给每档亮/暗两条规则，每色自带一份内联 SVG 指针（白描边 `%23ffffff`、热点 `12 4, text` 全部保留）。**CSS 变量插不进 `cursor: url(data:…)` 的 URI 文本**，所以针色只能逐档预生成；`caret-color` 与针色在同一条规则里同源，避免「竖线一种色、指针另一种色」的历史问题。默认两条蓝规则一字未动。
+  - `src/utils/notesSettings.ts`：新增 `caretColor` 枚举字段（只存名称 `theme|amber|green|coral|violet`），默认值 `theme`、逐字段清洗走白名单；**色值全部留在 CSS**，既绕开 `hardcodedColorGuard` 的颜色字面量 cap，也让色值只有一份。
+  - `src/components/notes/NotesAppearanceTab.tsx`：外观页加一行 `SegOptions`（复用现成互斥段控件，不引新色板/新取色器）；`src/components/notes/NotesPageShell.tsx` 根节点注入 `data-notes-caret`。
+  - **不碰 CodeMirror**：不改 `NoteEditor` 的 `key`、不重建编辑器、不用 Compartment —— 光标色走纯 CSS 属性选择器，改设置不丢撤销历史；`editorCursorGuard.test.ts` 原有的 5 条「默认蓝 / 白描边 / 热点 / 继承 / 手型」断言全部保留。
+
+### 工程
+- `tests/editorCursorGuard.test.ts` 新增遍历式守卫：4 档 × 亮/暗逐一核对 `caret-color !important`、URI 里的 `%23` 针色与竖线同色、白描边、热点与 `text` 兜底，并反向断言不得残留默认蓝针；另钉住「设置只存枚举名 + 根节点注入 + 外观页入口」。`tests/notesSettings.test.ts`（默认 / 合法 / 脏值回落）、`tests/notesAppearanceTab.dom.test.tsx`（5 档可点 / 回调 / 受控高亮）各补 3 条。
+- 变异验证：把 amber 针色改回蓝 → 1 条红；去掉 `caretColor` 清洗白名单 → 1 条红；删掉根节点注入 → 1 条红；还原后子集 30/30 全绿。
+- 全绿门禁：typecheck / lint 0 error / 全量单测 4342 项（0 fail，本地 + `TZ=UTC` 双跑）/ build / 首屏预算 37/37（CSS 约 +3KB，仍在 5% 余量内）/ brand / strict-idx / smoke / a11y 0 / contrast 亮暗各 0 / 覆盖率两层 / `git diff --check` / changelogFreshness 4/4。
+- 已知限制：`audit:a11y` 与 `audit:contrast` 都不量 `caret-color` / SVG 光标，4 组亮暗取值按项目注释里的 ≥3:1 手工挑选并靠白描边保证可辨，没有自动对比度校验；设置项用文字标签而非色点（避免色值在 .tsx 里出现第二份）。
+
 ## 2026-11-11 · v37.5.0
 
 ### 修复

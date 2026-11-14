@@ -1961,6 +1961,62 @@ html.dark .cm-editor .cm-content {
     cursor: pointer;
 }
 
+/* 光标配色预设（2026-11-14）：外观页里「跟随主题」之外的 4 档。
+   ⚠️ `caret-color` 支持 var()，但 `cursor: url("data:…")` 里的 stroke 是 URI 文本，
+   CSS 变量插不进去 —— 所以每色必须自带一份 SVG，亮/暗各一份。
+   ⚠️ 设置只存枚举名（notes.uiSettings.caretColor），色值集中在这里：既避免色值散进
+   .tsx 撞 hardcodedColorGuard 的 cap，也让「竖线色」与「针色」永远同源。
+   ⚠️ 白描边 %23ffffff 与热点 12 4 必须保留：浅灰渲染块上靠白边才不发白。
+   特异性：预设亮 (0,3,0) 压默认亮 (0,2,0)；预设暗 (0,4,1) 压默认暗 (0,3,1)。 */
+[data-notes-caret='amber'] .cm-editor .cm-content {
+    caret-color: #c2410c !important;
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23ffffff' stroke-width='4.5'/%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23c2410c' stroke-width='2.2'/%3E%3C/g%3E%3C/svg%3E")
+            12 4,
+        text;
+}
+html.dark [data-notes-caret='amber'] .cm-editor .cm-content {
+    caret-color: #fb923c !important;
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23ffffff' stroke-width='4.5'/%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23fb923c' stroke-width='2.2'/%3E%3C/g%3E%3C/svg%3E")
+            12 4,
+        text;
+}
+[data-notes-caret='green'] .cm-editor .cm-content {
+    caret-color: #15803d !important;
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23ffffff' stroke-width='4.5'/%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%2315803d' stroke-width='2.2'/%3E%3C/g%3E%3C/svg%3E")
+            12 4,
+        text;
+}
+html.dark [data-notes-caret='green'] .cm-editor .cm-content {
+    caret-color: #4ade80 !important;
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23ffffff' stroke-width='4.5'/%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%234ade80' stroke-width='2.2'/%3E%3C/g%3E%3C/svg%3E")
+            12 4,
+        text;
+}
+[data-notes-caret='coral'] .cm-editor .cm-content {
+    caret-color: #b91c1c !important;
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23ffffff' stroke-width='4.5'/%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23b91c1c' stroke-width='2.2'/%3E%3C/g%3E%3C/svg%3E")
+            12 4,
+        text;
+}
+html.dark [data-notes-caret='coral'] .cm-editor .cm-content {
+    caret-color: #f87171 !important;
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23ffffff' stroke-width='4.5'/%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23f87171' stroke-width='2.2'/%3E%3C/g%3E%3C/svg%3E")
+            12 4,
+        text;
+}
+[data-notes-caret='violet'] .cm-editor .cm-content {
+    caret-color: #6d28d9 !important;
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23ffffff' stroke-width='4.5'/%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%236d28d9' stroke-width='2.2'/%3E%3C/g%3E%3C/svg%3E")
+            12 4,
+        text;
+}
+html.dark [data-notes-caret='violet'] .cm-editor .cm-content {
+    caret-color: #a78bfa !important;
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23ffffff' stroke-width='4.5'/%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23a78bfa' stroke-width='2.2'/%3E%3C/g%3E%3C/svg%3E")
+            12 4,
+        text;
+}
+
 /* 编辑区「即时渲染」的渲染块（inkstone 的 .cm-live-block）。
    块内是 React root（Markdown token → ReactNode，无 innerHTML），
    所以这里只管外框的呼吸感与 hover 反馈。 */

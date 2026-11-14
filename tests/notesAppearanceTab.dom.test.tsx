@@ -80,3 +80,41 @@ test("外观页其它项没被这次改动碰掉（回归：内容宽度四档�
     }
     assert.ok(host.querySelector("[data-settings-preview='1']"), "效果预览块必须留着");
 });
+
+// ---- 光标配色（2026-11-14，外观页）----
+test("光标配色：5 档都在，默认「跟随主题」", () => {
+    const { host } = renderTab();
+    for (const v of ["theme", "amber", "green", "coral", "violet"]) {
+        assert.ok(host.querySelector(`[data-setting="caretColor:${v}"]`), `光标配色缺「${v}」档`);
+    }
+    assert.equal(DEFAULT_NOTES_SETTINGS.caretColor, "theme");
+});
+
+test("光标配色：点「琥珀」回调 caretColor=amber（dataKey 不能写错）", () => {
+    const { host, calls } = renderTab();
+    const btn = host.querySelector('[data-setting="caretColor:amber"]') as HTMLElement;
+    assert.ok(btn);
+    act(() => {
+        btn.click();
+    });
+    assert.deepEqual(calls, [{ key: "caretColor", value: "amber" }]);
+});
+
+test("光标配色：受控高亮跟着 settings 走（不是组件自己存状态）", () => {
+    const violet = renderTab({ caretColor: "violet" });
+    const violetActive = violet.host.querySelector('[data-setting="caretColor:violet"]')!.className;
+    const themeIdle = violet.host.querySelector('[data-setting="caretColor:theme"]')!.className;
+    assert.notEqual(violetActive, themeIdle, "选中档与未选中档必须有不同样式");
+
+    const theme = renderTab({ caretColor: "theme" });
+    assert.equal(
+        theme.host.querySelector('[data-setting="caretColor:violet"]')!.className,
+        themeIdle,
+        "未选中样式应稳定复用"
+    );
+    assert.equal(
+        theme.host.querySelector('[data-setting="caretColor:theme"]')!.className,
+        violetActive,
+        "选中样式应稳定复用（说明高亮真的跟着 settings 走）"
+    );
+});

@@ -22,6 +22,13 @@ export interface NotesUiSettings {
      * 于是「默认外观」本身就是不达标的（2026-10-24 把审计扩到记事本时抓出来的）。
      */
     accent: string;
+    /**
+     * 编辑区光标配色（打字竖线 + 鼠标指针一起换）。只存**枚举名**，色值集中在
+     * index.css 的 `[data-notes-caret='…']` 规则里 —— CSS 变量插不进 `cursor: url(data:…)`
+     * 的 URI 文本，每色必须自带一份 SVG；把色值散进 .tsx 还会撞 hardcodedColorGuard。
+     * `theme` = 跟随主题（现状蓝，亮/暗自动切换），也是默认值。
+     */
+    caretColor: NotesCaretColor;
     /** 背景色：暖白（纸感）/ 纯白（inkstone「背景色」那一项） */
     bgcolor: "warm" | "pure";
     /** 界面密度：舒适 / 紧凑（行距与列表行高） */
@@ -79,9 +86,21 @@ export interface NotesUiSettings {
     autosaveMs: number;
 }
 
+/** 光标配色的合法取值（单一真源：接口类型、清洗白名单、设置页选项都从它派生） */
+export const NOTES_CARET_VALUES = ["theme", "amber", "green", "coral", "violet"] as const;
+export type NotesCaretColor = (typeof NOTES_CARET_VALUES)[number];
+export const NOTES_CARET_OPTIONS: ReadonlyArray<{ value: NotesCaretColor; label: string }> = [
+    { value: "theme", label: "跟随主题" },
+    { value: "amber", label: "琥珀" },
+    { value: "green", label: "青绿" },
+    { value: "coral", label: "珊瑚" },
+    { value: "violet", label: "紫罗兰" },
+];
+
 export const DEFAULT_NOTES_SETTINGS: NotesUiSettings = {
     // 空 = 跟随主题（var(--notes-accent)），见接口注释里的对比度原因
     accent: "",
+    caretColor: "theme",
     bgcolor: "warm",
     density: "comfortable",
     previewFont: "sans",
@@ -135,6 +154,7 @@ function sanitize(raw: unknown): NotesUiSettings {
             if (raw === "" || raw === "#b0433a") return "";
             return /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(raw) ? raw : d.accent;
         })(),
+        caretColor: pick(o.caretColor, NOTES_CARET_VALUES, d.caretColor),
         bgcolor: pick(o.bgcolor, ["warm", "pure"] as const, d.bgcolor),
         density: pick(o.density, ["comfortable", "compact"] as const, d.density),
         previewFont: pick(o.previewFont, ["sans", "serif"] as const, d.previewFont),

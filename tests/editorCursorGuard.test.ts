@@ -94,3 +94,59 @@ test("能点的元素仍是手型（别把链接/按钮也变成 I 字）", () =
     assert.ok(body.length > 0, "要能取到可点元素规则块");
     assert.match(body, /cursor:\s*pointer/, "链接/按钮必须还是手型");
 });
+
+// ---- 光标配色预设（2026-11-14，方案 B）----
+// 每档亮/暗各一份规则；竖线色与 SVG 针色必须同源，白描边/热点/cursor 兜底一个都不能少。
+// 守卫只读字符串，失败路径同样不许塞 DOM 元素（见文件头 OOM 说明）。
+const CARET_PRESETS = [
+    { name: "amber", light: "#c2410c", dark: "#fb923c" },
+    { name: "green", light: "#15803d", dark: "#4ade80" },
+    { name: "coral", light: "#b91c1c", dark: "#f87171" },
+    { name: "violet", light: "#6d28d9", dark: "#a78bfa" },
+] as const;
+
+test("光标配色预设：每档亮暗都同时换竖线与指针，且针色与竖线同色", () => {
+    const css = CSS();
+    const asUri = (hex: string) => hex.replace("#", "%23");
+    for (const p of CARET_PRESETS) {
+        const light = ruleBody(css, `[data-notes-caret='${p.name}'] .cm-editor .cm-content {`);
+        const dark = ruleBody(css, `html.dark [data-notes-caret='${p.name}'] .cm-editor .cm-content {`);
+        assert.ok(light.length > 0, `${p.name} 缺亮色规则`);
+        assert.ok(dark.length > 0, `${p.name} 缺暗色规则`);
+        assert.match(light, new RegExp(`caret-color:\\s*${p.light}\\s*!important`), `${p.name} 亮色竖线`);
+        assert.match(dark, new RegExp(`caret-color:\\s*${p.dark}\\s*!important`), `${p.name} 暗色竖线`);
+        for (const [body, needle, tag] of [
+            [light, asUri(p.light), "亮"],
+            [dark, asUri(p.dark), "暗"],
+        ] as const) {
+            assert.match(body, /cursor:\s*url\("data:image\/svg\+xml,/, `${p.name} ${tag}态要用内联 SVG 指针`);
+            assert.ok(body.includes(`stroke='${needle}'`), `${p.name} ${tag}态针色应为 ${needle}`);
+            assert.match(body, /stroke='%23ffffff'/, `${p.name} ${tag}态白描边不能丢`);
+            assert.match(body, /\)\s*\n?\s*12 4,\s*\n?\s*text;/, `${p.name} ${tag}态热点/兜底不能丢`);
+            assert.ok(
+                !body.includes("stroke='%231a73e8'") && !body.includes("stroke='%236cb2ff'"),
+                `${p.name} ${tag}态不该残留默认蓝针（那就等于没换色）`
+            );
+        }
+    }
+});
+
+test("光标配色：默认蓝规则仍在，设置只存枚举名且根节点真的注入", () => {
+    const css = CSS();
+    const light = ruleBody(css, ".cm-editor .cm-content {");
+    assert.match(light, /caret-color:\s*#1a73e8\s*!important/, "theme 档落回默认蓝");
+    assert.match(light, /stroke='%231a73e8'/);
+
+    const read = (rel: string) => readFileSync(resolve(projectDir(), rel), "utf8");
+    const settings = read("src/utils/notesSettings.ts");
+    assert.match(
+        settings,
+        /NOTES_CARET_VALUES\s*=\s*\["theme",\s*"amber",\s*"green",\s*"coral",\s*"violet"\]/,
+        "枚举白名单要与 CSS 的 4 档 + theme 对齐"
+    );
+    assert.match(settings, /caretColor:\s*"theme"/, "默认跟随主题");
+    const shell = read("src/components/notes/NotesPageShell.tsx");
+    assert.match(shell, /data-notes-caret=\{uiSettings\.caretColor\}/, "根节点要注入 data 属性");
+    const tab = read("src/components/notes/NotesAppearanceTab.tsx");
+    assert.match(tab, /dataKey='caretColor'/, "外观页要有这一项");
+});

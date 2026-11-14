@@ -7,7 +7,7 @@ import Box from "@mui/material/Box";
 import Slider from "@mui/material/Slider";
 import Typography from "@mui/material/Typography";
 import { FOLDER_COLORS } from "../../utils/folderAppearance";
-import type { NotesUiSettings } from "../../utils/notesSettings";
+import { NOTES_CARET_OPTIONS, type NotesUiSettings } from "../../utils/notesSettings";
 import { SettingRow, SegOptions } from "./settingsShared";
 
 export interface NotesAppearanceTabProps {
@@ -71,6 +71,17 @@ export default function NotesAppearanceTab({ settings, set }: NotesAppearanceTab
                                             />
                                         ))}
                                     </Box>
+                                </SettingRow>
+                                {/* 光标配色：打字竖线 + 鼠标指针一起换。刻意用文字选项而不是色点 ——
+                                    色值只在 index.css 里有一份（SVG 光标的 URI 文本插不进 CSS 变量），
+                                    这里再写一份 hex 既会重复、又会撞 hardcodedColorGuard 的 cap。 */}
+                                <SettingRow label='光标配色' description='编辑区的打字竖线与鼠标指针一起换色'>
+                                    <SegOptions
+                                        dataKey='caretColor'
+                                        value={settings.caretColor}
+                                        onChange={v => set("caretColor", v)}
+                                        options={NOTES_CARET_OPTIONS.map(o => ({ value: o.value, label: o.label }))}
+                                    />
                                 </SettingRow>
                                 {/* 背景色 / 密度 / 正文字体：inkstone「外观」页同名的三项 */}
                                 <SettingRow label='背景色' description='纸感（暖白）或纯白'>

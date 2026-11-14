@@ -105,3 +105,28 @@ test("列表样式：脏值回落默认（不让非法值进 sx 分支）", () =
         );
     }
 });
+
+// ---- 光标配色（2026-11-14）：只存枚举名，色值全在 index.css ----
+// 脏值落到 theme 是硬要求：data-notes-caret 一旦拿到非法值，CSS 里没有任何规则匹配，
+// 会静默退回默认蓝（看似能用，实际用户选的颜色没生效）。
+test("光标配色：默认「跟随主题」，老数据缺字段也落默认", () => {
+    assert.equal(DEFAULT_NOTES_SETTINGS.caretColor, "theme");
+    assert.equal(readWith({}).caretColor, "theme");
+    assert.equal(readWith({ accent: "#3b82f6" }).caretColor, "theme");
+});
+
+test("光标配色：4 档预设原样保留", () => {
+    for (const v of ["amber", "green", "coral", "violet"]) {
+        assert.equal(readWith({ caretColor: v }).caretColor, v);
+    }
+});
+
+test("光标配色：脏值回落默认（不让 hex / 非法串进 data-notes-caret）", () => {
+    for (const bad of ["blue", "#c2410c", "", "AMBER", 1, null, {}, []]) {
+        assert.equal(
+            readWith({ caretColor: bad }).caretColor,
+            DEFAULT_NOTES_SETTINGS.caretColor,
+            `${JSON.stringify(bad)} 应回落默认`
+        );
+    }
+});
