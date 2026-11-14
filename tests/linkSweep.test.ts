@@ -125,10 +125,39 @@ test("明确 HTTP 404 和 200 的证据只写各自账号，不泄漏到对方�
         assert.equal(b.dead[missing], undefined);
         assert.equal(b.probe[missing], undefined);
         assert.deepEqual(seenAs, [1, 2]);
-        assert.deepEqual(calls, [{ url: missing, method: "HEAD" }, { url: healthy, method: "HEAD" }]);
+        // HEAD 说 404 现在必须再发一次 GET 复核（mock 里 GET 也是 404，结论仍是失效）。
+        assert.deepEqual(calls, [
+            { url: missing, method: "HEAD" },
+            { url: missing, method: "GET" },
+            { url: healthy, method: "HEAD" },
+        ], "HEAD 404 要退回 GET 复核；两次都 404 才写失效");
         assert.deepEqual(writes.filter(w => w.key === HEALTH_KEY).map(w => w.uid), [1, 2]);
         assert.equal(store.has(`null:${HEALTH_KEY}`), false);
         assert.deepEqual(switches, [1, null, 2, null]);
+    } finally {
+        globalThis.fetch = previousFetch;
+    }
+});
+
+// 2026-11-14 线上 Komari：Cloudflare 对 HEAD 回 404、GET 回 200。
+// 巡检层（不只是 probeUrl 单测）必须把这类站记成探测成功，不能写进 dead。
+test("HEAD 404 但 GET 200：巡检写 probe 而不是 dead", async () => {
+    const url = "https://account-a.example/spa";
+    const { api, store } = makeApi([{ id: 1 }], { 1: [url] });
+    const previousFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = async (input, init) => {
+        const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const method = init?.method ?? "GET";
+        calls.push(`${method} ${u}`);
+        return new Response(null, { status: method === "HEAD" ? 404 : 200 });
+    };
+    try {
+        await runLinkSweep(api as never);
+        const s = JSON.parse(store.get(`1:${HEALTH_KEY}`) as string) as LinkHealthSnapshot;
+        assert.deepEqual(Object.keys(s.dead), [], "SPA 不该被标失效");
+        assert.deepEqual(Object.keys(s.probe), [url], "应记一次探测成功");
+        assert.deepEqual(calls, [`HEAD ${url}`, `GET ${url}`]);
     } finally {
         globalThis.fetch = previousFetch;
     }

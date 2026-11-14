@@ -224,9 +224,38 @@ test("probeUrl：HEAD 200 → 活着", async () => {
     m.restore();
 });
 
-test("probeUrl：HEAD 404 → 失效", async () => {
+test("probeUrl：HEAD 404 且 GET 也 404 → 失效（两次都确认才算）", async () => {
     const m = mockFetch(() => ({ status: 404 }));
     assert.equal(await (await import("../worker/cron")).probeUrl("https://a.com"), false);
+    assert.deepEqual(m.calls.map(c => c.method), ["HEAD", "GET"], "HEAD 说不存在时必须用 GET 复核");
+    m.restore();
+});
+
+// 2026-11-14 线上误判：komari.zwjttzt.com 对 HEAD 回 404、GET 回 200
+// （Cloudflare 只对 GET 配路由）。只凭 HEAD 404 判死会把天天在用的站标记一整周。
+test("probeUrl：HEAD 404 但 GET 200 → 活着（SPA/反代只对 GET 配路由）", async () => {
+    const m = mockFetch((_u, init) =>
+        init.method === "HEAD" ? { status: 404 } : { status: 200 }
+    );
+    assert.equal(await (await import("../worker/cron")).probeUrl("https://a.com"), true);
+    assert.deepEqual(m.calls.map(c => c.method), ["HEAD", "GET"]);
+    m.restore();
+});
+
+test("probeUrl：HEAD 410 但 GET 200 → 活着", async () => {
+    const m = mockFetch((_u, init) =>
+        init.method === "HEAD" ? { status: 410 } : { status: 200 }
+    );
+    assert.equal(await (await import("../worker/cron")).probeUrl("https://a.com"), true);
+    m.restore();
+});
+
+test("probeUrl：HEAD 404 且 GET 网络异常 → 未知，不判失效", async () => {
+    const m = mockFetch((_u, init) => {
+        if (init.method === "HEAD") return { status: 404 };
+        throw new Error("get failed");
+    });
+    assert.equal(await (await import("../worker/cron")).probeUrl("https://a.com"), null);
     m.restore();
 });
 

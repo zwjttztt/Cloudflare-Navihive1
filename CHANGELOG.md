@@ -12,6 +12,19 @@
 > [`…10c`](docs/archive/changelog-2026-10c.md)（10-01 ~ 10-10）、
 > [`…09`](docs/archive/changelog-2026-09.md)（09-24 ~ 09-30）；完整索引见 [`docs/README.md`](docs/README.md)。
 
+## 2026-11-14 · v37.6.1
+
+### 修复
+- **死链巡检把「HEAD 404 / GET 200」的站点误判为失效**（线上 `https://komari.zwjttzt.com`）。实测该站对 `HEAD` 回 **404**（Cloudflare 只对 GET 配了路由）、对 `GET` 回 **200**（浏览器 UA / 探测 UA / 容器内原生 fetch 均 200，页面正常返回 `<title>Komari</title>`，nginx 访问日志全是 200）。`worker/cron.ts::probeUrl` 原本只在 HEAD 返回 **405/501** 时退回 GET，HEAD 404 被 `classifyLinkStatus(404)` 直接判成「资源不存在」，于 11-11 20:00（北京）写进 `link.health` 的 `dead` 表；又因开着「失效记录同步」且 7 天新鲜期内不重探，标记一直挂着。前端自己的 GET no-cors 探测其实判它是活的，但云端快照把旧标记同步了回来。
+  - `worker/cron.ts`：HEAD 返回 **404/410** 同样退回 GET 复核，**两次都 404/410 才判失效**；403 / 429 / 5xx / 网络异常仍按 `classifyLinkStatus` 归「未知」，不判失效；SSRF / CSP 一字未动。
+  - 线上数据纠偏：先备份 `/home/docker/navihive/link-health-backup-2026-11-14.json`（2996B），再给 uid=1 的 `link.health` 快照补一条 `probe["https://komari.zwjttzt.com"]`（保留 `dead` 便于审计）。按前端 `deriveDeadLinks` 口径 `probe > dead` → 不再显示失效，验证 `effective dead=[]`。
+
+### 工程
+- `tests/cronLogic.test.ts` 补 4 条：HEAD 404/410 + GET 200 → 活着、HEAD 404 + GET 404 → 失效、HEAD 404 + GET 网络异常 → 未知；原「HEAD 404 → 失效」改为「两次都 404 才算」，并断言调用序列是 `HEAD → GET`。
+- `tests/linkSweep.test.ts` 同步更新账号隔离用例的调用序列，新增巡检层「HEAD 404 / GET 200 写 probe 不写 dead」用例。
+- 变异验证：把回退条件退回「只有 405/501」→ 4 条红；还原后子集 57/57 全绿。
+- 全绿门禁：typecheck / lint 0 error / 全量单测 4346 项（0 fail，本地 + `TZ=UTC` 双跑）/ build / 首屏预算 37/37 / brand / strict-idx / smoke / a11y 0 / contrast 亮暗各 0 / `e2e:cron` 29/29 / 覆盖率两层 / `git diff --check` / changelogFreshness 4/4。
+
 ## 2026-11-14 · v37.6.0
 
 ### 新增

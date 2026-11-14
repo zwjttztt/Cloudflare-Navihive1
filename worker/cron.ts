@@ -320,8 +320,9 @@ async function notesBackupOneAccount(api: SchedulerDB, uid: number | null, env?:
 }
 
 /**
- * 探活单个链接。HEAD 优先（省流量）；服务器不支持 HEAD（405/501）时退回 GET，
- * 拿到响应头立刻 cancel 掉 body，避免整页下载。死活判定交给 isAliveHttpStatus。
+ * 探活单个链接。HEAD 优先（省流量）；HEAD 不支持（405/501）或 HEAD 说「不存在」
+ * （404/410）时退回 GET 复核，拿到响应头立刻 cancel 掉 body，避免整页下载。
+ * 死活判定交给 classifyLinkStatus（403/429/5xx 一律「未知」，不判失效）。
  *
  * M3：全程走 safeFetch，而不是裸 fetch + redirect:"follow"。裸 fetch 跟随重定向时
  * 不会重验目标主机，攻击者可借 302 把 Worker 引到 169.254.169.254 / 内网（SSRF）。
@@ -350,8 +351,15 @@ export async function probeUrl(url: string): Promise<boolean | null> {
         await head.response.body?.cancel();
         return classifyLinkStatus(head.response.status);
     }
-    // HEAD 不被支持（405/501）时退回 GET；其它非 2xx 直接按状态码判定死活。
-    if (head.kind === "http" && (head.upstreamStatus === 405 || head.upstreamStatus === 501)) {
+    // ⚠️ HEAD 说「资源不存在」不能直接下结论：很多 SPA / 反代（含 Cloudflare）
+    // 只给 GET 配了路由，HEAD 会回 404 而 GET 是 200。2026-11-14 线上 Komari 就
+    // 这样被写进 dead 表，又因 7 天新鲜期内不重探而挂了整周。404/410 仍是强证据，
+    // 但必须以 GET 复核为准；两次都 404/410 才算失效。
+    if (
+        head.kind === "http" &&
+        (head.upstreamStatus === 405 || head.upstreamStatus === 501 ||
+            head.upstreamStatus === 404 || head.upstreamStatus === 410)
+    ) {
         const get = await safeFetch(target, {
             timeoutMs: PROBE_TIMEOUT_MS,
             headers: { ...ua, Range: "bytes=0-0" },
